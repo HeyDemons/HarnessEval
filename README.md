@@ -123,4 +123,5 @@ metadata-only scores; see [extension status](docs/EXTENSIONS.md).
 
 Detailed fidelity and local smoke evidence are in
 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Pi and Codex application-level
-integration is documented in [docs/PRODUCT_AGENTS.md](docs/PRODUCT_AGENTS.md).
+integration, together with the external PERSEUS speculative swarm path, is
+documented in [docs/PRODUCT_AGENTS.md](docs/PRODUCT_AGENTS.md).

@@ -63,6 +63,33 @@ minimum credential/config material and never include it in artifacts.
 The Codex CLI reference is maintained in the
 [official OpenAI documentation](https://developers.openai.com/codex/cli/reference/).
 
+## PERSEUS
+
+PERSEUS is integrated as an external product harness rather than a built-in
+HarnessEval theory profile. This keeps its Actor/Speculator control plane,
+dependencies, version, and traces independently attributable.
+
+The public repository includes a custom HarnessEval catalog, Docker product
+image, adapter, exact-file oracle smoke, and matched-control protocol:
+
+```bash
+git clone https://github.com/HuiCir/Perseus.git
+cd Perseus
+bash integrations/harnesseval/run-smoke.sh
+```
+
+For benchmark experiments, let HarnessEval retain task-image, case, attempt,
+resume, logging, and native-scorer ownership. Install or mount PERSEUS into the
+task image and execute it through `harnesseval run ... --`. Workspace tools can
+remain native; service simulators require a versioned Pi extension that maps
+the benchmark's complete tool schemas and results without changing task
+semantics. Only benchmark-declared read/query tools belong in the speculative
+safe list. Mutations remain authoritative Actor calls.
+
+Run every PERSEUS case against `PERSEUS_ENABLED=0` with the same Actor model,
+prompt, image, tools, and scorer. Use distinct case keys or run directories so
+resume never conflates the paired configurations.
+
 ## Scoring Closure
 
 Pi or Codex exiting successfully is not task success. The adapter must still run
