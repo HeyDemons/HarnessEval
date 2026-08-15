@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-08-15",
+  "scope": "sanitized infrastructure and harness evidence; not leaderboard scores",
+  "benchmarks": [
+    {"id": "gaia", "status": "completed", "execution_seconds": 1.71, "native_check": "public scorer oracle=1.0"},
+    {"id": "gdpval", "status": "completed", "execution_seconds": 1.84, "native_check": "dataset/rubric integrity=1.0"},
+    {"id": "trajectory-bench", "status": "completed", "execution_seconds": 0.91, "native_check": "5910 records; 1228 tools"},
+    {"id": "vitabench", "status": "completed", "execution_seconds": 2.14, "native_check": "400 native tasks; package integrity=1.0"},
+    {"id": "tau2", "status": "completed", "execution_seconds": 16.59, "native_check": "CLI/data/six domains/registry"},
+    {"id": "bfcl", "status": "completed", "execution_seconds": 0.28, "native_check": "official agentic subset scorer oracle=1.0"},
+    {"id": "terminal-bench-2", "status": "completed", "execution_seconds": 133.92, "native_check": "official regex-log reward=1.0"},
+    {"id": "swe-bench-verified", "status": "completed", "execution_seconds": 45.22, "native_check": "official report resolved=1; errors=0"}
+  ],
+  "harnesses": [
+    {"profile": "actor-only", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 20.251, "llm_calls": 4, "tool_calls": 3, "answer": "42"},
+    {"profile": "react", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 21.686, "llm_calls": 6, "tool_calls": 3, "answer": "42"},
+    {"profile": "plan-execute", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 12.275, "llm_calls": 2, "tool_calls": 3, "answer": "42"},
+    {"profile": "cmws", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 24.275, "llm_calls": 2, "tool_calls": 2, "answer": "42", "parallel_tool_wave": true}
+  ],
+  "unit_tests": {
+    "passed": 17,
+    "failed": 0,
+    "large_structured_tool_value_characters": 200000
+  }
+}

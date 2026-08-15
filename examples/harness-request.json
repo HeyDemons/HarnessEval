@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "task": {
+    "id": "arithmetic-smoke",
+    "prompt": "Use the tools to retrieve alpha and beta, multiply the complete values, and return only the product."
+  },
+  "tools": [
+    {
+      "name": "lookup",
+      "description": "Retrieve the number stored under alpha or beta.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": ["alpha", "beta"]
+          }
+        },
+        "required": ["key"]
+      },
+      "command": ["python", "/tools/arithmetic.py", "lookup"],
+      "parallel": true,
+      "read_only": true
+    },
+    {
+      "name": "multiply",
+      "description": "Multiply two numbers.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "a": {"type": "number"},
+          "b": {"type": "number"}
+        },
+        "required": ["a", "b"]
+      },
+      "command": ["python", "/tools/arithmetic.py", "multiply"],
+      "parallel": true,
+      "read_only": true
+    }
+  ],
+  "policy": {
+    "max_turns": 8,
+    "protocol_repairs": 1
+  }
+}

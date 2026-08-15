@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "harnesseval"
+version = "0.1.0"
+description = "Docker-native, harness-pluggable, benchmark-faithful agent evaluation"
+requires-python = ">=3.11"
+
+[project.scripts]
+benchctl = "benchmark_platform.cli:main"
+harnesseval = "benchmark_platform.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["benchmark_platform*"]
