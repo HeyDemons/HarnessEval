@@ -53,15 +53,17 @@ class Platform:
         if not paths:
             return None
         digest = hashlib.sha256()
-        for root in sorted(paths, key=str):
+        ignored_parts = {".git", ".venv", ".sources", "node_modules", "__pycache__", "runs", "build", "dist"}
+        for index, root in enumerate(paths):
             files = [root] if root.is_file() else sorted(path for path in root.rglob("*") if path.is_file())
             for path in files:
-                if "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
+                relative = Path(path.name) if root.is_file() else path.relative_to(root)
+                if (
+                    any(part in ignored_parts or part.endswith(".egg-info") for part in relative.parts)
+                    or path.suffix in {".pyc", ".pyo"}
+                ):
                     continue
-                try:
-                    label = str(path.relative_to(self.root))
-                except ValueError:
-                    label = str(path)
+                label = f"{index}:{relative.as_posix()}"
                 digest.update(label.encode("utf-8"))
                 digest.update(b"\0")
                 digest.update(path.read_bytes())

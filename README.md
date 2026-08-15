@@ -34,6 +34,8 @@ harnesseval harnesses
 ```
 
 The host package has no runtime dependency outside the standard library.
+Host, architecture, BuildKit, proxy, and image-download details are documented
+in [the macOS installation guide](docs/INSTALLATION.md).
 
 ## Benchmark Smoke
 

@@ -16,7 +16,7 @@ the authority whenever they can run faithfully in Docker.
 | tau2/tau3 | `79975ac5741e23fbb1d2ac44262d62398a6d87bd` | Pinned `uv.lock` package image | Official native reward | `runs/harnesseval_release_core_20260815` |
 | BFCL V4 | `6ea57973c7a6097fd7c5915698c54c17c5b1b6c8` | Pinned source/data image | Official agentic scorer subset only | `runs/harnesseval_release_core_20260815` |
 | Terminal-Bench 2 | `2fd12b88aafdd04a52c298e3940bcb189f9766d6`, `regex-log` task image | Official task image with solution/verifier mounts | Official task reward | `runs/harnesseval_release_terminal_20260815` |
-| SWE-bench Verified | Harness v4.1.0 `726c5461e2ef52d83cf1ea2107870a8bb3328d57`; dataset `c104f840cc67f8b6eec6f759ebc8b2693d585d4a` | Official controller/scorer over host Docker socket; official task images on x86_64 and digest-pinned Epoch task images on Apple ARM64 | Native repository tests; ARM64 image provenance is disclosed | `runs/harnesseval_release_swe_20260815` |
+| SWE-bench Verified | Harness v4.1.0 `726c5461e2ef52d83cf1ea2107870a8bb3328d57`; dataset `c104f840cc67f8b6eec6f759ebc8b2693d585d4a` | Official controller/scorer over host Docker socket; official task images on x86_64 and a digest-pinned Epoch task image for the ARM64 smoke | Native repository tests; ARM64 image provenance is disclosed | `runs/harnesseval_release_swe_20260815` |
 
 ## Verified Smokes
 
@@ -88,7 +88,7 @@ set `oracle_smoke: true` and must not be entered into model leaderboards.
   must not be described as full BFCL V4 support.
 - SWE-bench needs direct Docker socket access because its official controller
   creates task containers. Only this catalog entry may request root execution.
-  Linux x86_64 follows the official image path unchanged. The Apple ARM64 path
+  Linux x86_64 follows the official image path unchanged. The ARM64 smoke path
   verifies the Epoch image digest/instance label, binds only the official
   `make_test_spec` `arch` argument to `arm64`, and gives the image a matching
   local name. The pinned official data row, generated eval script, task text,

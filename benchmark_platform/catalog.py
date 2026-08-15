@@ -35,6 +35,7 @@ class Catalog:
         variables = {
             "PLATFORM_ROOT": str(platform_root.resolve()),
             "ORCH_ROOT": str(orch_root.resolve()),
+            "CATALOG_DIR": str(path.resolve().parent),
             "HOME": str(Path.home()),
         }
         entries = expand(raw.get("benchmarks", []), variables)

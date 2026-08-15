@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -109,6 +110,57 @@ class PlatformTests(unittest.TestCase):
         fingerprint = platform.adapter_fingerprint(benchmark.adapter)
         self.assertIsNotNone(fingerprint)
         self.assertEqual(len(fingerprint or ""), 64)
+
+    def test_external_adapter_fingerprint_is_checkout_path_independent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            parent = Path(directory)
+            first = parent / "first" / "adapter"
+            second = parent / "renamed" / "adapter"
+            first.mkdir(parents=True)
+            (first / "Dockerfile").write_text("FROM scratch\n", encoding="utf-8")
+            (first / "source.txt").write_text("same content\n", encoding="utf-8")
+            (first / "node_modules").mkdir()
+            (first / "node_modules" / "local.js").write_text("ignored\n", encoding="utf-8")
+            shutil.copytree(first, second)
+            platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
+            left = platform.adapter_fingerprint(
+                {"dockerfile": str(first / "Dockerfile"), "fingerprint_paths": [str(first)]}
+            )
+            right = platform.adapter_fingerprint(
+                {"dockerfile": str(second / "Dockerfile"), "fingerprint_paths": [str(second)]}
+            )
+            self.assertEqual(left, right)
+
+    def test_catalog_dir_variable_is_relative_to_custom_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            catalog_path = root / "nested" / "catalog.json"
+            catalog_path.parent.mkdir()
+            catalog_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "benchmarks": [
+                            {
+                                "id": "portable",
+                                "name": "Portable",
+                                "source": {},
+                                "adapter": {
+                                    "kind": "docker-image",
+                                    "dockerfile": "${CATALOG_DIR}/Dockerfile",
+                                },
+                                "scoring": {},
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            catalog = Catalog(catalog_path, ROOT, ROOT.parent)
+            self.assertEqual(
+                Path(catalog.get("portable").adapter["dockerfile"]),
+                catalog_path.parent.resolve() / "Dockerfile",
+            )
 
 
 if __name__ == "__main__":

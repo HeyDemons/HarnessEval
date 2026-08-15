@@ -5,6 +5,8 @@
 - `${PLATFORM_ROOT}` for the HarnessEval checkout.
 - `${ORCH_ROOT}` for datasets and source snapshots supplied with
   `harnesseval --orch-root`.
+- `${CATALOG_DIR}` for files shipped beside a custom catalog. This keeps an
+  external product adapter independent of its checkout name and location.
 - `${HOME}` for explicitly user-owned files.
 
 Keep machine-specific paths and credentials out of committed catalogs. Create
