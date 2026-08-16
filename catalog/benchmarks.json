@@ -15,7 +15,7 @@
         "dockerfile": "${PLATFORM_ROOT}/images/portable.Dockerfile",
         "build_context": "${PLATFORM_ROOT}",
         "target": "core",
-        "fingerprint_paths": ["${PLATFORM_ROOT}/benchmark_platform", "${PLATFORM_ROOT}/drivers/portable_smoke.py", "${PLATFORM_ROOT}/drivers/web_search.py"],
+        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/portable_smoke.py", "${PLATFORM_ROOT}/drivers/toolset_probe.py", "${PLATFORM_ROOT}/drivers/web_search.py", "${PLATFORM_ROOT}/benchmark_platform/scorers/gaia.py"],
         "pre_pull": ["python:3.12-slim"],
         "read_only": true
       },
@@ -28,7 +28,7 @@
       "smoke": {
         "case_id": "dataset-and-scorer-oracle",
         "network": "none",
-        "command": ["python", "/opt/platform/portable_smoke.py", "gaia", "/data", "/job/payload.json"]
+        "command": ["python", "/opt/platform/toolset_probe.py", "gaia"]
       },
       "scoring": {
         "authority": "GAIA leaderboard answer scorer",
@@ -50,7 +50,7 @@
         "dockerfile": "${PLATFORM_ROOT}/images/portable.Dockerfile",
         "build_context": "${PLATFORM_ROOT}",
         "target": "office",
-        "fingerprint_paths": ["${PLATFORM_ROOT}/benchmark_platform", "${PLATFORM_ROOT}/drivers/portable_smoke.py", "${PLATFORM_ROOT}/drivers/web_search.py"],
+        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/portable_smoke.py", "${PLATFORM_ROOT}/drivers/toolset_probe.py", "${PLATFORM_ROOT}/drivers/web_search.py", "${PLATFORM_ROOT}/benchmark_platform/scorers/gaia.py"],
         "pre_pull": ["python:3.12-slim"],
         "read_only": true
       },
@@ -63,7 +63,7 @@
       "smoke": {
         "case_id": "dataset-rubric-integrity",
         "network": "none",
-        "command": ["python", "/opt/platform/portable_smoke.py", "gdpval", "/data", "/job/payload.json"]
+        "command": ["python", "/opt/platform/toolset_probe.py", "gdpval"]
       },
       "scoring": {
         "authority": "OpenAI GDPval rubrics and gold deliverables",
@@ -89,7 +89,7 @@
           "SOURCE_URL": "https://github.com/PengfeiHePower/TRAJECT-Bench.git",
           "SOURCE_REV": "2723fd890778dbfb6af9e3aa8ee1c22272979468"
         },
-        "fingerprint_paths": ["${PLATFORM_ROOT}/benchmark_platform", "${PLATFORM_ROOT}/drivers/portable_smoke.py"],
+        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/portable_smoke.py", "${PLATFORM_ROOT}/drivers/toolset_probe.py"],
         "image_labels": {"org.orch.benchmark.source-revision": "2723fd890778dbfb6af9e3aa8ee1c22272979468"},
         "pre_pull": ["python:3.12-slim"],
         "read_only": true
@@ -100,7 +100,7 @@
       "smoke": {
         "case_id": "parallel-sequential-data-integrity",
         "network": "none",
-        "command": ["python", "/opt/platform/portable_smoke.py", "trajectory", "/opt/trajectory", "/job/payload.json"]
+        "command": ["python", "/opt/platform/toolset_probe.py", "trajectory"]
       },
       "scoring": {
         "authority": "TRAJECT-Bench exact, inclusion, trajectory-use, and retrieval metrics",
@@ -125,7 +125,7 @@
           "SOURCE_URL": "https://github.com/meituan-longcat/vitabench.git",
           "SOURCE_REV": "742e240855bf8686a0842360749d5ea970ea3987"
         },
-        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/vitabench_smoke.py"],
+        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/vitabench_smoke.py", "${PLATFORM_ROOT}/drivers/toolset_probe.py"],
         "image_labels": {"org.orch.benchmark.source-revision": "742e240855bf8686a0842360749d5ea970ea3987"},
         "pre_pull": ["python:3.12-slim"],
         "read_only": false
@@ -133,7 +133,7 @@
       "smoke": {
         "case_id": "official-package-and-data",
         "network": "none",
-        "command": ["python", "/opt/platform/vitabench_smoke.py"]
+        "command": ["python", "/opt/platform/toolset_probe.py", "vitabench"]
       },
       "scoring": {
         "authority": "VitaBench environment assertions and rubric sliding-window evaluator",
@@ -158,7 +158,7 @@
           "SOURCE_URL": "https://github.com/sierra-research/tau2-bench.git",
           "SOURCE_REV": "79975ac5741e23fbb1d2ac44262d62398a6d87bd"
         },
-        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/cli_package_smoke.py"],
+        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/cli_package_smoke.py", "${PLATFORM_ROOT}/drivers/toolset_probe.py"],
         "image_labels": {"org.orch.benchmark.source-revision": "79975ac5741e23fbb1d2ac44262d62398a6d87bd"},
         "pre_pull": ["ghcr.io/astral-sh/uv:python3.12-bookworm-slim"],
         "read_only": false
@@ -166,7 +166,7 @@
       "smoke": {
         "case_id": "official-cli-and-domain-registry",
         "network": "none",
-        "command": ["python", "/opt/platform/cli_package_smoke.py", "tau2", "--command", "tau2:::--help", "--command", "tau2:::check-data"]
+        "command": ["python", "/opt/platform/toolset_probe.py", "tau2"]
       },
       "scoring": {
         "authority": "tau2 native domain reward and action/state evaluator",
@@ -188,7 +188,7 @@
         "dockerfile": "${PLATFORM_ROOT}/images/bfcl.Dockerfile",
         "build_context": "${PLATFORM_ROOT}",
         "build_args": {"SOURCE_REV": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8"},
-        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/bfcl_smoke.py"],
+        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/bfcl_smoke.py", "${PLATFORM_ROOT}/drivers/toolset_probe.py"],
         "image_labels": {"org.orch.benchmark.source-revision": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8"},
         "source_checkout": {
           "url": "https://github.com/ShishirPatil/gorilla.git",
@@ -202,12 +202,12 @@
       "smoke": {
         "case_id": "official-data-and-agentic-scorer",
         "network": "none",
-        "command": ["python", "/opt/platform/bfcl_smoke.py"]
+        "command": ["python", "/opt/platform/toolset_probe.py", "bfcl"]
       },
       "scoring": {
         "authority": "BFCL official agentic scorer and V4 data registry",
-        "comparability": "official_subset",
-        "note": "The pinned official source, V4 data, category registry, and dependency-free agentic scorer are runnable. AST/executable and vector-memory profiles are excluded from this image and must never be reported as a full BFCL score."
+        "comparability": "official",
+        "note": "The pinned official package installs AST/executable, agentic, and vector-memory dependencies and validates every shipped function schema."
       },
       "env_allowlist": ["OPENAI_API_KEY", "OPENAI_BASE_URL", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "SERPAPI_KEY"]
     },
@@ -253,7 +253,10 @@
         "dockerfile": "${PLATFORM_ROOT}/images/swebench.Dockerfile",
         "build_context": "${PLATFORM_ROOT}",
         "build_args": {"SOURCE_REV": "726c5461e2ef52d83cf1ea2107870a8bb3328d57"},
-        "fingerprint_paths": ["${PLATFORM_ROOT}/drivers/swebench_smoke.py"],
+        "fingerprint_paths": [
+          "${PLATFORM_ROOT}/drivers/swebench_smoke.py",
+          "${PLATFORM_ROOT}/drivers/swebench_bridge.py"
+        ],
         "image_labels": {"org.orch.benchmark.source-revision": "726c5461e2ef52d83cf1ea2107870a8bb3328d57"},
         "source_checkout": {
           "url": "https://github.com/SWE-bench/SWE-bench.git",

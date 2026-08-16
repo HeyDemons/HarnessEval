@@ -73,12 +73,32 @@ class OpenAICompatibleClient:
             json_mode=json_mode,
         )
 
+    async def complete_native(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+    ) -> Completion:
+        """Preserve native chat/tool messages for benchmark-owned simulators."""
+        return await asyncio.to_thread(
+            self._complete_sync,
+            messages,
+            temperature=temperature,
+            json_mode=False,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
     def _complete_sync(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         temperature: float | None,
         json_mode: bool,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
     ) -> Completion:
         payload: dict[str, Any] = {
             "model": self.config.model,
@@ -88,6 +108,9 @@ class OpenAICompatibleClient:
         }
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
+        if tools:
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice or "auto"
         if self.config.max_output_tokens is not None:
             payload["max_tokens"] = self.config.max_output_tokens
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -7,7 +7,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from .api import Completion, OpenAICompatibleClient
 
@@ -105,12 +105,68 @@ class ToolSpec:
         }
 
 
+ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
+
+
+def validate_arguments(schema: Mapping[str, Any], value: Any, path: str = "arguments") -> list[str]:
+    """Validate the JSON-Schema subset used by benchmark tool definitions."""
+    errors: list[str] = []
+    expected = schema.get("type")
+    expected_types = expected if isinstance(expected, list) else [expected] if expected else []
+    type_checks = {
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+        "string": lambda item: isinstance(item, str),
+        "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+        "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+        "boolean": lambda item: isinstance(item, bool),
+        "null": lambda item: item is None,
+    }
+    known_types = [item for item in expected_types if item in type_checks]
+    if known_types and not any(type_checks[item](value) for item in known_types):
+        errors.append(f"{path} must have type {' or '.join(known_types)}")
+        return errors
+    if "enum" in schema and value not in schema["enum"]:
+        errors.append(f"{path} must be one of {schema['enum']!r}")
+    if isinstance(value, dict):
+        required = schema.get("required") or []
+        for name in required:
+            if name not in value:
+                errors.append(f"{path}.{name} is required")
+        properties = schema.get("properties") or {}
+        for name, item in value.items():
+            child = properties.get(name)
+            if isinstance(child, Mapping):
+                errors.extend(validate_arguments(child, item, f"{path}.{name}"))
+        if schema.get("additionalProperties") is False:
+            unknown = sorted(set(value) - set(properties))
+            errors.extend(f"{path}.{name} is not allowed" for name in unknown)
+    if isinstance(value, list) and isinstance(schema.get("items"), Mapping):
+        for index, item in enumerate(value):
+            errors.extend(validate_arguments(schema["items"], item, f"{path}[{index}]"))
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if "minimum" in schema and value < schema["minimum"]:
+            errors.append(f"{path} must be >= {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            errors.append(f"{path} must be <= {schema['maximum']}")
+    return errors
+
+
 class ToolEnvironment:
-    def __init__(self, tools: list[ToolSpec], trace: JsonlTrace):
+    def __init__(
+        self,
+        tools: list[ToolSpec],
+        trace: JsonlTrace,
+        handlers: Mapping[str, ToolHandler] | None = None,
+    ):
         names = [tool.name for tool in tools]
         if len(names) != len(set(names)):
             raise ValueError(f"Duplicate tool names: {names}")
         self.tools = {tool.name: tool for tool in tools}
+        self.handlers = dict(handlers or {})
+        unknown_handlers = sorted(set(self.handlers) - set(self.tools))
+        if unknown_handlers:
+            raise ValueError(f"Handlers reference unknown tools: {unknown_handlers}")
         self.trace = trace
         self.calls: list[dict[str, Any]] = []
         self._state_lock = asyncio.Lock()
@@ -132,6 +188,8 @@ class ToolEnvironment:
         await self.trace.emit("tool_request", name=name, arguments=arguments)
         if tool is None:
             result = {"ok": False, "error": "unknown_tool", "available_tools": self.names}
+        elif errors := validate_arguments(tool.parameters, arguments):
+            result = {"ok": False, "error": "invalid_arguments", "details": errors}
         elif tool.parallel:
             result = await self._invoke(tool, arguments)
         else:
@@ -143,6 +201,12 @@ class ToolEnvironment:
         return result
 
     async def _invoke(self, tool: ToolSpec, arguments: dict[str, Any]) -> dict[str, Any]:
+        if handler := self.handlers.get(tool.name):
+            try:
+                value = await handler(arguments)
+            except Exception as exc:
+                return {"ok": False, "error": "tool_handler_failed", "detail": f"{type(exc).__name__}: {exc}"}
+            return value if isinstance(value, dict) and "ok" in value else {"ok": True, "result": value}
         allowed = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", *tool.pass_env}
         environment = {name: value for name, value in os.environ.items() if name in allowed}
         process = await asyncio.create_subprocess_exec(

@@ -47,6 +47,18 @@ assume a proxy bound to macOS localhost is container-reachable.
 `BENCHMARK_PIP_INDEX_URL` selects an alternate Python package index for
 supported image builds.
 
+Dockerfiles continue to use the official Debian source by default. In regions
+where that CDN route is unstable, `BENCHMARK_APT_MIRROR` can select a trusted
+mirror without editing the image definition:
+
+```bash
+BENCHMARK_APT_MIRROR=https://mirrors.example.org \
+  harnesseval build gaia gdpval
+```
+
+The mirror base must provide both `/debian` and `/debian-security`. Signed
+Debian metadata and benchmark source-revision checks remain active.
+
 Modern Docker with BuildKit is required because the portable images use cache
 mounts and external build contexts. Run these checks before downloading a full
 benchmark:
@@ -60,6 +72,12 @@ harnesseval doctor gaia vitabench tau2
 `doctor` distinguishes a missing but buildable image from a missing dataset or
 unsupported environment. `harnesseval build BENCHMARK --pull` refreshes base
 images explicitly.
+
+The BFCL image pins Torch 2.8.0 before installing the official evaluator. This
+keeps the published evaluator dependency contract while avoiding accidental
+resolution to future CUDA-heavy Torch wheels on Linux ARM64. The tau2 image is
+installed from its pinned `uv.lock`; real `banking_knowledge` episodes also
+need an embedding provider when the official embeddings cache is absent.
 
 ## Architecture Exceptions
 

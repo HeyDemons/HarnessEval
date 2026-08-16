@@ -11,6 +11,7 @@ class HarnessProfile:
     provenance: str
     source: str | None
     revision: str | None
+    tool_contract: str
     notes: str
 
 
@@ -22,6 +23,7 @@ PROFILES = (
         provenance="local-control",
         source=None,
         revision=None,
+        tool_contract="dynamic",
         notes="A non-speculative single-agent control with the same dynamic tool transport.",
     ),
     HarnessProfile(
@@ -31,6 +33,7 @@ PROFILES = (
         provenance="protocol-reproduction",
         source="https://github.com/ysymyth/ReAct",
         revision="6bdb3a1fd38b8188fc7ba4102969fe483df8fdc9",
+        tool_contract="dynamic",
         notes="Reproduces the published interleaved reasoning/action protocol with runtime tool schemas.",
     ),
     HarnessProfile(
@@ -40,6 +43,7 @@ PROFILES = (
         provenance="protocol-reproduction",
         source="https://blog.langchain.com/plan-and-execute-agents/",
         revision=None,
+        tool_contract="dynamic",
         notes="Separates planning from deterministic execution of the emitted tool plan.",
     ),
     HarnessProfile(
@@ -49,7 +53,78 @@ PROFILES = (
         provenance="protocol-reproduction",
         source=None,
         revision=None,
+        tool_contract="dynamic",
         notes="A conventional centralized MAS control; independent assignments execute concurrently.",
+    ),
+    HarnessProfile(
+        id="aflow",
+        name="AFlow frozen workflow",
+        topology="frozen optimized operator graph -> execution",
+        provenance="protocol-reproduction",
+        source="https://github.com/FoundationAgents/AFlow",
+        revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
+        tool_contract="dynamic-frozen-workflow",
+        notes="Evaluation executes a frozen operator graph; workflow optimization must use a separate training split.",
+    ),
+    HarnessProfile(
+        id="dylan",
+        name="DyLAN",
+        topology="dynamic text-agent network -> consensus/pruning",
+        provenance="protocol-reproduction",
+        source="https://github.com/SALT-NLP/DyLAN",
+        revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
+        tool_contract="no-external-tools",
+        notes="The published topology has no external tool loop; tool-dependent failures are part of the baseline.",
+    ),
+    HarnessProfile(
+        id="magentic-one",
+        name="Magentic-One",
+        topology="orchestrator ledgers -> specialist turns -> synthesis",
+        provenance="protocol-reproduction",
+        source="https://github.com/microsoft/autogen",
+        revision="bd5a24ba72ba01c4ec7509f027caaa7454b5f6d0",
+        tool_contract="dynamic",
+        notes="Preserves the ledger, selected-speaker, stall, and replan topology with dynamic benchmark tools.",
+    ),
+    HarnessProfile(
+        id="multi-persona",
+        name="Multi-Persona self-collaboration",
+        topology="single-model dynamically selected personas",
+        provenance="protocol-reproduction",
+        source="https://github.com/MikeWangWZHL/Solo-Performance-Prompting",
+        revision="619c8a0ff4205bfd39e33f0867647b40e1703b94",
+        tool_contract="no-external-tools",
+        notes="The published topology has no external tool loop; tool-dependent failures are part of the baseline.",
+    ),
+    HarnessProfile(
+        id="llmcompiler",
+        name="LLMCompiler",
+        topology="planner DAG -> parallel scheduler -> joiner",
+        provenance="protocol-reproduction",
+        source="https://github.com/SqueezeAILab/LLMCompiler",
+        revision="a00c9d35507507da70e8c637eee64efc8c1857ae",
+        tool_contract="dynamic",
+        notes="Executes dependency-ready benchmark tool calls concurrently.",
+    ),
+    HarnessProfile(
+        id="rewoo",
+        name="ReWOO",
+        topology="planner -> evidence workers -> solver",
+        provenance="protocol-reproduction",
+        source="https://github.com/billxbf/ReWOO",
+        revision="9cd0283043ff4be0c9d614fda2789d143ca6ffd1",
+        tool_contract="dynamic",
+        notes="Plans evidence calls before executing the benchmark toolset.",
+    ),
+    HarnessProfile(
+        id="sa",
+        name="Speculative Actions",
+        topology="response predictor -> safe pre-actions -> authoritative Actor",
+        provenance="protocol-reproduction",
+        source="https://github.com/naimengye/speculative-action",
+        revision="dc938b9ef7474caf07fe4ad16549c1fa8c7d268c",
+        tool_contract="dynamic-read-only-speculation",
+        notes="Only benchmark-declared parallel read-only tools may execute speculatively.",
     ),
 )
 

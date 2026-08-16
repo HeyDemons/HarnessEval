@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .engine import Platform
+from .compatibility import compatibility_rows
 from .harnesses import PROFILES
 from .util import atomic_json, select
 
@@ -56,6 +57,9 @@ def build_parser() -> argparse.ArgumentParser:
     harnesses = sub.add_parser("harnesses", help="List built-in theory harness profiles.")
     harnesses.add_argument("--json", action="store_true")
 
+    matrix = sub.add_parser("matrix", help="Report baseline x benchmark bridge and tool-contract status.")
+    matrix.add_argument("--json", action="store_true")
+
     doctor = sub.add_parser("doctor", help="Probe local Docker, data, images, and provider blockers.")
     doctor.add_argument("benchmarks", nargs="*", default=["all"])
     doctor.add_argument("--json", action="store_true")
@@ -102,6 +106,21 @@ def build_parser() -> argparse.ArgumentParser:
     harness_run.add_argument("--no-pull", action="store_true")
     harness_run.add_argument("--pass-env", action="append", default=[])
     harness_run.add_argument("--mount", action="append", default=[], metavar="HOST:CONTAINER[:ro|rw]")
+
+    bridge_run = sub.add_parser(
+        "bridge-run",
+        help="Run a built-in baseline through a benchmark-owned isolated tool bridge.",
+    )
+    bridge_run.add_argument("profile", choices=[profile.id for profile in PROFILES])
+    bridge_run.add_argument("benchmark")
+    bridge_run.add_argument("--case", required=True)
+    bridge_run.add_argument("--run-dir", type=Path, required=True)
+    bridge_run.add_argument("--network", default="bridge")
+    bridge_run.add_argument("--policy", default="{}", help="JSON object with explicit baseline policy parameters")
+    bridge_run.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    bridge_run.add_argument("--retry-failed", action="store_true")
+    bridge_run.add_argument("--no-build", action="store_true")
+    bridge_run.add_argument("--pass-env", action="append", default=[])
     return parser
 
 
@@ -133,6 +152,17 @@ def _main() -> None:
         else:
             for profile in PROFILES:
                 print(f"{profile.id:16} {profile.provenance:22} {profile.name}")
+        return
+    if args.action == "matrix":
+        rows = compatibility_rows(PROFILES, platform.catalog)
+        if args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        else:
+            for row in rows:
+                print(
+                    f"{row['baseline']:16} {row['benchmark']:22} "
+                    f"{row['bridge_status']:45} {row['tool_contract']}"
+                )
         return
     if args.action == "doctor":
         report = [platform.doctor(platform.catalog.get(item)) for item in _ids(args, platform)]
@@ -213,6 +243,28 @@ def _main() -> None:
             pull_missing=not args.no_pull,
             pass_env=args.pass_env,
             extra_mounts=_mounts(args.mount, parser),
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if result["status"] == "completed" else 1)
+    if args.action == "bridge-run":
+        profile = next(item for item in PROFILES if item.id == args.profile)
+        try:
+            policy = json.loads(args.policy)
+        except json.JSONDecodeError as exc:
+            parser.error(f"--policy must be one complete JSON object: {exc}")
+        if not isinstance(policy, dict):
+            parser.error("--policy must decode to an object")
+        result = platform.run_bridge_harness(
+            benchmark=platform.catalog.get(args.benchmark),
+            profile=profile.__dict__,
+            case_id=args.case,
+            run_dir=args.run_dir,
+            network=args.network,
+            policy=policy,
+            resume=args.resume,
+            retry_failed=args.retry_failed,
+            build_missing=not args.no_build,
+            pass_env=args.pass_env,
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(0 if result["status"] == "completed" else 1)

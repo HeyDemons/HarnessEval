@@ -1,26 +1,95 @@
 {
-  "schema_version": 1,
-  "generated_at": "2026-08-15",
-  "scope": "sanitized infrastructure and harness evidence; not leaderboard scores",
+  "schema_version": 2,
+  "generated_at": "2026-08-16",
+  "scope": "sanitized infrastructure, toolset, lifecycle, and harness-protocol evidence; not model leaderboard scores",
   "benchmarks": [
-    {"id": "gaia", "status": "completed", "execution_seconds": 1.71, "native_check": "public scorer oracle=1.0"},
-    {"id": "gdpval", "status": "completed", "execution_seconds": 1.84, "native_check": "dataset/rubric integrity=1.0"},
-    {"id": "trajectory-bench", "status": "completed", "execution_seconds": 0.91, "native_check": "5910 records; 1228 tools"},
-    {"id": "vitabench", "status": "completed", "execution_seconds": 2.14, "native_check": "400 native tasks; package integrity=1.0"},
-    {"id": "tau2", "status": "completed", "execution_seconds": 16.59, "native_check": "CLI/data/six domains/registry"},
-    {"id": "bfcl", "status": "completed", "execution_seconds": 0.28, "native_check": "official agentic subset scorer oracle=1.0"},
-    {"id": "terminal-bench-2", "status": "completed", "execution_seconds": 133.92, "native_check": "official regex-log reward=1.0"},
-    {"id": "swe-bench-verified", "status": "completed", "execution_seconds": 45.22, "native_check": "official report resolved=1; errors=0"}
+    {
+      "id": "gaia",
+      "status": "completed",
+      "execution_seconds": 0.336,
+      "native_check": "21 workspace tools available; structured DDGS stdin enabled",
+      "score": {"complete_toolset_load": 1.0}
+    },
+    {
+      "id": "gdpval",
+      "status": "completed",
+      "execution_seconds": 0.425,
+      "native_check": "22 workspace and Office tools available; structured DDGS stdin enabled",
+      "score": {"complete_toolset_load": 1.0}
+    },
+    {
+      "id": "trajectory-bench",
+      "status": "completed",
+      "execution_seconds": 1.344,
+      "native_check": "5910 task records; 1228 tool records; 674 unique tool names; zero invalid schemas",
+      "score": {"complete_toolset_load": 1.0}
+    },
+    {
+      "id": "vitabench",
+      "status": "completed",
+      "execution_seconds": 2.309,
+      "native_check": "400 native tasks; 82 tools across three mutable domains; zero invalid schemas",
+      "score": {"complete_toolset_load": 1.0}
+    },
+    {
+      "id": "tau2",
+      "status": "completed",
+      "execution_seconds": 10.525,
+      "native_check": "2804 tasks; 77 tools across six domains; zero invalid schemas",
+      "score": {"complete_toolset_load": 1.0}
+    },
+    {
+      "id": "bfcl",
+      "status": "completed",
+      "execution_seconds": 0.5,
+      "native_check": "70 data files; 9970 records; 9314 function schemas; full official evaluator dependencies",
+      "score": {"complete_toolset_load": 1.0}
+    },
+    {
+      "id": "terminal-bench-2",
+      "status": "completed",
+      "execution_seconds": 143.792,
+      "native_check": "isolated official regex-log verifier",
+      "score": {"reward": 1.0}
+    },
+    {
+      "id": "swe-bench-verified",
+      "status": "completed",
+      "execution_seconds": 67.524,
+      "native_check": "official controller: submitted=1, completed=1, resolved=1, errors=0",
+      "score": {"resolved": 1.0}
+    }
   ],
-  "harnesses": [
-    {"profile": "actor-only", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 20.251, "llm_calls": 4, "tool_calls": 3, "answer": "42"},
-    {"profile": "react", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 21.686, "llm_calls": 6, "tool_calls": 3, "answer": "42"},
-    {"profile": "plan-execute", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 12.275, "llm_calls": 2, "tool_calls": 3, "answer": "42"},
-    {"profile": "cmws", "provider_protocol": "OpenAI-compatible", "status": "completed", "execution_seconds": 24.275, "llm_calls": 2, "tool_calls": 2, "answer": "42", "parallel_tool_wave": true}
+  "web_search": {
+    "implementation": "DDGS with structured JSON stdin and complete result records",
+    "gaia": {"requested": 3, "valid_records": 3, "required_fields": ["title", "href", "body"]},
+    "gdpval": {"requested": 1, "valid_records": 1, "required_fields": ["title", "href", "body"]}
+  },
+  "baseline_matrix": {
+    "profiles": 11,
+    "benchmarks": 8,
+    "cells": 88,
+    "explicit_lifecycle_routes": 88,
+    "publishable_scores_without_running_cases": 0,
+    "profile_protocol_subtests": {
+      "single_turn": 44,
+      "native_conversation": 22,
+      "task_container": 22,
+      "passed": 88
+    }
+  },
+  "api_loop_evidence": [
+    {"profile": "actor-only", "status": "completed", "execution_seconds": 20.251, "llm_calls": 4, "tool_calls": 3, "answer": "42"},
+    {"profile": "react", "status": "completed", "execution_seconds": 21.686, "llm_calls": 6, "tool_calls": 3, "answer": "42"},
+    {"profile": "plan-execute", "status": "completed", "execution_seconds": 12.275, "llm_calls": 2, "tool_calls": 3, "answer": "42"},
+    {"profile": "cmws", "status": "completed", "execution_seconds": 24.275, "llm_calls": 2, "tool_calls": 2, "answer": "42", "parallel_tool_wave": true}
   ],
-  "unit_tests": {
-    "passed": 17,
+  "tests": {
+    "passed": 38,
     "failed": 0,
-    "large_structured_tool_value_characters": 200000
-  }
+    "subtests_passed": 88,
+    "large_structured_tool_value_characters": 200000,
+    "content_slicing": false
+  },
+  "claim_boundary": "Infrastructure and scripted protocol smokes establish runnable bridges and isolation. They do not establish model task success, native benchmark score, or baseline superiority."
 }

@@ -10,6 +10,7 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=source . /opt/swebench
 RUN pip install --no-cache-dir --retries 12 --timeout 60 /opt/swebench
 COPY drivers/swebench_smoke.py /opt/platform/swebench_smoke.py
+COPY drivers/swebench_bridge.py /opt/platform/swebench_bridge.py
 ARG SOURCE_REV
 LABEL org.orch.benchmark.source-revision="${SOURCE_REV}"
 WORKDIR /job

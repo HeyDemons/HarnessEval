@@ -9,7 +9,7 @@ from pathlib import Path
 
 from benchmark_platform.catalog import Catalog
 from benchmark_platform.cli import build_parser
-from benchmark_platform.engine import Platform, docker_socket_source
+from benchmark_platform.engine import Platform, docker_socket_source, terminal_agent_command
 from benchmark_platform.scorers.gaia import question_score
 from benchmark_platform.store import CaseStore
 from benchmark_platform.util import atomic_json, slug
@@ -96,6 +96,16 @@ class PlatformTests(unittest.TestCase):
         }
         self.assertEqual(docker_socket_source(context), "/var/run/docker.sock")
 
+    def test_terminal_oracle_keeps_tests_out_of_agent_command(self) -> None:
+        command = terminal_agent_command(None, smoke=True)
+        self.assertEqual(command, "bash /solution/solve.sh")
+        self.assertNotIn("/tests", command or "")
+        self.assertEqual(
+            terminal_agent_command(["python", "agent.py", "--mode", "test"], smoke=False),
+            "python agent.py --mode test",
+        )
+        self.assertIsNone(terminal_agent_command(None, smoke=False))
+
     def test_harness_profiles_have_unique_ids(self) -> None:
         from benchmark_platform.harnesses import PROFILES
 
@@ -103,6 +113,21 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
         react = next(profile for profile in PROFILES if profile.id == "react")
         self.assertEqual(len(react.revision or ""), 40)
+        for profile in PROFILES:
+            if profile.revision is not None:
+                self.assertEqual(len(profile.revision), 40, profile.id)
+
+    def test_compatibility_matrix_is_complete_and_does_not_overclaim_scores(self) -> None:
+        from benchmark_platform.compatibility import compatibility_rows
+        from benchmark_platform.harnesses import PROFILES
+
+        catalog = Catalog(ROOT / "catalog" / "benchmarks.json", ROOT, ROOT.parent)
+        rows = compatibility_rows(PROFILES, catalog)
+        self.assertEqual(len(rows), len(PROFILES) * len(catalog.ids()))
+        self.assertFalse(any(row["publishable_score"] for row in rows))
+        configured = [row for row in rows if row["benchmark"] == "swe-bench-verified"]
+        self.assertTrue(configured)
+        self.assertTrue(all(row["runnable"] for row in configured))
 
     def test_adapter_fingerprint_is_content_based(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")

@@ -209,6 +209,7 @@ async def run_cmws(ctx: RunContext) -> str:
                 "role": "user",
                 "content": (
                     "Synthesize the independent reports. Return JSON only, either one final tool action or a final answer.\n"
+                    f"Available tools: {ctx.environment.schema}\n"
                     f"Task: {ctx.prompt}\nReports: {json.dumps(reports, ensure_ascii=False)}\n"
                     'Schema: {"tool":"tool_name","arguments":{}} or {"final":"answer"}'
                 ),
@@ -238,4 +239,25 @@ async def run_profile(ctx: RunContext) -> str:
         return await run_plan_execute(ctx)
     if ctx.profile == "cmws":
         return await run_cmws(ctx)
+    from .paper_methods import (
+        run_aflow,
+        run_dylan,
+        run_llmcompiler,
+        run_magentic_one,
+        run_multi_persona,
+        run_rewoo,
+        run_sa,
+    )
+
+    extended = {
+        "aflow": run_aflow,
+        "dylan": run_dylan,
+        "magentic-one": run_magentic_one,
+        "multi-persona": run_multi_persona,
+        "llmcompiler": run_llmcompiler,
+        "rewoo": run_rewoo,
+        "sa": run_sa,
+    }
+    if runner := extended.get(ctx.profile):
+        return await runner(ctx)
     raise ValueError(f"Unknown harness profile: {ctx.profile}")

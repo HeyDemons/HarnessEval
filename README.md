@@ -11,7 +11,8 @@ envelopes while leaving task semantics, tools, and scoring with each benchmark.
 - A generic `run` path for any harness command already available in a task image.
 - A portable harness request contract for user-supplied tools and
   OpenAI-compatible APIs.
-- Four bundled theory baselines: Actor-only, ReAct, Plan-and-Execute, and CMWS.
+- Eleven source-pinned theory profiles, including AFlow, DyLAN,
+  Magentic-One, Multi-Persona, LLMCompiler, ReWOO, and Speculative Actions.
 - Atomic per-case results, append-only attempts, process locks, resume, and
   complete terminal/JSONL logs.
 - No prompt, tool-result, log, or artifact slicing by character count.
@@ -31,6 +32,7 @@ python3 -m venv .venv
 python -m pip install -e .
 harnesseval list
 harnesseval harnesses
+harnesseval matrix
 ```
 
 The host package has no runtime dependency outside the standard library.
@@ -91,6 +93,48 @@ The same command accepts a benchmark task image through `--image`, read-only or
 writable task mounts through `--mount`, and a request-defined official scorer
 through `finalizer.command`. See [the harness contract](docs/HARNESS_CONTRACT.md).
 
+For benchmark-owned tools, use the isolated bridge instead of copying tool
+implementations into a baseline:
+
+```bash
+harnesseval bridge-run sa gaia \
+  --case CASE_ID \
+  --run-dir runs/sa-gaia \
+  --pass-env HARNESS_API_BASE \
+  --pass-env HARNESS_API_KEY \
+  --pass-env HARNESS_MODEL
+```
+
+The same command preserves stateful and task-container lifecycles:
+
+```bash
+# VitaBench case IDs are the native task IDs.
+harnesseval bridge-run magentic-one vitabench --case H0717001 \
+  --run-dir runs/magentic-vita --pass-env HARNESS_API_BASE \
+  --pass-env HARNESS_API_KEY --pass-env HARNESS_MODEL
+
+# tau task IDs are namespaced because IDs repeat across official task sets.
+harnesseval bridge-run react tau2 --case mock:create_task_1 \
+  --run-dir runs/react-tau --pass-env HARNESS_API_BASE \
+  --pass-env HARNESS_API_KEY --pass-env HARNESS_MODEL
+```
+
+GAIA and GDPval inject their benchmark workspace tools plus structured DDGS
+`web_search`. TRAJECT-Bench and BFCL inject each case's declared schemas. Vita
+and tau keep the hidden user and mutable official environment outside the
+baseline. Terminal-Bench and SWE-bench give the baseline only the task
+workspace; verifier tests and reference solutions never enter its container.
+
+AFlow additionally requires a frozen operator list produced on a disjoint
+optimization split, for example `--policy '{"aflow_workflow":["Custom"]}'`.
+DyLAN and Multi-Persona intentionally receive no external tools because their
+published protocols do not define a tool loop.
+
+`harnesseval matrix` reports every baseline x benchmark cell. `runnable` means
+the lifecycle bridge exists; it does not mean the case succeeded or that a
+publishable native score is available. See
+[the baseline matrix](docs/BASELINE_MATRIX.md).
+
 ## Registered Benchmarks
 
 | Benchmark | Runtime | Scoring claim |
@@ -100,7 +144,7 @@ through `finalizer.command`. See [the harness contract](docs/HARNESS_CONTRACT.md
 | TRAJECT-Bench | Pinned API-only source image | Native trajectory metrics |
 | VitaBench | Pinned official package/data image | Native assertions and rubric evaluator |
 | tau2/tau3 | Pinned source and `uv.lock` | Native state/action reward |
-| BFCL V4 | Pinned source/data image | Official agentic subset only |
+| BFCL V4 | Pinned source/data and full dependency image | Native scorer required for publication |
 | Terminal-Bench 2 | Official task image and verifier | Native task reward |
 | SWE-bench Verified | Official controller over task images | Native repository tests |
 

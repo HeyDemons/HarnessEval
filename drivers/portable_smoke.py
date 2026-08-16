@@ -41,7 +41,7 @@ def gaia(root: Path) -> dict[str, Any]:
     import sys
 
     sys.path.insert(0, "/opt/platform")
-    from benchmark_platform.scorers.gaia import question_score
+    from gaia_scorer import question_score
 
     levels = frame[level_column].value_counts().to_dict() if level_column else {}
     return {

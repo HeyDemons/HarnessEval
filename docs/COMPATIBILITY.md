@@ -9,14 +9,14 @@ the authority whenever they can run faithfully in Docker.
 
 | Benchmark | Pinned authority | Local boundary | Score claim | Current smoke evidence |
 | --- | --- | --- | --- | --- |
-| GAIA | `gaia-benchmark/GAIA` snapshot and public leaderboard scorer | Read-only data mount in workspace-core | Official answer normalization | `runs/harnesseval_release_core_20260815` |
-| GDPval | Local official task/rubric/gold snapshot and OpenAI grading contract | Read-only data plus office-capable workspace | Proxy only; expert pairwise remains standard | `runs/harnesseval_release_core_20260815` |
-| TRAJECT-Bench | `2723fd890778dbfb6af9e3aa8ee1c22272979468` | Pinned source/data image | Official metric wiring; smoke is not a model score | `runs/harnesseval_release_core_20260815` |
-| VitaBench | `742e240855bf8686a0842360749d5ea970ea3987` | Pinned native package/data image | Official native evaluator | `runs/harnesseval_release_core_20260815` |
-| tau2/tau3 | `79975ac5741e23fbb1d2ac44262d62398a6d87bd` | Pinned `uv.lock` package image | Official native reward | `runs/harnesseval_release_core_20260815` |
-| BFCL V4 | `6ea57973c7a6097fd7c5915698c54c17c5b1b6c8` | Pinned source/data image | Official agentic scorer subset only | `runs/harnesseval_release_core_20260815` |
-| Terminal-Bench 2 | `2fd12b88aafdd04a52c298e3940bcb189f9766d6`, `regex-log` task image | Official task image with solution/verifier mounts | Official task reward | `runs/harnesseval_release_terminal_20260815` |
-| SWE-bench Verified | Harness v4.1.0 `726c5461e2ef52d83cf1ea2107870a8bb3328d57`; dataset `c104f840cc67f8b6eec6f759ebc8b2693d585d4a` | Official controller/scorer over host Docker socket; official task images on x86_64 and a digest-pinned Epoch task image for the ARM64 smoke | Native repository tests; ARM64 image provenance is disclosed | `runs/harnesseval_release_swe_20260815` |
+| GAIA | `gaia-benchmark/GAIA` snapshot and public leaderboard scorer | Read-only data mount in workspace-core | Official answer normalization | `evidence/smoke-summary.json` |
+| GDPval | Local official task/rubric/gold snapshot and OpenAI grading contract | Read-only data plus office-capable workspace | Proxy only; expert pairwise remains standard | `evidence/smoke-summary.json` |
+| TRAJECT-Bench | `2723fd890778dbfb6af9e3aa8ee1c22272979468` | Pinned source/data image | Official metric wiring; smoke is not a model score | `evidence/smoke-summary.json` |
+| VitaBench | `742e240855bf8686a0842360749d5ea970ea3987` | Pinned native package/data image | Official native evaluator | `evidence/smoke-summary.json` |
+| tau2/tau3 | `79975ac5741e23fbb1d2ac44262d62398a6d87bd` | Pinned `uv.lock` package image | Official native reward | `evidence/smoke-summary.json` |
+| BFCL V4 | `6ea57973c7a6097fd7c5915698c54c17c5b1b6c8` | Pinned source/data image with official package dependencies | Native scorer required; a bridge trajectory alone is not a score | `evidence/smoke-summary.json` |
+| Terminal-Bench 2 | `2fd12b88aafdd04a52c298e3940bcb189f9766d6`, `regex-log` task image | Agent and verifier run in separate containers; tests are verifier-only and solution is oracle-smoke-only | Official task reward | `evidence/smoke-summary.json` |
+| SWE-bench Verified | Harness v4.1.0 `726c5461e2ef52d83cf1ea2107870a8bb3328d57`; dataset `c104f840cc67f8b6eec6f759ebc8b2693d585d4a` | Official controller/scorer over host Docker socket; official task images on x86_64 and a digest-pinned Epoch task image for the ARM64 smoke | Native repository tests; ARM64 image provenance is disclosed | `evidence/smoke-summary.json` |
 
 ## Verified Smokes
 
@@ -24,32 +24,44 @@ These are infrastructure/oracle results, not agent leaderboard measurements.
 
 | Benchmark | Status | Execution seconds | Native check |
 | --- | ---: | ---: | --- |
-| GAIA | completed | 1.71 | public scorer oracle `1.0` |
-| GDPval | completed | 1.84 | dataset/rubric integrity `1.0` |
-| TRAJECT-Bench | completed | 0.91 | 5,910 records, 1,228 tools |
-| VitaBench | completed | 2.14 | 400 native tasks, package integrity `1.0` |
-| tau2/tau3 | completed | 16.59 | CLI, data, six domains, registry integrity `1.0` |
-| BFCL V4 subset | completed | 0.28 | 70 data JSON files, agentic scorer oracle `1.0` |
-| Terminal-Bench 2 | completed | 133.92 | official `regex-log` verifier reward `1.0` |
-| SWE-bench Verified | completed | 45.22 | official report `resolved=1`, `error=0` |
+| GAIA | completed | 0.34 | 21 workspace tools; DDGS structured stdin |
+| GDPval | completed | 0.43 | 22 workspace/Office tools; DDGS structured stdin |
+| TRAJECT-Bench | completed | 1.34 | 5,910 task records; 1,228 tool records; no invalid schemas |
+| VitaBench | completed | 2.31 | 400 native tasks; 82 tools; no invalid schemas |
+| tau2/tau3 | completed | 10.53 | 2,804 tasks; 77 tools across six domains; no invalid schemas |
+| BFCL V4 | completed | 0.50 | 9,970 records; 9,314 function schemas; full evaluator dependencies |
+| Terminal-Bench 2 | completed | 143.79 | isolated official `regex-log` verifier reward `1.0` |
+| SWE-bench Verified | completed | 67.52 | official report `resolved=1`, `error=0` |
 
-The ignored local `runs/` paths above are development evidence. A sanitized,
-portable summary is committed under `evidence/`; no workstation path or task
-content is published.
+The measurements above are from one clean, current-image run on 2026-08-16.
+The local `runs/` directory is ignored. A sanitized portable summary is
+committed under `evidence/`; no workstation path or task content is published.
 
 ## Harness Contract Smoke
 
-All four built-in profiles completed a real OpenAI-compatible API, harness,
+The original four built-in profiles completed a real OpenAI-compatible API, harness,
 tool, and final-answer loop in Docker on 2026-08-15. Actor-only used 20.25
 seconds, ReAct 21.69, Plan-and-Execute 12.28, and CMWS 24.28; each returned
 `42`. CMWS issued two independent tool requests within 0.001 seconds and
 received both results within 0.002 seconds, exercising a real concurrent wave.
 
-The theory-profile unit suite also exercises nested structured observations,
-credential isolation, and a 200,000-character tool value with no content
-slicing. A Plan-and-Execute retry retained its failed first attempt, completed
-as attempt two after a structured-result protocol correction, and an identical
-third invocation resumed without creating another attempt.
+The expanded theory-profile suite covers all eleven registered profiles: 44
+single-turn, 22 native-conversation, and 22 task-container protocol subtests.
+All 88 baseline x benchmark lifecycle cells pass their bridge contract. Native
+conversation and task-container rows use the same profile implementations but
+different benchmark-owned lifecycle brokers; they are not flattened into
+single-turn text tasks. These scripted protocol tests establish routing and
+tool-contract correctness, not model task success. The suite also exercises
+nested structured observations, credential isolation, and a 200,000-character
+tool value with no content slicing. A
+Plan-and-Execute retry retained its failed first attempt, completed as attempt
+two after a structured-result protocol correction, and an identical third
+invocation resumed without creating another attempt.
+
+A tau2 integration run traversed the official hidden-user tool call, assistant
+tool call, environment mutation, stop condition, and native evaluator in one
+episode, returning reward `1.0`. It used a deterministic local API fixture to
+validate transport and lifecycle only; it is not reported as a model score.
 
 ## Result Contract
 
@@ -84,8 +96,13 @@ set `oracle_smoke: true` and must not be entered into model leaderboards.
 
 - GDPval automated judges are diagnostic proxies, not substitutes for the
   published expert pairwise process.
-- BFCL currently excludes AST/executable and vector-memory profiles. The image
-  must not be described as full BFCL V4 support.
+- BFCL image dependency completeness and native score completeness are separate.
+  A recorded function-call trajectory must pass the official category scorer
+  before it is reported as a BFCL result.
+- The tau2 `banking_knowledge` schema probe uses the official all-tools class
+  without constructing its eager dense index. Real episodes still use the
+  official environment and require an embedding provider if no embeddings
+  cache is present.
 - SWE-bench needs direct Docker socket access because its official controller
   creates task containers. Only this catalog entry may request root execution.
   Linux x86_64 follows the official image path unchanged. The ARM64 smoke path

@@ -12,7 +12,7 @@ from typing import Any
 
 from .catalog import Benchmark, Catalog
 from .store import CaseStore, TERMINAL_STATUSES
-from .util import atomic_json, command_exists, stream_process, utc_now
+from .util import atomic_json, command_exists, slug, stream_process, utc_now
 
 
 def docker_socket_source(context: dict[str, Any]) -> str:
@@ -26,6 +26,14 @@ def docker_socket_source(context: dict[str, Any]) -> str:
     if not host.startswith(prefix):
         raise RuntimeError(f"Docker context does not expose a Unix socket: {host}")
     return host[len(prefix) :]
+
+
+def terminal_agent_command(command_override: list[str] | None, smoke: bool) -> str | None:
+    if command_override:
+        return shlex.join(command_override)
+    if smoke:
+        return "bash /solution/solve.sh"
+    return None
 
 
 class Platform:
@@ -129,6 +137,8 @@ class Platform:
             command.extend(["--build-arg", f"HTTPS_PROXY={build_proxy}"])
         if pip_index := os.environ.get("BENCHMARK_PIP_INDEX_URL"):
             command.extend(["--build-arg", f"PIP_INDEX_URL={pip_index}"])
+        if apt_mirror := os.environ.get("BENCHMARK_APT_MIRROR"):
+            command.extend(["--build-arg", f"APT_MIRROR={apt_mirror}"])
         for name, path in sorted(adapter.get("build_contexts", {}).items()):
             command.extend(["--build-context", f"{name}={path}"])
         command.extend(["-f", adapter["dockerfile"], "-t", adapter["image"]])
@@ -525,6 +535,363 @@ class Platform:
             extra_mounts=extra_mounts,
         )
 
+    def run_bridge_harness(
+        self,
+        *,
+        benchmark: Benchmark,
+        profile: dict[str, Any],
+        case_id: str,
+        run_dir: Path,
+        network: str,
+        policy: dict[str, Any],
+        resume: bool,
+        retry_failed: bool,
+        build_missing: bool,
+        pass_env: list[str],
+    ) -> dict[str, Any]:
+        supported = {
+            "gaia",
+            "gdpval",
+            "trajectory-bench",
+            "bfcl",
+            "vitabench",
+            "tau2",
+            "terminal-bench-2",
+            "swe-bench-verified",
+        }
+        if benchmark.id not in supported:
+            raise ValueError(
+                f"{benchmark.id} requires a conversation/task-container bridge; "
+                "no built-in baseline lifecycle adapter is available"
+            )
+        if benchmark.id == "terminal-bench-2":
+            return self._run_terminal_bridge_harness(
+                benchmark=benchmark,
+                profile=profile,
+                case_id=case_id,
+                run_dir=run_dir,
+                policy=policy,
+                resume=resume,
+                retry_failed=retry_failed,
+                build_missing=build_missing,
+                pass_env=pass_env,
+            )
+        if benchmark.id == "swe-bench-verified":
+            return self._run_swe_bridge_harness(
+                benchmark=benchmark,
+                profile=profile,
+                case_id=case_id,
+                run_dir=run_dir,
+                policy=policy,
+                resume=resume,
+                retry_failed=retry_failed,
+                build_missing=build_missing,
+                pass_env=pass_env,
+            )
+        if benchmark.adapter["kind"] != "docker-image":
+            raise ValueError(f"Bridge harness requires a Docker image benchmark: {benchmark.id}")
+        if not self.image_is_current(benchmark.adapter):
+            if not build_missing:
+                raise RuntimeError("Benchmark image is missing or stale")
+            built = self.build(benchmark)
+            if built["status"] != "completed":
+                raise RuntimeError(f"Benchmark image build failed: {built}")
+        native_episode = benchmark.id in {"vitabench", "tau2"}
+        prepared = None if native_episode else self._prepare_bridge_case(benchmark, case_id, run_dir)
+        harness_env = {
+            "HARNESS_API_BASE",
+            "HARNESS_API_KEY",
+            "HARNESS_MODEL",
+            "HARNESS_TEMPERATURE",
+            "HARNESS_API_TIMEOUT_S",
+            "HARNESS_API_RETRIES",
+            "HARNESS_MAX_OUTPUT_TOKENS",
+        }
+        allowed = harness_env | set(benchmark.raw.get("env_allowlist", []))
+        unknown = sorted(set(pass_env) - allowed)
+        if unknown:
+            raise ValueError(f"Unsupported bridge environment variable(s): {', '.join(unknown)}")
+        adapter = dict(benchmark.adapter)
+        adapter.update({"working_dir": "/opt/harnesseval", "network": network})
+        if not native_episode:
+            adapter.update({"read_only": True, "run_as_root": True})
+        adapter.pop("docker_socket", None)
+        api_base = os.environ.get("HARNESS_API_BASE", "")
+        request_identity = {
+            "benchmark": benchmark.id,
+            "case": case_id,
+            "profile": profile["id"],
+            "profile_revision": profile.get("revision"),
+            "policy": policy,
+            "image": adapter["image"],
+            "model": os.environ.get("HARNESS_MODEL") or None,
+            "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            "prepared_case_sha256": (
+                hashlib.sha256((prepared / "input" / "case.json").read_bytes()).hexdigest()
+                if prepared is not None
+                else None
+            ),
+        }
+        if native_episode:
+            episode_module = (
+                "benchmark_platform.bridges.vita_episode"
+                if benchmark.id == "vitabench"
+                else "benchmark_platform.bridges.tau_episode"
+            )
+            inner_command = [
+                "python",
+                "-m",
+                episode_module,
+                "--profile",
+                profile["id"],
+                "--case",
+                case_id,
+                "--policy",
+                json.dumps(policy, ensure_ascii=False, sort_keys=True),
+            ]
+            mounts = [{"host": str(self.root), "container": "/opt/harnesseval", "mode": "ro"}]
+            comparability = "native_episode"
+            scoring_note = (
+                "The official hidden-user and environment lifecycle is preserved. Native scoring behavior is "
+                "recorded in harness_result.native_score_status."
+            )
+        else:
+            inner_command = [
+                "python",
+                "-m",
+                "benchmark_platform.bridges.runner",
+                "--benchmark",
+                benchmark.id,
+                "--profile",
+                profile["id"],
+                "--case",
+                case_id,
+                "--policy",
+                json.dumps(policy, ensure_ascii=False, sort_keys=True),
+            ]
+            mounts = [
+                {"host": str(self.root), "container": "/opt/harnesseval", "mode": "ro"},
+                {"host": str(prepared / "input"), "container": "/bridge", "mode": "ro"},
+            ]
+            comparability = "unscored_bridge_trajectory"
+            scoring_note = "The bridge result must be finalized by the benchmark-native scorer before publication."
+        synthetic = Benchmark(
+            id=f"{benchmark.id}-{profile['id']}",
+            name=f"{benchmark.name} / {profile['name']}",
+            raw={
+                "id": f"{benchmark.id}-{profile['id']}",
+                "name": f"{benchmark.name} / {profile['name']}",
+                "source": benchmark.source,
+                "adapter": adapter,
+                "run": {
+                    "network": network,
+                    "command": inner_command,
+                },
+                "mounts": mounts,
+                "scoring": {
+                    "authority": benchmark.raw["scoring"]["authority"],
+                    "comparability": comparability,
+                    "note": scoring_note,
+                },
+                "env_allowlist": sorted(allowed),
+                "resume_identity": request_identity,
+            },
+        )
+        return self.run(
+            synthetic,
+            case_id=case_id,
+            run_dir=run_dir,
+            resume=resume,
+            retry_failed=retry_failed,
+            build_missing=build_missing,
+            pass_env=pass_env,
+        )
+
+    def _run_terminal_bridge_harness(
+        self,
+        *,
+        benchmark: Benchmark,
+        profile: dict[str, Any],
+        case_id: str,
+        run_dir: Path,
+        policy: dict[str, Any],
+        resume: bool,
+        retry_failed: bool,
+        build_missing: bool,
+        pass_env: list[str],
+    ) -> dict[str, Any]:
+        harness_env = {
+            "HARNESS_API_BASE",
+            "HARNESS_API_KEY",
+            "HARNESS_MODEL",
+            "HARNESS_TEMPERATURE",
+            "HARNESS_API_TIMEOUT_S",
+            "HARNESS_API_RETRIES",
+            "HARNESS_MAX_OUTPUT_TOKENS",
+        }
+        unknown = sorted(set(pass_env) - harness_env)
+        if unknown:
+            raise ValueError(f"Unsupported bridge environment variable(s): {', '.join(unknown)}")
+        task_dir, metadata = self._terminal_metadata(benchmark)
+        image = metadata.get("environment", {}).get("docker_image") or benchmark.adapter["image"]
+        if not self.image_exists(image):
+            if not build_missing:
+                raise RuntimeError("Terminal task image is unavailable")
+            built = self.build(benchmark)
+            if built["status"] != "completed":
+                raise RuntimeError(f"Terminal task image build failed: {built}")
+        api_base = os.environ.get("HARNESS_API_BASE", "")
+        resume_identity = {
+            "benchmark": benchmark.id,
+            "case": case_id,
+            "profile": profile["id"],
+            "profile_revision": profile.get("revision"),
+            "policy": policy,
+            "image": image,
+            "model": os.environ.get("HARNESS_MODEL") or None,
+            "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+        }
+        synthetic = Benchmark(
+            id=f"{benchmark.id}-{profile['id']}",
+            name=f"{benchmark.name} / {profile['name']}",
+            raw={
+                "id": f"{benchmark.id}-{profile['id']}",
+                "name": f"{benchmark.name} / {profile['name']}",
+                "source": benchmark.source,
+                "adapter": {
+                    "kind": "terminal-profile",
+                    "image": image,
+                    "platform": benchmark.adapter.get("platform"),
+                    "task_dir": str(task_dir),
+                    "profile": profile,
+                    "policy": policy,
+                    "allow_internet": bool(metadata["environment"].get("allow_internet")),
+                },
+                "scoring": benchmark.raw["scoring"],
+                "resume_identity": resume_identity,
+            },
+        )
+        return self.run(
+            synthetic,
+            case_id=case_id,
+            run_dir=run_dir,
+            resume=resume,
+            retry_failed=retry_failed,
+            build_missing=False,
+            pass_env=pass_env,
+        )
+
+    def _run_swe_bridge_harness(
+        self,
+        *,
+        benchmark: Benchmark,
+        profile: dict[str, Any],
+        case_id: str,
+        run_dir: Path,
+        policy: dict[str, Any],
+        resume: bool,
+        retry_failed: bool,
+        build_missing: bool,
+        pass_env: list[str],
+    ) -> dict[str, Any]:
+        harness_env = {
+            "HARNESS_API_BASE",
+            "HARNESS_API_KEY",
+            "HARNESS_MODEL",
+            "HARNESS_TEMPERATURE",
+            "HARNESS_API_TIMEOUT_S",
+            "HARNESS_API_RETRIES",
+            "HARNESS_MAX_OUTPUT_TOKENS",
+        }
+        allowed = harness_env | {"HF_TOKEN"}
+        unknown = sorted(set(pass_env) - allowed)
+        if unknown:
+            raise ValueError(f"Unsupported bridge environment variable(s): {', '.join(unknown)}")
+        if not self.image_is_current(benchmark.adapter):
+            if not build_missing:
+                raise RuntimeError("SWE-bench controller image is missing or stale")
+            built = self.build(benchmark)
+            if built["status"] != "completed":
+                raise RuntimeError(f"SWE-bench controller image build failed: {built}")
+        api_base = os.environ.get("HARNESS_API_BASE", "")
+        resume_identity = {
+            "benchmark": benchmark.id,
+            "case": case_id,
+            "profile": profile["id"],
+            "profile_revision": profile.get("revision"),
+            "policy": policy,
+            "controller_image": benchmark.adapter["image"],
+            "model": os.environ.get("HARNESS_MODEL") or None,
+            "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+        }
+        synthetic = Benchmark(
+            id=f"{benchmark.id}-{profile['id']}",
+            name=f"{benchmark.name} / {profile['name']}",
+            raw={
+                "id": f"{benchmark.id}-{profile['id']}",
+                "name": f"{benchmark.name} / {profile['name']}",
+                "source": benchmark.source,
+                "adapter": {
+                    "kind": "swe-profile",
+                    "image": benchmark.adapter["image"],
+                    "profile": profile,
+                    "policy": policy,
+                    "pass_env": sorted(name for name in pass_env if name == "HF_TOKEN" and name in os.environ),
+                },
+                "scoring": benchmark.raw["scoring"],
+                "resume_identity": resume_identity,
+            },
+        )
+        return self.run(
+            synthetic,
+            case_id=case_id,
+            run_dir=run_dir,
+            resume=resume,
+            retry_failed=retry_failed,
+            build_missing=False,
+            pass_env=pass_env,
+        )
+
+    def _prepare_bridge_case(self, benchmark: Benchmark, case_id: str, run_dir: Path) -> Path:
+        prepared = run_dir.resolve() / ".bridge_inputs" / slug(benchmark.id) / slug(case_id)
+        if (prepared / "input" / "case.json").is_file() and (prepared / "authority" / "gold.json").is_file():
+            return prepared
+        staging = prepared.with_name(f".{prepared.name}.staging-{os.getpid()}")
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
+        adapter = benchmark.adapter
+        command = self._docker("run", "--rm", "--init", "--network", "none")
+        if adapter.get("platform"):
+            command.extend(["--platform", adapter["platform"]])
+        command.extend(["--read-only", "--tmpfs", "/tmp:rw,exec,nosuid,size=1g"])
+        if not adapter.get("run_as_root", False):
+            command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        command.extend(["-e", "HOME=/tmp", "-w", "/opt/harnesseval"])
+        for host, container, mode in self._validated_mounts(benchmark.raw.get("mounts", [])):
+            command.extend(["-v", f"{host}:{container}:{mode}"])
+        command.extend(["-v", f"{self.root}:/opt/harnesseval:ro", "-v", f"{staging}:/prepared:rw"])
+        command.extend(
+            [
+                adapter["image"],
+                "python",
+                "-m",
+                "benchmark_platform.bridges.prepare",
+                benchmark.id,
+                "--case",
+                case_id,
+            ]
+        )
+        completed = subprocess.run(command, text=True, capture_output=True, check=False)
+        if completed.returncode != 0:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise RuntimeError(f"Bridge case preparation failed: {completed.stderr or completed.stdout}")
+        prepared.parent.mkdir(parents=True, exist_ok=True)
+        if prepared.exists():
+            shutil.rmtree(prepared)
+        staging.replace(prepared)
+        return prepared
+
     def _run_locked(
         self,
         store: CaseStore,
@@ -550,6 +917,10 @@ class Platform:
                 return {**existing, "resume_skipped": True}
         if benchmark.adapter["kind"] == "external-vm":
             return self._record_blocked(store, benchmark, benchmark.adapter["blocker"])
+        if benchmark.adapter["kind"] == "swe-profile":
+            return self._run_swe_profile(store, benchmark)
+        if benchmark.adapter["kind"] == "terminal-profile":
+            return self._run_terminal_profile(store, benchmark)
         if benchmark.adapter["kind"] == "terminal-task":
             return self._run_terminal_task(store, benchmark, smoke=smoke, command_override=command_override)
         if benchmark.adapter["kind"] != "docker-image":
@@ -716,6 +1087,358 @@ class Platform:
         contexts = json.loads(output)
         return docker_socket_source(contexts[0])
 
+    def _run_swe_profile(self, store: CaseStore, benchmark: Benchmark) -> dict[str, Any]:
+        from .bridges.terminal_episode import run as run_task_profile
+
+        adapter = benchmark.adapter
+        attempt_number, attempt = store.next_attempt()
+        request = {
+            "schema_version": 1,
+            "benchmark": benchmark.id,
+            "case_id": store.case_id,
+            "attempt": attempt_number,
+            "started_at": utc_now(),
+            "adapter": "swe-profile",
+            "controller_image": adapter["image"],
+            "source": benchmark.source,
+            "environment_names": [],
+            "profile": adapter["profile"]["id"],
+            "policy": adapter["policy"],
+            "resume_identity": benchmark.raw["resume_identity"],
+        }
+        store.start(attempt, request)
+        socket_path = self._docker_socket()
+
+        def controller_command(action: str) -> list[str]:
+            command = self._docker("run", "--rm", "--init", "--network", "bridge")
+            command.extend(["-v", f"{socket_path}:/var/run/docker.sock:rw"])
+            command.extend(["-e", "DOCKER_HOST=unix:///var/run/docker.sock"])
+            for name in adapter.get("pass_env", []):
+                command.extend(["-e", name])
+            command.extend(
+                [
+                    "-v",
+                    f"{attempt.resolve()}:/job:rw",
+                    adapter["image"],
+                    "python",
+                    "/opt/platform/swebench_bridge.py",
+                    action,
+                    "--case",
+                    store.case_id,
+                ]
+            )
+            return command
+
+        started = time.perf_counter()
+        task_container: str | None = None
+        harness_result: dict[str, Any] = {"status": "failed", "error": "Harness did not start"}
+        evaluator_returncode = 1
+        with (attempt / "terminal.log").open("a", encoding="utf-8") as terminal:
+            try:
+                prepared = subprocess.run(
+                    controller_command("prepare"),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                terminal.write(prepared.stdout)
+                terminal.write(prepared.stderr)
+                terminal.flush()
+                public_path = attempt / "public_case.json"
+                if prepared.returncode != 0 or not public_path.is_file():
+                    raise RuntimeError("SWE-bench public case preparation failed")
+                public_case = json.loads(public_path.read_text(encoding="utf-8"))
+                if public_case.get("hidden_fields_exposed_to_agent") != []:
+                    raise RuntimeError("SWE-bench preparation attempted to expose hidden authority fields")
+                task_container = f"bench-{benchmark.id}-{os.getpid()}-{attempt_number}"
+                create = self._docker("create", "--init", "--name", task_container)
+                create.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.task-container-agent=1"])
+                create.extend(["--platform", public_case["task_image"]["platform"]])
+                create.extend(
+                    [
+                        "--network",
+                        "bridge",
+                        "-w",
+                        public_case["workspace_root"],
+                        public_case["task_image"]["name"],
+                        "sh",
+                        "-lc",
+                        "while :; do sleep 3600; done",
+                    ]
+                )
+                created = subprocess.run(create, text=True, capture_output=True, check=False)
+                terminal.write(created.stdout)
+                terminal.write(created.stderr)
+                terminal.flush()
+                if created.returncode != 0:
+                    raise RuntimeError("SWE-bench task container creation failed")
+                started_container = subprocess.run(
+                    self._docker("start", task_container),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if started_container.returncode != 0:
+                    terminal.write(started_container.stdout)
+                    terminal.write(started_container.stderr)
+                    terminal.flush()
+                    raise RuntimeError("SWE-bench task container start failed")
+                harness_result = run_task_profile(
+                    profile_id=adapter["profile"]["id"],
+                    prompt=public_case["prompt"],
+                    policy=adapter["policy"],
+                    container=task_container,
+                    trace_path=attempt / "harness_trace.jsonl",
+                    workspace_root=public_case["workspace_root"],
+                )
+                atomic_json(attempt / "harness_result.json", harness_result)
+                staged = subprocess.run(
+                    self._docker("exec", "-w", public_case["workspace_root"], task_container, "git", "add", "-A"),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if staged.returncode != 0:
+                    raise RuntimeError(f"Unable to stage SWE-bench workspace changes: {staged.stderr}")
+                patch_result = subprocess.run(
+                    self._docker(
+                        "exec",
+                        "-w",
+                        public_case["workspace_root"],
+                        task_container,
+                        "git",
+                        "-c",
+                        "core.fileMode=false",
+                        "diff",
+                        "--cached",
+                        "--binary",
+                    ),
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+                if patch_result.returncode != 0:
+                    raise RuntimeError(f"Unable to extract SWE-bench model patch: {patch_result.stderr}")
+                (attempt / "model.patch").write_text(patch_result.stdout, encoding="utf-8")
+                subprocess.run(
+                    self._docker("rm", "-f", task_container),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                task_container = None
+                evaluator_returncode = stream_process(
+                    controller_command("evaluate"),
+                    terminal,
+                    prefix=f"[{benchmark.id}:evaluator] ",
+                )
+            except KeyboardInterrupt:
+                result = {
+                    **request,
+                    "status": "cancelled",
+                    "finished_at": utc_now(),
+                    "execution_seconds": time.perf_counter() - started,
+                }
+                store.finish(attempt, result)
+                raise
+            except Exception as exc:
+                terminal.write(f"{type(exc).__name__}: {exc}\n")
+                terminal.flush()
+            finally:
+                if task_container:
+                    subprocess.run(
+                        self._docker("rm", "-f", task_container),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+        payload_path = attempt / "payload.json"
+        payload = json.loads(payload_path.read_text(encoding="utf-8")) if payload_path.is_file() else {}
+        resolved = payload.get("scores", {}).get("resolved") == 1.0
+        result = {
+            **request,
+            "status": (
+                "completed"
+                if harness_result.get("status") == "completed" and evaluator_returncode == 0 and resolved
+                else "failed"
+            ),
+            "finished_at": utc_now(),
+            "execution_seconds": time.perf_counter() - started,
+            "returncode": 0 if harness_result.get("status") == "completed" else 1,
+            "evaluator_returncode": evaluator_returncode,
+            "payload": payload,
+            "harness": harness_result,
+        }
+        store.finish(attempt, result)
+        return result
+
+    def _run_terminal_profile(self, store: CaseStore, benchmark: Benchmark) -> dict[str, Any]:
+        from .bridges.terminal_episode import run as run_terminal_profile
+
+        adapter = benchmark.adapter
+        task_dir = Path(adapter["task_dir"])
+        with (task_dir / "task.toml").open("rb") as stream:
+            import tomllib
+
+            metadata = tomllib.load(stream)
+        prompt = (task_dir / "instruction.md").read_text(encoding="utf-8")
+        image = adapter["image"]
+        attempt_number, attempt = store.next_attempt()
+        logs = attempt / "verifier"
+        workspace = attempt / "workspace"
+        logs.mkdir()
+        workspace.mkdir()
+        container_name = f"bench-{benchmark.id}-{os.getpid()}-{attempt_number}"
+        create = self._docker("create", "--init", "--name", container_name)
+        create.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.task-container-agent=1"])
+        if platform := adapter.get("platform"):
+            create.extend(["--platform", platform])
+        create.extend(
+            [
+                "--network",
+                "bridge" if adapter.get("allow_internet") else "none",
+                "-w",
+                "/app",
+                image,
+                "sh",
+                "-lc",
+                "while :; do sleep 3600; done",
+            ]
+        )
+        request = {
+            "schema_version": 1,
+            "benchmark": benchmark.id,
+            "case_id": store.case_id,
+            "attempt": attempt_number,
+            "started_at": utc_now(),
+            "adapter": "terminal-profile",
+            "image": image,
+            "source": benchmark.source,
+            "environment_names": [],
+            "task_name": metadata["task"]["name"],
+            "profile": adapter["profile"]["id"],
+            "policy": adapter["policy"],
+            "resume_identity": benchmark.raw["resume_identity"],
+        }
+        store.start(attempt, request)
+        started = time.perf_counter()
+        harness_result: dict[str, Any] = {"status": "failed", "error": "Harness did not start"}
+        verifier_returncode = 1
+        verifier_name: str | None = None
+        with (attempt / "terminal.log").open("a", encoding="utf-8") as terminal:
+            try:
+                created = subprocess.run(create, text=True, capture_output=True, check=False)
+                if created.returncode != 0:
+                    terminal.write(created.stdout)
+                    terminal.write(created.stderr)
+                    terminal.flush()
+                else:
+                    started_container = subprocess.run(
+                        self._docker("start", container_name),
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    if started_container.returncode != 0:
+                        terminal.write(started_container.stdout)
+                        terminal.write(started_container.stderr)
+                        terminal.flush()
+                    else:
+                        harness_result = run_terminal_profile(
+                            profile_id=adapter["profile"]["id"],
+                            prompt=prompt,
+                            policy=adapter["policy"],
+                            container=container_name,
+                            trace_path=attempt / "harness_trace.jsonl",
+                        )
+                        atomic_json(attempt / "harness_result.json", harness_result)
+                    copied = subprocess.run(
+                        self._docker("cp", f"{container_name}:/app/.", str(workspace)),
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    if copied.returncode != 0:
+                        terminal.write(copied.stdout)
+                        terminal.write(copied.stderr)
+                        terminal.flush()
+                    verifier_name = f"{container_name}-verifier"
+                    verify = self._docker("run", "--rm", "--init", "--name", verifier_name)
+                    verify.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.verifier-only=1"])
+                    if platform := adapter.get("platform"):
+                        verify.extend(["--platform", platform])
+                    verify.extend(
+                        [
+                            "--network",
+                            "bridge",
+                            "-v",
+                            f"{workspace.resolve()}:/app:rw",
+                            "-v",
+                            f"{task_dir / 'tests'}:/tests:ro",
+                            "-v",
+                            f"{logs.resolve()}:/logs/verifier:rw",
+                            "-w",
+                            "/app",
+                            image,
+                            "bash",
+                            "/tests/test.sh",
+                        ]
+                    )
+                    verifier_returncode = stream_process(
+                        verify,
+                        terminal,
+                        prefix=f"[{benchmark.id}:verifier] ",
+                    )
+            except KeyboardInterrupt:
+                result = {
+                    **request,
+                    "status": "cancelled",
+                    "finished_at": utc_now(),
+                    "execution_seconds": time.perf_counter() - started,
+                }
+                store.finish(attempt, result)
+                raise
+            finally:
+                if verifier_name:
+                    subprocess.run(
+                        self._docker("rm", "-f", verifier_name),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                subprocess.run(
+                    self._docker("rm", "-f", container_name),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+        reward_path = logs / "reward.txt"
+        reward = reward_path.read_text(encoding="utf-8").strip() if reward_path.is_file() else None
+        payload = {
+            "scores": {"reward": float(reward)} if reward is not None else {},
+            "verifier": str(logs),
+            "oracle_smoke": False,
+        }
+        atomic_json(attempt / "payload.json", payload)
+        result = {
+            **request,
+            "status": (
+                "completed"
+                if harness_result.get("status") == "completed"
+                and verifier_returncode == 0
+                and reward == "1"
+                else "failed"
+            ),
+            "finished_at": utc_now(),
+            "execution_seconds": time.perf_counter() - started,
+            "returncode": 0 if harness_result.get("status") == "completed" else 1,
+            "verifier_returncode": verifier_returncode,
+            "payload": payload,
+            "harness": harness_result,
+        }
+        store.finish(attempt, result)
+        return result
+
     def _run_terminal_task(
         self,
         store: CaseStore,
@@ -731,25 +1454,23 @@ class Platform:
             built = self.build(benchmark)
             if built["status"] != "completed":
                 return self._record_blocked(store, benchmark, "Terminal task image build failed", extra={"build": built})
-        if command_override:
-            shell_command = shlex.join(command_override)
-        elif smoke:
-            shell_command = "bash /solution/solve.sh && bash /tests/test.sh"
-        else:
+        shell_command = terminal_agent_command(command_override, smoke)
+        if shell_command is None:
             return self._record_blocked(store, benchmark, "Terminal task run requires an agent command after --")
         attempt_number, attempt = store.next_attempt()
         logs = attempt / "verifier"
+        workspace = attempt / "workspace"
         logs.mkdir()
+        workspace.mkdir()
         container_name = f"bench-{benchmark.id}-{os.getpid()}-{attempt_number}"
-        command = self._docker("run", "--rm", "--init", "--name", container_name)
-        command.extend(["--label", "orch.benchmark-platform=1", "--label", f"orch.benchmark={benchmark.id}"])
+        create = self._docker("create", "--init", "--name", container_name)
+        create.extend(["--label", "orch.benchmark-platform=1", "--label", f"orch.benchmark={benchmark.id}"])
         if platform := adapter.get("platform"):
-            command.extend(["--platform", platform])
-        command.extend(["--network", "bridge" if metadata["environment"].get("allow_internet") else "none"])
-        command.extend(["-v", f"{task_dir / 'solution'}:/solution:ro"])
-        command.extend(["-v", f"{task_dir / 'tests'}:/tests:ro"])
-        command.extend(["-v", f"{logs.resolve()}:/logs/verifier:rw"])
-        command.extend(["-w", "/app", image, "bash", "-lc", shell_command])
+            create.extend(["--platform", platform])
+        create.extend(["--network", "bridge" if metadata["environment"].get("allow_internet") else "none"])
+        if smoke:
+            create.extend(["-v", f"{task_dir / 'solution'}:/solution:ro"])
+        create.extend(["-w", "/app", image, "bash", "-lc", shell_command])
         request = {
             "schema_version": 1,
             "benchmark": benchmark.id,
@@ -765,10 +1486,67 @@ class Platform:
         }
         store.start(attempt, request)
         started = time.perf_counter()
+        agent_returncode = 1
+        verifier_returncode = 1
+        verifier_name: str | None = None
         with (attempt / "terminal.log").open("a", encoding="utf-8") as terminal:
             try:
-                returncode = stream_process(command, terminal, prefix=f"[{benchmark.id}] ")
+                created = subprocess.run(create, text=True, capture_output=True, check=False)
+                if created.returncode != 0:
+                    terminal.write(created.stdout)
+                    terminal.write(created.stderr)
+                    terminal.flush()
+                else:
+                    agent_returncode = stream_process(
+                        self._docker("start", "-a", container_name),
+                        terminal,
+                        prefix=f"[{benchmark.id}:agent] ",
+                    )
+                    copied = subprocess.run(
+                        self._docker("cp", f"{container_name}:/app/.", str(workspace)),
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    if copied.returncode != 0:
+                        terminal.write(copied.stdout)
+                        terminal.write(copied.stderr)
+                        terminal.flush()
+                    verifier_name = f"{container_name}-verifier"
+                    verify = self._docker("run", "--rm", "--init", "--name", verifier_name)
+                    verify.extend(["--label", "orch.benchmark-platform=1", "--label", f"orch.benchmark={benchmark.id}"])
+                    if platform := adapter.get("platform"):
+                        verify.extend(["--platform", platform])
+                    verify.extend(
+                        [
+                            "--network",
+                            "bridge",
+                            "-v",
+                            f"{workspace.resolve()}:/app:rw",
+                            "-v",
+                            f"{task_dir / 'tests'}:/tests:ro",
+                            "-v",
+                            f"{logs.resolve()}:/logs/verifier:rw",
+                            "-w",
+                            "/app",
+                            image,
+                            "bash",
+                            "/tests/test.sh",
+                        ]
+                    )
+                    verifier_returncode = stream_process(
+                        verify,
+                        terminal,
+                        prefix=f"[{benchmark.id}:verifier] ",
+                    )
             except KeyboardInterrupt:
+                if verifier_name:
+                    subprocess.run(
+                        self._docker("rm", "-f", verifier_name),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
                 subprocess.run(
                     self._docker("rm", "-f", container_name),
                     stdout=subprocess.DEVNULL,
@@ -783,6 +1561,20 @@ class Platform:
                 }
                 store.finish(attempt, result)
                 raise
+            finally:
+                if verifier_name:
+                    subprocess.run(
+                        self._docker("rm", "-f", verifier_name),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                subprocess.run(
+                    self._docker("rm", "-f", container_name),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
         reward_path = logs / "reward.txt"
         reward = reward_path.read_text(encoding="utf-8").strip() if reward_path.is_file() else None
         payload = {
@@ -793,10 +1585,11 @@ class Platform:
         atomic_json(attempt / "payload.json", payload)
         result = {
             **request,
-            "status": "completed" if returncode == 0 and reward == "1" else "failed",
+            "status": "completed" if agent_returncode == 0 and verifier_returncode == 0 and reward == "1" else "failed",
             "finished_at": utc_now(),
             "execution_seconds": time.perf_counter() - started,
-            "returncode": returncode,
+            "returncode": agent_returncode,
+            "verifier_returncode": verifier_returncode,
             "payload": payload,
         }
         store.finish(attempt, result)
