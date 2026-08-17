@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "modes": {
+    "light": {
+      "gaia": {
+        "manifest": "${SUITE_DIR}/suites/light/gaia.json"
+      },
+      "gdpval": {
+        "manifest": "${SUITE_DIR}/suites/light/gdpval.json"
+      },
+      "trajectory-bench": {
+        "status": "held",
+        "reason": "Held until the official replay endpoints and sampled case availability are verified."
+      },
+      "vitabench": {
+        "manifest": "${SUITE_DIR}/suites/light/vitabench.json"
+      },
+      "tau2": {
+        "manifest": "${SUITE_DIR}/suites/light/tau2.json"
+      },
+      "bfcl": {
+        "manifest": "${SUITE_DIR}/suites/light/bfcl.json"
+      },
+      "terminal-bench-2": {
+        "manifest": "${SUITE_DIR}/suites/light/terminal-bench-2.json"
+      },
+      "swe-bench-verified": {
+        "status": "held",
+        "reason": "Held while the Apple Silicon nested-Docker execution path remains under engineering review."
+      }
+    },
+    "full": {
+      "gaia": {
+        "status": "ready",
+        "selection": "official_full",
+        "enumeration_owner": "GAIA dataset and official submission split"
+      },
+      "gdpval": {
+        "status": "ready",
+        "selection": "official_full",
+        "enumeration_owner": "GDPval snapshot"
+      },
+      "trajectory-bench": {
+        "status": "held",
+        "selection": "official_full",
+        "reason": "Held until the official replay endpoints and sampled case availability are verified."
+      },
+      "vitabench": {
+        "status": "ready",
+        "selection": "official_full",
+        "enumeration_owner": "Pinned VitaBench registry"
+      },
+      "tau2": {
+        "status": "ready",
+        "selection": "official_full",
+        "enumeration_owner": "Pinned tau2 domain registries"
+      },
+      "bfcl": {
+        "status": "ready",
+        "selection": "official_full",
+        "enumeration_owner": "Pinned BFCL V4 data registry"
+      },
+      "terminal-bench-2": {
+        "status": "ready",
+        "selection": "official_full",
+        "enumeration_owner": "Pinned Terminal-Bench 2 task tree",
+        "runner_status": "adapter_expansion_required"
+      },
+      "swe-bench-verified": {
+        "status": "held",
+        "selection": "official_full",
+        "reason": "Held while the Apple Silicon nested-Docker execution path remains under engineering review."
+      }
+    }
+  }
+}

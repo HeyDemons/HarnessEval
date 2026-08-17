@@ -9,12 +9,14 @@ from pathlib import Path
 from .engine import Platform
 from .compatibility import compatibility_rows
 from .harnesses import PROFILES
+from .suites import SUITE_MODES, SuiteCatalog
 from .util import atomic_json, select
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ORCH_ROOT = ROOT.parent
 DEFAULT_CATALOG = ROOT / "catalog" / "benchmarks.json"
+DEFAULT_SUITES = ROOT / "catalog" / "suites.json"
 
 
 def _platform(args: argparse.Namespace) -> Platform:
@@ -48,6 +50,7 @@ def _mounts(values: list[str], parser: argparse.ArgumentParser) -> list[dict[str
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Docker-native benchmark control plane (no Inspect dependency).")
     parser.add_argument("--catalog", type=Path, default=DEFAULT_CATALOG)
+    parser.add_argument("--suites", type=Path, default=DEFAULT_SUITES)
     parser.add_argument("--orch-root", type=Path, default=DEFAULT_ORCH_ROOT)
     sub = parser.add_subparsers(dest="action", required=True)
 
@@ -59,6 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     matrix = sub.add_parser("matrix", help="Report baseline x benchmark bridge and tool-contract status.")
     matrix.add_argument("--json", action="store_true")
+
+    suite = sub.add_parser("suite", help="Resolve frozen light subsets or benchmark-owned full suites.")
+    suite.add_argument("benchmarks", nargs="*", default=["all"])
+    suite.add_argument("--mode", choices=SUITE_MODES, default="light")
+    suite.add_argument("--json", action="store_true")
+    suite.add_argument("--ids-only", action="store_true")
 
     doctor = sub.add_parser("doctor", help="Probe local Docker, data, images, and provider blockers.")
     doctor.add_argument("benchmarks", nargs="*", default=["all"])
@@ -163,6 +172,36 @@ def _main() -> None:
                     f"{row['baseline']:16} {row['benchmark']:22} "
                     f"{row['bridge_status']:45} {row['tool_contract']}"
                 )
+        return
+    if args.action == "suite":
+        suites = SuiteCatalog(args.suites, ROOT, platform.catalog.ids())
+        selected = select(args.benchmarks, suites.ids(args.mode))
+        rows = [suites.get(benchmark_id, args.mode) for benchmark_id in selected]
+        if args.ids_only:
+            if len(rows) != 1:
+                parser.error("--ids-only requires exactly one benchmark")
+            if rows[0].get("status") != "ready":
+                parser.error(f"suite is not materialized: {rows[0]['benchmark']} {args.mode}")
+            if rows[0].get("declared_count") is None:
+                parser.error("--ids-only is unavailable when enumeration is owned by the benchmark runner")
+            for case in rows[0]["cases"]:
+                print(case["id"])
+        elif args.json:
+            print(json.dumps(rows, ensure_ascii=False, indent=2))
+        else:
+            for row in rows:
+                count = row.get("declared_count")
+                if count is not None:
+                    count_text = str(count)
+                elif row["mode"] == "full":
+                    count_text = "official-full"
+                else:
+                    count_text = "unmaterialized"
+                local = row.get("locally_scoreable_count")
+                score_text = f", {local} locally scoreable" if local is not None and local != count else ""
+                print(f"{row['status'].upper():7} {row['benchmark']:22} {row['mode']:5} {count_text}{score_text}")
+                if row.get("reason"):
+                    print(f"  {row['reason']}")
         return
     if args.action == "doctor":
         report = [platform.doctor(platform.catalog.get(item)) for item in _ids(args, platform)]

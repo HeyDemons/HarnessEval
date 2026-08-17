@@ -20,6 +20,24 @@ envelopes while leaving task semantics, tools, and scoring with each benchmark.
 HarnessEval is a control plane, not a universal replacement for benchmark
 scorers. A benchmark result is official only when its catalog entry says so.
 
+## Evaluation Scale
+
+Experiments use two explicit suite modes. `light` resolves a frozen,
+outcome-independent subset for broad baseline comparisons; `full` delegates to
+the complete case registry owned by the pinned benchmark release.
+
+```bash
+harnesseval suite all --mode light
+harnesseval suite gaia --mode light --ids-only
+harnesseval suite all --mode full --json
+```
+
+The current light design includes GAIA 10/20/30 by level, 27 sector-balanced
+GDPval tasks, the unbiased VitaBench-60, and representative tau2, BFCL, and
+Terminal-Bench 2 subsets. TRAJECT-Bench is held until replay endpoints are
+verified. Exact denominators, scoring limits, and selection integrity rules are
+in [the evaluation suite specification](docs/EVALUATION_SUITES.md).
+
 ## Install
 
 Requirements are Python 3.11+, Docker, and Git.

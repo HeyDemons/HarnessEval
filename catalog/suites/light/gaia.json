@@ -1,0 +1,452 @@
+{
+  "benchmark": "gaia",
+  "cases": [
+    {
+      "attachment": "9318445f-fe6a-4e1b-acbf-c68228c9906a.png",
+      "id": "9318445f-fe6a-4e1b-acbf-c68228c9906a",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "5a0c1adf-205e-4841-a666-7c3ef95def9d",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "4b650a35-8529-4695-89ed-8dc7a500a498",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "42576abe-0deb-4869-8c63-225c2d75a95a",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "a1e91b78-d3d8-4675-bb8d-62741b4b68a6",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "3f57289b-8c60-48be-bd80-01f8099ca449",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "c714ab3a-da30-4603-bacd-d008800188b9",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "50ec8903-b81f-4257-9450-1085afd2c319",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "46719c30-f4c3-4cad-be07-d5cb21eee6bb",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "5188369a-3bbe-43d8-8b94-11558f909a08",
+      "level": 1,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "8b3379c0-0981-4f5b-8407-6444610cb212",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "dd3c7503-f62a-4bd0-9f67-1b63b94194cc",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "d5141ca5-e7a0-469f-bf3e-e773507c86e2",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "b9763138-c053-4832-9f55-86200cb1f99c",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "6b078778-0b90-464d-83f6-59511c811b01",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "2b3ef98c-cc05-450b-a719-711aee40ac65.mp3",
+      "id": "2b3ef98c-cc05-450b-a719-711aee40ac65",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "e0c10771-d627-4fd7-9694-05348e54ee36",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "f46b4380-207e-4434-820b-f32ce04ae2a4",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "d1af70ea-a9a4-421a-b9cc-94b5e02f1788",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "c8b7e059-c60d-472e-ad64-3b04ae1166dc",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "d700d50d-c707-4dca-90dc-4528cddd0c80",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "20194330-9976-4043-8632-f8485c6c71b2",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "708b99c5-e4a7-49cb-a5cf-933c8d46470d",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f.xlsx",
+      "id": "7cc4acfa-63fd-4acc-a1a1-e8e529e0a97f",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "71345b0a-9c7d-4b50-b2bf-937ec5879845",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "54612da3-fd56-4941-80f4-5eb82330de25.xlsx",
+      "id": "54612da3-fd56-4941-80f4-5eb82330de25",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "0b260a57-3f3a-4405-9f29-6d7a1012dbfb",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "0a65cb96-cb6e-4a6a-8aae-c1084f613456",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "9f41b083-683e-4dcf-9185-ccfeaa88fa45",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "a26649c6-1cb2-470a-871e-6910c64c3e53",
+      "level": 2,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "ad2b4d70-9314-4fe6-bfbe-894a45f6055f",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "50f58759-7bd6-406f-9b0d-5692beb2a926",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "ebbc1f13-d24d-40df-9068-adcf735b4240",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "5f982798-16b9-4051-ab57-cfc7ebdb2a91",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "de9887f5-ead8-4727-876f-5a4078f8598c",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "72c06643-a2fa-4186-aa5c-9ec33ae9b445",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "676e5e31-a554-4acc-9286-b60d90a92d26",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "3da89939-209c-4086-8520-7eb734e6b4ef.xlsx",
+      "id": "3da89939-209c-4086-8520-7eb734e6b4ef",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "00d579ea-0889-4fd9-a771-2c8d79835c8d",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "0512426f-4d28-49f0-be77-06d05daec096",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "384d0dd8-e8a4-4cfe-963c-d37f256e7662",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "0bdb7c40-671d-4ad1-9ce3-986b159c0ddc",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "5b2a14e8-6e59-479c-80e3-4696e8980152.jpg",
+      "id": "5b2a14e8-6e59-479c-80e3-4696e8980152",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "c526d8d6-5987-4da9-b24c-83466fa172f3.xlsx",
+      "id": "c526d8d6-5987-4da9-b24c-83466fa172f3",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "9b54f9d9-35ee-4a14-b62f-d130ea00317f.zip",
+      "id": "9b54f9d9-35ee-4a14-b62f-d130ea00317f",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "983bba7c-c092-455f-b6c9-7857003d48fc",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "8131e2c0-0083-4265-9ce7-78c2d568425d",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "9e1fc53b-46ff-49a1-9d05-9e6faac34cc5",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "e961a717-6b25-4175-8a68-874d28190ee4",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "c3a79cfe-8206-451f-aca8-3fec8ebe51d3",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "da52d699-e8d2-4dc5-9191-a2199e0b6a9b.xlsx",
+      "id": "da52d699-e8d2-4dc5-9191-a2199e0b6a9b",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "8d46b8d6-b38a-47ff-ac74-cda14cf2d19b.csv",
+      "id": "8d46b8d6-b38a-47ff-ac74-cda14cf2d19b",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "bec74516-02fc-48dc-b202-55e78d0e17cf.jsonld",
+      "id": "bec74516-02fc-48dc-b202-55e78d0e17cf",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "851e570a-e3de-4d84-bcfa-cc85578baa59",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "56db2318-640f-477a-a82f-bc93ad13e882",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "872bfbb1-9ccf-49f6-8c5f-aa22818ccd66",
+      "level": 3,
+      "scoreability": "local_official",
+      "split": "validation"
+    },
+    {
+      "attachment": "",
+      "id": "1276e220-1482-424f-9c05-ae459f9de38e",
+      "level": 3,
+      "scoreability": "official_submission_only",
+      "split": "test"
+    },
+    {
+      "attachment": "",
+      "id": "3415b0bd-f53f-4397-b657-b3204d43235e",
+      "level": 3,
+      "scoreability": "official_submission_only",
+      "split": "test"
+    },
+    {
+      "attachment": "",
+      "id": "335024e1-aa6a-4a48-bba5-fad4ebd8868c",
+      "level": 3,
+      "scoreability": "official_submission_only",
+      "split": "test"
+    },
+    {
+      "attachment": "",
+      "id": "2db1003c-96b9-4e26-9223-5a2d491d26ac",
+      "level": 3,
+      "scoreability": "official_submission_only",
+      "split": "test"
+    }
+  ],
+  "declared_count": 60,
+  "locally_scoreable_count": 56,
+  "mode": "light",
+  "schema_version": 1,
+  "scoring_note": "GAIA 2023 validation exposes only 26 level-3 cases. Four level-3 test cases complete the requested 30-case stratum but require official submission scoring and are excluded from local aggregate scores.",
+  "selection_policy": {
+    "frozen": true,
+    "historical_runs_used": false,
+    "method": "SHA-256 rank within requested level and public split; all 26 public validation L3 cases plus 4 hidden-answer test L3 cases",
+    "model_outcomes_used": false,
+    "seed": "harnesseval-light-v1"
+  },
+  "source": {
+    "dataset": "GAIA 2023",
+    "metadata_sha256": {
+      "test/metadata.level3.parquet": "fa681682d1447bf2a3f74888eec97da0cd96722d00cb48e9255fb232ea0b5513",
+      "validation/metadata.level1.parquet": "5e574b0faeb4603b816e426cf7c7aefb1fe398d32f9c4861e1a4e3304f2b1281",
+      "validation/metadata.level2.parquet": "36fe47d728ef4e4a4477ab21bbddb88e6739ac81a885ededf99f8b395b196f2c",
+      "validation/metadata.level3.parquet": "5d004e101d8fa8b071cc50d323f8437051975aea7e894892e7d5584e9920790d"
+    }
+  },
+  "status": "ready",
+  "strata_summary": {
+    "level_1": 10,
+    "level_2": 20,
+    "level_3": 30
+  }
+}

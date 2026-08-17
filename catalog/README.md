@@ -16,3 +16,8 @@ benchmarks, images, mounts, or allowed environment variable names are needed.
 An adapter must state whether its score is official, an official subset, a
 proxy, or an infrastructure-only oracle smoke. Registering a dataset does not
 by itself establish end-to-end benchmark support.
+
+`suites.json` defines the available `light` and `full` experiment scales.
+Materialized light manifests live under `suites/light/`; they contain only case
+identity and public selection metadata, never prompts, answers, model outcomes,
+or credentials. Full suites leave enumeration with the benchmark release.

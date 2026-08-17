@@ -1,0 +1,271 @@
+{
+  "benchmark": "vitabench",
+  "cases": [
+    {
+      "domain": "delivery",
+      "id": "20715001"
+    },
+    {
+      "domain": "delivery",
+      "id": "A0714002"
+    },
+    {
+      "domain": "delivery",
+      "id": "J0717002"
+    },
+    {
+      "domain": "delivery",
+      "id": "H0721001"
+    },
+    {
+      "domain": "delivery",
+      "id": "20711002"
+    },
+    {
+      "domain": "delivery",
+      "id": "D0717001"
+    },
+    {
+      "domain": "delivery",
+      "id": "40711005"
+    },
+    {
+      "domain": "delivery",
+      "id": "E0717001"
+    },
+    {
+      "domain": "delivery",
+      "id": "40721004"
+    },
+    {
+      "domain": "delivery",
+      "id": "10721002"
+    },
+    {
+      "domain": "delivery",
+      "id": "30711007"
+    },
+    {
+      "domain": "delivery",
+      "id": "E0716002"
+    },
+    {
+      "domain": "delivery",
+      "id": "D0717004"
+    },
+    {
+      "domain": "delivery",
+      "id": "E0716001"
+    },
+    {
+      "domain": "delivery",
+      "id": "30711001"
+    },
+    {
+      "domain": "ota",
+      "id": "D0808002"
+    },
+    {
+      "domain": "ota",
+      "id": "70808003"
+    },
+    {
+      "domain": "ota",
+      "id": "70807007"
+    },
+    {
+      "domain": "ota",
+      "id": "10812010"
+    },
+    {
+      "domain": "ota",
+      "id": "D0812003"
+    },
+    {
+      "domain": "ota",
+      "id": "D0804001"
+    },
+    {
+      "domain": "ota",
+      "id": "70807002"
+    },
+    {
+      "domain": "ota",
+      "id": "70812009"
+    },
+    {
+      "domain": "ota",
+      "id": "D0808005"
+    },
+    {
+      "domain": "ota",
+      "id": "D0808003"
+    },
+    {
+      "domain": "ota",
+      "id": "D0807009"
+    },
+    {
+      "domain": "ota",
+      "id": "70807003"
+    },
+    {
+      "domain": "ota",
+      "id": "D0811010"
+    },
+    {
+      "domain": "ota",
+      "id": "D0811007"
+    },
+    {
+      "domain": "ota",
+      "id": "D0811009"
+    },
+    {
+      "domain": "instore",
+      "id": "10826008"
+    },
+    {
+      "domain": "instore",
+      "id": "10826014"
+    },
+    {
+      "domain": "instore",
+      "id": "10826029"
+    },
+    {
+      "domain": "instore",
+      "id": "10826289"
+    },
+    {
+      "domain": "instore",
+      "id": "10826254"
+    },
+    {
+      "domain": "instore",
+      "id": "10826234"
+    },
+    {
+      "domain": "instore",
+      "id": "10826129"
+    },
+    {
+      "domain": "instore",
+      "id": "10826257"
+    },
+    {
+      "domain": "instore",
+      "id": "10826077"
+    },
+    {
+      "domain": "instore",
+      "id": "10826004"
+    },
+    {
+      "domain": "instore",
+      "id": "10826236"
+    },
+    {
+      "domain": "instore",
+      "id": "10826001"
+    },
+    {
+      "domain": "instore",
+      "id": "10826016"
+    },
+    {
+      "domain": "instore",
+      "id": "10826277"
+    },
+    {
+      "domain": "instore",
+      "id": "10826011"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "A0808010"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10812006"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10808011"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10812003"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10811001"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "A0807010"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10808001"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "A0808003"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "A0806003"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10806004"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10807003"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10811005"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "A0804001"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10807005"
+    },
+    {
+      "domain": "cross_domain",
+      "id": "10812002"
+    }
+  ],
+  "declared_count": 60,
+  "mode": "light",
+  "schema_version": 1,
+  "selection_policy": {
+    "frozen": true,
+    "historical_runs_used": false,
+    "method": "SHA-256 rank within each pinned official domain; independent of the historical result-informed VitaBench-60 set",
+    "model_outcomes_used": false,
+    "seed": "harnesseval-light-v1"
+  },
+  "source": {
+    "registry_counts": {
+      "cross_domain": 100,
+      "delivery": 100,
+      "instore": 100,
+      "ota": 100
+    },
+    "revision": "742e240855bf8686a0842360749d5ea970ea3987"
+  },
+  "status": "ready",
+  "strata_summary": {
+    "cross_domain": 15,
+    "delivery": 15,
+    "instore": 15,
+    "ota": 15
+  }
+}

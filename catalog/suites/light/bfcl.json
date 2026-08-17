@@ -1,0 +1,537 @@
+{
+  "benchmark": "bfcl",
+  "cases": [
+    {
+      "category": "irrelevance",
+      "format_sensitive": false,
+      "id": "irrelevance_130"
+    },
+    {
+      "category": "irrelevance",
+      "format_sensitive": false,
+      "id": "irrelevance_221"
+    },
+    {
+      "category": "irrelevance",
+      "format_sensitive": false,
+      "id": "irrelevance_134"
+    },
+    {
+      "category": "irrelevance",
+      "format_sensitive": false,
+      "id": "irrelevance_39"
+    },
+    {
+      "category": "irrelevance",
+      "format_sensitive": false,
+      "id": "irrelevance_100"
+    },
+    {
+      "category": "live_irrelevance",
+      "format_sensitive": false,
+      "id": "live_irrelevance_166-21-2"
+    },
+    {
+      "category": "live_irrelevance",
+      "format_sensitive": false,
+      "id": "live_irrelevance_322-76-20"
+    },
+    {
+      "category": "live_irrelevance",
+      "format_sensitive": false,
+      "id": "live_irrelevance_14-2-2"
+    },
+    {
+      "category": "live_irrelevance",
+      "format_sensitive": false,
+      "id": "live_irrelevance_780-289-0"
+    },
+    {
+      "category": "live_irrelevance",
+      "format_sensitive": false,
+      "id": "live_irrelevance_793-302-0"
+    },
+    {
+      "category": "live_multiple",
+      "format_sensitive": false,
+      "id": "live_multiple_426-141-15"
+    },
+    {
+      "category": "live_multiple",
+      "format_sensitive": true,
+      "id": "live_multiple_1002-232-1"
+    },
+    {
+      "category": "live_multiple",
+      "format_sensitive": false,
+      "id": "live_multiple_290-129-5"
+    },
+    {
+      "category": "live_multiple",
+      "format_sensitive": true,
+      "id": "live_multiple_460-145-11"
+    },
+    {
+      "category": "live_multiple",
+      "format_sensitive": false,
+      "id": "live_multiple_837-178-12"
+    },
+    {
+      "category": "live_parallel",
+      "format_sensitive": false,
+      "id": "live_parallel_14-10-0"
+    },
+    {
+      "category": "live_parallel",
+      "format_sensitive": true,
+      "id": "live_parallel_13-9-0"
+    },
+    {
+      "category": "live_parallel",
+      "format_sensitive": false,
+      "id": "live_parallel_6-3-0"
+    },
+    {
+      "category": "live_parallel",
+      "format_sensitive": true,
+      "id": "live_parallel_2-0-2"
+    },
+    {
+      "category": "live_parallel",
+      "format_sensitive": false,
+      "id": "live_parallel_3-0-3"
+    },
+    {
+      "category": "live_parallel_multiple",
+      "format_sensitive": false,
+      "id": "live_parallel_multiple_23-20-0"
+    },
+    {
+      "category": "live_parallel_multiple",
+      "format_sensitive": true,
+      "id": "live_parallel_multiple_4-3-0"
+    },
+    {
+      "category": "live_parallel_multiple",
+      "format_sensitive": true,
+      "id": "live_parallel_multiple_1-1-0"
+    },
+    {
+      "category": "live_parallel_multiple",
+      "format_sensitive": false,
+      "id": "live_parallel_multiple_13-11-0"
+    },
+    {
+      "category": "live_parallel_multiple",
+      "format_sensitive": true,
+      "id": "live_parallel_multiple_0-0-0"
+    },
+    {
+      "category": "live_relevance",
+      "format_sensitive": false,
+      "id": "live_relevance_11-11-0"
+    },
+    {
+      "category": "live_relevance",
+      "format_sensitive": false,
+      "id": "live_relevance_6-6-0"
+    },
+    {
+      "category": "live_relevance",
+      "format_sensitive": false,
+      "id": "live_relevance_10-10-0"
+    },
+    {
+      "category": "live_relevance",
+      "format_sensitive": false,
+      "id": "live_relevance_7-7-0"
+    },
+    {
+      "category": "live_relevance",
+      "format_sensitive": false,
+      "id": "live_relevance_9-9-0"
+    },
+    {
+      "category": "live_simple",
+      "format_sensitive": false,
+      "id": "live_simple_0-0-0"
+    },
+    {
+      "category": "live_simple",
+      "format_sensitive": true,
+      "id": "live_simple_49-21-1"
+    },
+    {
+      "category": "live_simple",
+      "format_sensitive": false,
+      "id": "live_simple_58-27-0"
+    },
+    {
+      "category": "live_simple",
+      "format_sensitive": true,
+      "id": "live_simple_202-116-10"
+    },
+    {
+      "category": "live_simple",
+      "format_sensitive": false,
+      "id": "live_simple_178-103-1"
+    },
+    {
+      "category": "memory",
+      "format_sensitive": false,
+      "id": "memory_142-notetaker-12"
+    },
+    {
+      "category": "memory",
+      "format_sensitive": false,
+      "id": "memory_134-notetaker-4"
+    },
+    {
+      "category": "memory",
+      "format_sensitive": false,
+      "id": "memory_128-student-48"
+    },
+    {
+      "category": "memory",
+      "format_sensitive": false,
+      "id": "memory_108-student-28"
+    },
+    {
+      "category": "memory",
+      "format_sensitive": false,
+      "id": "memory_23-customer-23"
+    },
+    {
+      "category": "multi_turn_base",
+      "format_sensitive": false,
+      "id": "multi_turn_base_70"
+    },
+    {
+      "category": "multi_turn_base",
+      "format_sensitive": false,
+      "id": "multi_turn_base_75"
+    },
+    {
+      "category": "multi_turn_base",
+      "format_sensitive": false,
+      "id": "multi_turn_base_74"
+    },
+    {
+      "category": "multi_turn_base",
+      "format_sensitive": false,
+      "id": "multi_turn_base_10"
+    },
+    {
+      "category": "multi_turn_base",
+      "format_sensitive": false,
+      "id": "multi_turn_base_96"
+    },
+    {
+      "category": "multi_turn_long_context",
+      "format_sensitive": false,
+      "id": "multi_turn_long_context_196"
+    },
+    {
+      "category": "multi_turn_long_context",
+      "format_sensitive": false,
+      "id": "multi_turn_long_context_169"
+    },
+    {
+      "category": "multi_turn_long_context",
+      "format_sensitive": false,
+      "id": "multi_turn_long_context_27"
+    },
+    {
+      "category": "multi_turn_long_context",
+      "format_sensitive": false,
+      "id": "multi_turn_long_context_20"
+    },
+    {
+      "category": "multi_turn_long_context",
+      "format_sensitive": false,
+      "id": "multi_turn_long_context_18"
+    },
+    {
+      "category": "multi_turn_miss_func",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_func_14"
+    },
+    {
+      "category": "multi_turn_miss_func",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_func_32"
+    },
+    {
+      "category": "multi_turn_miss_func",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_func_91"
+    },
+    {
+      "category": "multi_turn_miss_func",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_func_177"
+    },
+    {
+      "category": "multi_turn_miss_func",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_func_126"
+    },
+    {
+      "category": "multi_turn_miss_param",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_param_100"
+    },
+    {
+      "category": "multi_turn_miss_param",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_param_57"
+    },
+    {
+      "category": "multi_turn_miss_param",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_param_193"
+    },
+    {
+      "category": "multi_turn_miss_param",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_param_65"
+    },
+    {
+      "category": "multi_turn_miss_param",
+      "format_sensitive": false,
+      "id": "multi_turn_miss_param_70"
+    },
+    {
+      "category": "multiple",
+      "format_sensitive": false,
+      "id": "multiple_28"
+    },
+    {
+      "category": "multiple",
+      "format_sensitive": true,
+      "id": "multiple_51"
+    },
+    {
+      "category": "multiple",
+      "format_sensitive": false,
+      "id": "multiple_174"
+    },
+    {
+      "category": "multiple",
+      "format_sensitive": true,
+      "id": "multiple_191"
+    },
+    {
+      "category": "multiple",
+      "format_sensitive": false,
+      "id": "multiple_120"
+    },
+    {
+      "category": "parallel",
+      "format_sensitive": false,
+      "id": "parallel_109"
+    },
+    {
+      "category": "parallel",
+      "format_sensitive": true,
+      "id": "parallel_56"
+    },
+    {
+      "category": "parallel",
+      "format_sensitive": false,
+      "id": "parallel_196"
+    },
+    {
+      "category": "parallel",
+      "format_sensitive": true,
+      "id": "parallel_103"
+    },
+    {
+      "category": "parallel",
+      "format_sensitive": false,
+      "id": "parallel_34"
+    },
+    {
+      "category": "parallel_multiple",
+      "format_sensitive": false,
+      "id": "parallel_multiple_2"
+    },
+    {
+      "category": "parallel_multiple",
+      "format_sensitive": true,
+      "id": "parallel_multiple_43"
+    },
+    {
+      "category": "parallel_multiple",
+      "format_sensitive": false,
+      "id": "parallel_multiple_5"
+    },
+    {
+      "category": "parallel_multiple",
+      "format_sensitive": true,
+      "id": "parallel_multiple_109"
+    },
+    {
+      "category": "parallel_multiple",
+      "format_sensitive": false,
+      "id": "parallel_multiple_108"
+    },
+    {
+      "category": "simple_java",
+      "format_sensitive": false,
+      "id": "simple_java_53"
+    },
+    {
+      "category": "simple_java",
+      "format_sensitive": false,
+      "id": "simple_java_6"
+    },
+    {
+      "category": "simple_java",
+      "format_sensitive": false,
+      "id": "simple_java_9"
+    },
+    {
+      "category": "simple_java",
+      "format_sensitive": false,
+      "id": "simple_java_91"
+    },
+    {
+      "category": "simple_java",
+      "format_sensitive": false,
+      "id": "simple_java_22"
+    },
+    {
+      "category": "simple_javascript",
+      "format_sensitive": false,
+      "id": "simple_javascript_48"
+    },
+    {
+      "category": "simple_javascript",
+      "format_sensitive": false,
+      "id": "simple_javascript_21"
+    },
+    {
+      "category": "simple_javascript",
+      "format_sensitive": false,
+      "id": "simple_javascript_40"
+    },
+    {
+      "category": "simple_javascript",
+      "format_sensitive": false,
+      "id": "simple_javascript_32"
+    },
+    {
+      "category": "simple_javascript",
+      "format_sensitive": false,
+      "id": "simple_javascript_33"
+    },
+    {
+      "category": "simple_python",
+      "format_sensitive": false,
+      "id": "simple_python_228"
+    },
+    {
+      "category": "simple_python",
+      "format_sensitive": true,
+      "id": "simple_python_181"
+    },
+    {
+      "category": "simple_python",
+      "format_sensitive": false,
+      "id": "simple_python_65"
+    },
+    {
+      "category": "simple_python",
+      "format_sensitive": true,
+      "id": "simple_python_179"
+    },
+    {
+      "category": "simple_python",
+      "format_sensitive": false,
+      "id": "simple_python_138"
+    },
+    {
+      "category": "web_search",
+      "format_sensitive": false,
+      "id": "web_search_10"
+    },
+    {
+      "category": "web_search",
+      "format_sensitive": false,
+      "id": "web_search_81"
+    },
+    {
+      "category": "web_search",
+      "format_sensitive": false,
+      "id": "web_search_95"
+    },
+    {
+      "category": "web_search",
+      "format_sensitive": false,
+      "id": "web_search_20"
+    },
+    {
+      "category": "web_search",
+      "format_sensitive": false,
+      "id": "web_search_87"
+    }
+  ],
+  "declared_count": 95,
+  "mode": "light",
+  "schema_version": 1,
+  "selection_policy": {
+    "frozen": true,
+    "historical_runs_used": false,
+    "method": "Five cases per BFCL V4 task category, balancing membership in the auxiliary format-sensitivity map; report category-macro and pooled scores",
+    "model_outcomes_used": false,
+    "seed": "harnesseval-light-v1"
+  },
+  "source": {
+    "category_file_sha256": {
+      "BFCL_v4_format_sensitivity.json": "1e7ebd0ec441198d3f7d3b60be73d0c9eba54094d2c3731b830f5da7a2c63c19",
+      "BFCL_v4_irrelevance.json": "2b6ed4c2e992cdcf5f1678a701851f944bef7550ee026ed1ddb89efed5be01a6",
+      "BFCL_v4_live_irrelevance.json": "6559fda2beaceb609a2cd2e504c65b4a56cb448e1ef88fddfd199e163d163349",
+      "BFCL_v4_live_multiple.json": "fd8ccfad4d911420d0e3341dbe2fff77d1d341da934248b9bb2bda24ab3a10c8",
+      "BFCL_v4_live_parallel.json": "6c26e9fdc3350cf596e6d1ea9c179cbff834761bccf562f4141ed29a839ca421",
+      "BFCL_v4_live_parallel_multiple.json": "21d4b9319c1faac431e22757b367ea28917fe467364c3a4b17f16ec06d4f6e79",
+      "BFCL_v4_live_relevance.json": "e03f9e241657a137cba48a89ee12f47bf3fcb7e4f6274263e9c699a0c974203a",
+      "BFCL_v4_live_simple.json": "1af2ac87dca47556db7b7e37e51e28b459a38b594e3c7b3c792b4903598ca0c4",
+      "BFCL_v4_memory.json": "40fc21d4528af53c6b44204def89e81515d0101654229e2c2e82bbf5f047b14f",
+      "BFCL_v4_multi_turn_base.json": "1a21a995d06fd6f20ba55de7bced30ef953ec35e998f502ec2ecf4d66ef1c43a",
+      "BFCL_v4_multi_turn_long_context.json": "78c3268c5cc8e97c0f4ec6c811b3b9a2bba14323b1830b7a874b06d822749324",
+      "BFCL_v4_multi_turn_miss_func.json": "87d28ce10e37d864b72de85d5732eef2a867b241d6c1c99b4ae682c9e3ea921c",
+      "BFCL_v4_multi_turn_miss_param.json": "f0c66dda3795f5f53e3e1c0cc8ba0246b6761c8f58bdba8317203bf451ab8838",
+      "BFCL_v4_multiple.json": "aef168155ebd74b7ac2401198b201343bc7d16d7a3d7e0d4e6d8ee82c6969b2a",
+      "BFCL_v4_parallel.json": "19f51a82eff42e5d62541aa500115a056eb78f437c2ba1f10415fd7c8e5dda84",
+      "BFCL_v4_parallel_multiple.json": "8863ea8433239f55c5f016154cf0830853c89f693c6ea270396a2fa121960579",
+      "BFCL_v4_simple_java.json": "13d2303a125b08754f0e41995b9273b5005fa8ed8ebfaa24ef53b4d83c4b5c6e",
+      "BFCL_v4_simple_javascript.json": "329e67fedf79a6243d93dbda4b388d12bd2d31f1f2163d92cb6ef676d1764f44",
+      "BFCL_v4_simple_python.json": "82dd63ba502eb2520c6b5d1d9a5c4b590e03ff261565175561f6228a367d1991",
+      "BFCL_v4_web_search.json": "6fc41d96d003dc849028966a782923560d2fc127ed2088aa967f06daaafa4268"
+    },
+    "revision": "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8"
+  },
+  "status": "ready",
+  "strata_summary": {
+    "irrelevance": 5,
+    "live_irrelevance": 5,
+    "live_multiple": 5,
+    "live_parallel": 5,
+    "live_parallel_multiple": 5,
+    "live_relevance": 5,
+    "live_simple": 5,
+    "memory": 5,
+    "multi_turn_base": 5,
+    "multi_turn_long_context": 5,
+    "multi_turn_miss_func": 5,
+    "multi_turn_miss_param": 5,
+    "multiple": 5,
+    "parallel": 5,
+    "parallel_multiple": 5,
+    "simple_java": 5,
+    "simple_javascript": 5,
+    "simple_python": 5,
+    "web_search": 5
+  }
+}
