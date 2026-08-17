@@ -56,6 +56,8 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
     root.mkdir(parents=True, exist_ok=True)
     specs: list[ToolSpec] = []
     handlers: dict[str, ToolHandler] = {}
+    web_tasks: dict[tuple[str, int], asyncio.Task[list[dict[str, Any]]]] = {}
+    web_tasks_lock = asyncio.Lock()
 
     async def list_files(arguments: dict[str, Any]) -> Any:
         base = safe_path(root, str(arguments.get("path", ".")))
@@ -184,7 +186,22 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
             from ddgs import DDGS
 
             query = str(arguments["query"])
-            results = list(DDGS().text(query, max_results=int(arguments.get("max_results", 10))))
+            max_results = int(arguments.get("max_results", 10))
+            key = (query, max_results)
+            async with web_tasks_lock:
+                task = web_tasks.get(key)
+                if task is None:
+                    task = asyncio.create_task(
+                        asyncio.to_thread(lambda: list(DDGS().text(query, max_results=max_results)))
+                    )
+                    web_tasks[key] = task
+            try:
+                results = await asyncio.shield(task)
+            except Exception:
+                async with web_tasks_lock:
+                    if web_tasks.get(key) is task:
+                        web_tasks.pop(key, None)
+                raise
             return {"query": query, "results": results}
 
         specs.append(

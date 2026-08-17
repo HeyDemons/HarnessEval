@@ -67,10 +67,11 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
             self.history = list(message_history or [])
             return {"initialized": True}
 
-        def _resolve_incoming(self, message: Any) -> None:
+        def _resolve_incoming(self, message: Any) -> tuple[PendingProductAction, dict[str, Any]] | None:
             if self.pending is None:
-                return
-            if self.pending.name == SEND_MESSAGE_TOOL:
+                return None
+            pending = self.pending
+            if pending.name == SEND_MESSAGE_TOOL:
                 user = _user_message(message)
                 response = (
                     {"ok": True, "result": {"user_message": user}}
@@ -80,66 +81,78 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
             else:
                 results = _tool_results(message)
                 content, error = results.get(
-                    self.pending.id,
+                    pending.id,
                     ("Native tool result id did not match the submitted action", True),
                 )
                 response = decode_result(content, error)
-            bridge.resolve(self.pending, response)
             self.pending = None
+            return pending, response
+
+        def _publish_manifest(self) -> None:
+            prompt = (
+                "Act as the benchmark assistant under the complete domain policy below. The hidden user "
+                "scenario is unavailable; rely only on visible conversation. Use send_message_to_user "
+                "whenever another user turn is required. Do not claim completion until the user's request "
+                "has been handled under policy.\n\n"
+                f"<domain_policy>\n{self.domain_policy}\n</domain_policy>\n\n"
+                f"<visible_conversation>\n{_visible_history(self.history)}\n</visible_conversation>"
+            )
+            native_tools = _native_tools(self.tools)
+            bridge.publish_manifest(
+                prompt=prompt,
+                tools=native_tools,
+                metadata={
+                    "native_lifecycle": True,
+                    "tool_contract": _tool_contract(self.tools),
+                    "speculation_policy": "disabled_until_native_commit_hook_is_available",
+                },
+                allow_speculation=False,
+            )
 
         def generate_next_message(self, message, state):
             nonlocal final_pending
+            self.history.append(message)
             if not self.started:
-                history = [*self.history, message]
-                prompt = (
-                    "Act as the benchmark assistant under the complete domain policy below. The hidden user "
-                    "scenario is unavailable; rely only on visible conversation. Use send_message_to_user "
-                    "whenever another user turn is required. Do not claim completion until the user's request "
-                    "has been handled under policy.\n\n"
-                    f"<domain_policy>\n{self.domain_policy}\n</domain_policy>\n\n"
-                    f"<visible_conversation>\n{_visible_history(history)}\n</visible_conversation>"
-                )
-                native_tools = _native_tools(self.tools)
-                bridge.publish_manifest(
-                    prompt=prompt,
-                    tools=native_tools,
-                    metadata={
-                        "native_lifecycle": True,
-                        "tool_contract": _tool_contract(self.tools),
-                        "speculation_policy": "disabled_until_native_commit_hook_is_available",
-                    },
-                    allow_speculation=False,
-                )
+                self._publish_manifest()
                 self.started = True
             else:
-                self._resolve_incoming(message)
+                resolved = self._resolve_incoming(message)
+                if resolved is not None and resolved[0].name == SEND_MESSAGE_TOOL:
+                    self._publish_manifest()
+                if resolved is not None:
+                    bridge.resolve(*resolved)
             pending = bridge.next_action()
             if pending.kind == "final":
                 final_pending = pending
-                return AssistantMessage(
+                outgoing = AssistantMessage(
                     role="assistant",
                     content=str(pending.arguments["answer"]),
                     cost=0.0,
-                ), state
+                )
+                self.history.append(outgoing)
+                return outgoing, state
             self.pending = pending
             if pending.name == SEND_MESSAGE_TOOL:
-                return AssistantMessage(
+                outgoing = AssistantMessage(
                     role="assistant",
                     content=str(pending.arguments["content"]),
                     cost=0.0,
-                ), state
-            return AssistantMessage(
-                role="assistant",
-                tool_calls=[
-                    ToolCall(
-                        id=pending.id,
-                        name=pending.name,
-                        arguments=pending.arguments,
-                        requestor="assistant",
-                    )
-                ],
-                cost=0.0,
-            ), state
+                )
+            else:
+                outgoing = AssistantMessage(
+                    role="assistant",
+                    tool_calls=[
+                        ToolCall(
+                            id=pending.id,
+                            name=pending.name,
+                            arguments=pending.arguments,
+                            requestor="assistant",
+                        )
+                    ],
+                    cost=0.0,
+                )
+            self.history.append(outgoing)
+            return outgoing, state
 
     try:
         registry.register_agent_factory(ProductAgent, agent_name)
@@ -167,6 +180,14 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
                 evaluation_type=EvaluationType(str(policy.get("evaluation_type", "all"))),
                 env_kwargs=_build_env_kwargs(config, task),
             )
+        pending = getattr(orchestrator.agent, "pending", None)
+        if pending is not None and pending.name == SEND_MESSAGE_TOOL:
+            for message in reversed(simulation.get_messages()):
+                user = _user_message(message)
+                if user is not None:
+                    bridge.resolve(pending, {"ok": True, "result": {"user_message": user}})
+                    orchestrator.agent.pending = None
+                    break
         reward = simulation.reward_info.reward if simulation.reward_info is not None else None
         bridge.complete(
             {

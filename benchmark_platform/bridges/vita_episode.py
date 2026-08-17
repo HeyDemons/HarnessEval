@@ -86,6 +86,20 @@ def _message_text(message: Any) -> str:
     content = getattr(message, "content", None)
     if content is not None:
         return str(content)
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        return json.dumps(
+            [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "arguments": item.arguments,
+                    "requestor": item.requestor,
+                }
+                for item in tool_calls
+            ],
+            ensure_ascii=False,
+        )
     tool_messages = getattr(message, "tool_messages", None)
     if tool_messages:
         return json.dumps(
@@ -95,7 +109,7 @@ def _message_text(message: Any) -> str:
             ],
             ensure_ascii=False,
         )
-    return str(message)
+    return ""
 
 
 def _visible_history(messages: list[Any]) -> str:
@@ -104,6 +118,19 @@ def _visible_history(messages: list[Any]) -> str:
         role = getattr(message, "role", type(message).__name__)
         rows.append(f"{role}: {_message_text(message)}")
     return "\n".join(rows)
+
+
+def _task_clock(environment: Any, language: str) -> tuple[str, str]:
+    """Return the benchmark database time and the official policy rendering value."""
+    from vita.utils.utils import get_weekday
+
+    system_time = str(environment.tools.db.time)
+    return system_time, f"{system_time} {get_weekday(system_time, language)}"
+
+
+def _render_domain_policy(environment: Any, language: str) -> tuple[str, str]:
+    system_time, policy_time = _task_clock(environment, language)
+    return environment.get_policy().format(time=policy_time), system_time
 
 
 def _patch_vita_generation(client: OpenAICompatibleClient) -> None:
@@ -194,6 +221,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
     _patch_vita_generation(client)
     task = _find_task(case_id, language)
     environment = _build_environment(task, language)
+    domain_policy, _system_time = _render_domain_policy(environment, language)
 
     class HarnessAgent(BaseAgent[dict[str, Any]]):
         STOP_TOKEN = "###STOP###"
@@ -215,7 +243,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                 "Act as the benchmark assistant under the complete domain policy below. The user simulator's "
                 "private scenario is not available; rely only on visible conversation messages. Use "
                 "send_message_to_user whenever another user turn is required.\n\n"
-                f"<domain_policy>\n{environment.get_policy()}\n</domain_policy>\n\n"
+                f"<domain_policy>\n{domain_policy}\n</domain_policy>\n\n"
                 f"<visible_conversation>\n{_visible_history(history)}\n</visible_conversation>"
             )
             self.broker = EpisodeBroker(

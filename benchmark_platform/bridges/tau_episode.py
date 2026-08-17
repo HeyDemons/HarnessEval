@@ -103,6 +103,20 @@ def _message_text(message: Any) -> str:
     content = getattr(message, "content", None)
     if content is not None:
         return str(content)
+    tool_calls = getattr(message, "tool_calls", None)
+    if tool_calls:
+        return json.dumps(
+            [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "arguments": item.arguments,
+                    "requestor": item.requestor,
+                }
+                for item in tool_calls
+            ],
+            ensure_ascii=False,
+        )
     tool_messages = getattr(message, "tool_messages", None)
     if tool_messages:
         return json.dumps(
@@ -112,7 +126,7 @@ def _message_text(message: Any) -> str:
             ],
             ensure_ascii=False,
         )
-    return str(message)
+    return ""
 
 
 def _visible_history(messages: list[Any]) -> str:

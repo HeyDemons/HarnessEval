@@ -13,6 +13,8 @@ from benchmark_platform.bridges.adapters import load_case
 from benchmark_platform.bridges.episode import NativeTool
 from benchmark_platform.bridges.product_episode import ProductEpisodeBridge
 from benchmark_platform.bridges.prepare import _trajectory_tool
+from benchmark_platform.bridges.tau_episode import _visible_history as _tau_visible_history
+from benchmark_platform.bridges.vita_episode import _message_text, _visible_history
 from benchmark_platform.bridges.task_product_server import TaskProductBridge
 from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment
@@ -101,6 +103,49 @@ def make_case(root: Path, benchmark: str) -> None:
 
 
 class BridgeMatrixTests(unittest.TestCase):
+    def test_vita_visible_history_structures_tool_calls_without_runtime_timestamp(self) -> None:
+        class ToolCall:
+            id = "call-1"
+            name = "lookup"
+            arguments = {"key": "value"}
+            requestor = "assistant"
+
+        class Message:
+            role = "assistant"
+            content = None
+            tool_calls = [ToolCall()]
+            tool_messages = None
+
+            def __str__(self) -> str:
+                return "timestamp: 20260817_094500"
+
+        rendered = _visible_history([Message()])
+        self.assertIn('"name": "lookup"', rendered)
+        self.assertNotIn("timestamp", rendered)
+        self.assertNotIn("20260817", rendered)
+        self.assertEqual(json.loads(_message_text(Message()))[0]["arguments"], {"key": "value"})
+
+    def test_tau_visible_history_structures_tool_calls_without_runtime_timestamp(self) -> None:
+        class ToolCall:
+            id = "call-1"
+            name = "lookup"
+            arguments = {"key": "value"}
+            requestor = "assistant"
+
+        class Message:
+            role = "assistant"
+            content = None
+            tool_calls = [ToolCall()]
+            tool_messages = None
+
+            def __str__(self) -> str:
+                return "timestamp: 20260817_094500"
+
+        rendered = _tau_visible_history([Message()])
+        self.assertIn('"name": "lookup"', rendered)
+        self.assertNotIn("timestamp", rendered)
+        self.assertNotIn("20260817", rendered)
+
     def test_task_product_bridge_only_prelaunches_read_only_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bridge = TaskProductBridge(
@@ -176,6 +221,108 @@ class BridgeMatrixTests(unittest.TestCase):
             result = bridge.finalize({"profile": "actor-only", "answer": "done", "committed_calls": []})
             thread.join(timeout=1)
             self.assertEqual(result["native_score"], 1.0)
+            self.assertFalse(thread.is_alive())
+
+    def test_product_episode_completion_releases_inflight_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = ProductEpisodeBridge("native", "case", Path(directory))
+            bridge.publish_manifest(
+                prompt="visible prompt",
+                tools=[],
+                metadata={"native_lifecycle": True},
+            )
+            action_ready = threading.Event()
+
+            def native_side() -> None:
+                bridge.next_action()
+                action_ready.set()
+                bridge.complete({"status": "completed", "native_score": 1.0}, None)
+
+            thread = threading.Thread(target=native_side)
+            thread.start()
+            result = bridge.execute("send_message_to_user", {"content": "done"}, speculative=False)
+            action_ready.wait(timeout=1)
+            thread.join(timeout=1)
+
+            self.assertEqual(result, {"ok": False, "error": "native_episode_already_finished"})
+            self.assertFalse(thread.is_alive())
+
+    def test_product_episode_plain_message_continues_native_conversation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = ProductEpisodeBridge("native", "case", Path(directory))
+            bridge.publish_manifest(
+                prompt="visible prompt",
+                tools=[],
+                metadata={"native_lifecycle": True},
+            )
+
+            def native_side() -> None:
+                action = bridge.next_action()
+                self.assertEqual(action.kind, "message")
+                self.assertEqual(action.arguments, {"content": "Please confirm"})
+                bridge.resolve(action, {"ok": True, "result": {"user_message": "Confirmed"}})
+
+            thread = threading.Thread(target=native_side)
+            thread.start()
+            response = bridge.continue_conversation("Please confirm")
+            thread.join(timeout=1)
+
+            self.assertEqual(response["result"]["user_message"], "Confirmed")
+            self.assertEqual(bridge.calls, [])
+            self.assertFalse(thread.is_alive())
+
+    def test_product_episode_native_user_stop_releases_plain_message_as_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = ProductEpisodeBridge("native", "case", Path(directory))
+            bridge.publish_manifest(
+                prompt="visible prompt",
+                tools=[],
+                metadata={"native_lifecycle": True},
+            )
+
+            def native_side() -> None:
+                bridge.next_action()
+                bridge.complete({"status": "completed", "native_score": 1.0}, None)
+
+            thread = threading.Thread(target=native_side)
+            thread.start()
+            response = bridge.continue_conversation("Anything else?")
+            thread.join(timeout=1)
+
+            self.assertEqual(response, {"ok": True, "episode_complete": True})
+            self.assertFalse(thread.is_alive())
+
+    def test_product_episode_commits_and_replays_speculative_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = ProductEpisodeBridge("native", "case", Path(directory))
+            bridge.publish_manifest(
+                prompt="visible prompt",
+                tools=[
+                    NativeTool(
+                        "lookup",
+                        "read state",
+                        {"type": "object", "properties": {}},
+                        read_only=True,
+                        parallel=True,
+                    )
+                ],
+                metadata={"native_lifecycle": True},
+                speculative_executor=lambda _name, _arguments: {"ok": True, "result": "cached"},
+            )
+            def native_side() -> None:
+                action = bridge.next_action()
+                self.assertEqual(bridge.replay_response(action.id), {"ok": True, "result": "cached"})
+                bridge.resolve(action, {"ok": True, "result": "cached"})
+
+            thread = threading.Thread(target=native_side)
+            thread.start()
+            speculative = bridge.execute("lookup", {"key": "a"}, speculative=True)
+            speculation_id = speculative["_harnesseval_speculation_id"]
+            committed = bridge.commit(speculation_id, "lookup", {"key": "a"})
+            thread.join(timeout=1)
+
+            self.assertEqual(committed, {"ok": True, "result": "cached"})
+            self.assertTrue(bridge.calls[0]["replayed_speculation"])
             self.assertFalse(thread.is_alive())
 
     def test_all_profiles_load_every_single_turn_bridge(self) -> None:
