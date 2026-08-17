@@ -392,52 +392,23 @@
       "level": 3,
       "scoreability": "local_official",
       "split": "validation"
-    },
-    {
-      "attachment": "",
-      "id": "1276e220-1482-424f-9c05-ae459f9de38e",
-      "level": 3,
-      "scoreability": "official_submission_only",
-      "split": "test"
-    },
-    {
-      "attachment": "",
-      "id": "3415b0bd-f53f-4397-b657-b3204d43235e",
-      "level": 3,
-      "scoreability": "official_submission_only",
-      "split": "test"
-    },
-    {
-      "attachment": "",
-      "id": "335024e1-aa6a-4a48-bba5-fad4ebd8868c",
-      "level": 3,
-      "scoreability": "official_submission_only",
-      "split": "test"
-    },
-    {
-      "attachment": "",
-      "id": "2db1003c-96b9-4e26-9223-5a2d491d26ac",
-      "level": 3,
-      "scoreability": "official_submission_only",
-      "split": "test"
     }
   ],
-  "declared_count": 60,
+  "declared_count": 56,
   "locally_scoreable_count": 56,
   "mode": "light",
   "schema_version": 1,
-  "scoring_note": "GAIA 2023 validation exposes only 26 level-3 cases. Four level-3 test cases complete the requested 30-case stratum but require official submission scoring and are excluded from local aggregate scores.",
+  "scoring_note": "Every selected case has a public validation answer and participates in the local score denominator.",
   "selection_policy": {
     "frozen": true,
     "historical_runs_used": false,
-    "method": "SHA-256 rank within requested level and public split; all 26 public validation L3 cases plus 4 hidden-answer test L3 cases",
+    "method": "SHA-256 rank within the public validation split; all 26 locally scoreable validation L3 cases are retained",
     "model_outcomes_used": false,
     "seed": "harnesseval-light-v1"
   },
   "source": {
     "dataset": "GAIA 2023",
     "metadata_sha256": {
-      "test/metadata.level3.parquet": "fa681682d1447bf2a3f74888eec97da0cd96722d00cb48e9255fb232ea0b5513",
       "validation/metadata.level1.parquet": "5e574b0faeb4603b816e426cf7c7aefb1fe398d32f9c4861e1a4e3304f2b1281",
       "validation/metadata.level2.parquet": "36fe47d728ef4e4a4477ab21bbddb88e6739ac81a885ededf99f8b395b196f2c",
       "validation/metadata.level3.parquet": "5d004e101d8fa8b071cc50d323f8437051975aea7e894892e7d5584e9920790d"
@@ -447,6 +418,6 @@
   "strata_summary": {
     "level_1": 10,
     "level_2": 20,
-    "level_3": 30
+    "level_3": 26
   }
 }

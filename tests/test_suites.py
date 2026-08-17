@@ -28,7 +28,7 @@ class SuiteTests(unittest.TestCase):
             self.assertEqual(set(self.suites.ids(mode)), set(self.catalog.ids()))
 
     def test_light_manifests_are_frozen_and_outcome_independent(self) -> None:
-        for benchmark_id in ("gaia", "gdpval", "vitabench", "tau2", "bfcl", "terminal-bench-2"):
+        for benchmark_id in ("gaia", "gdpval", "trajectory-bench", "vitabench", "tau2", "bfcl", "terminal-bench-2"):
             suite = self.suites.get(benchmark_id, "light")
             self.assertEqual(suite["status"], "ready")
             self.assertEqual(suite["declared_count"], len(suite["cases"]))
@@ -36,17 +36,17 @@ class SuiteTests(unittest.TestCase):
             policy = suite["selection_policy"]
             self.assertTrue(policy["frozen"])
             self.assertFalse(policy["model_outcomes_used"])
-            self.assertFalse(policy["historical_runs_used"])
+            self.assertFalse(policy.get("historical_runs_used", policy.get("baseline_runs_used")))
             self.assertEqual(len(suite["manifest_sha256"]), 64)
 
     def test_gaia_requested_level_mix_and_scoreable_denominator(self) -> None:
         suite = self.suites.get("gaia", "light")
-        self.assertEqual(suite["declared_count"], 60)
-        self.assertEqual(Counter(case["level"] for case in suite["cases"]), {1: 10, 2: 20, 3: 30})
+        self.assertEqual(suite["declared_count"], 56)
+        self.assertEqual(Counter(case["level"] for case in suite["cases"]), {1: 10, 2: 20, 3: 26})
         self.assertEqual(suite["locally_scoreable_count"], 56)
         self.assertEqual(
             Counter(case["scoreability"] for case in suite["cases"]),
-            {"local_official": 56, "official_submission_only": 4},
+            {"local_official": 56},
         )
 
     def test_gdpval_is_three_cases_per_sector(self) -> None:
@@ -64,6 +64,19 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(tau["declared_count"], 30)
         self.assertEqual(Counter(case["domain"] for case in tau["cases"]), {"airline": 10, "retail": 10, "telecom": 10})
 
+    def test_trajectory_inventory_is_executable_and_balanced(self) -> None:
+        suite = self.suites.get("trajectory-bench", "light")
+        self.assertEqual(suite["declared_count"], 100)
+        self.assertEqual(set(Counter(case["domain"] for case in suite["cases"]).values()), {10})
+        self.assertEqual(
+            Counter(case["sample_stratum"] for case in suite["cases"]),
+            {"parallel_hard": 25, "parallel_simple": 25, "sequential_hard": 25, "sequential_simple": 25},
+        )
+        self.assertTrue(all(":" in case["id"] and case["id"].split(":", 1)[0].endswith(".json") for case in suite["cases"]))
+        self.assertTrue(all(case["live_status"] == "all_strict_success" for case in suite["cases"]))
+        self.assertFalse(suite["selection_policy"]["model_outcomes_used"])
+        self.assertTrue(suite["selection_policy"]["endpoint_probe_used"])
+
     def test_bfcl_uses_real_task_categories_not_auxiliary_index(self) -> None:
         suite = self.suites.get("bfcl", "light")
         categories = Counter(case["category"] for case in suite["cases"])
@@ -79,13 +92,15 @@ class SuiteTests(unittest.TestCase):
         self.assertIn("adapter", suite["runner_note"])
         self.assertEqual(self.suites.get("terminal-bench-2", "full")["runner_status"], "adapter_expansion_required")
 
-    def test_trajectory_and_swe_are_explicitly_held(self) -> None:
-        for benchmark_id in ("trajectory-bench", "swe-bench-verified"):
-            for mode in SUITE_MODES:
-                suite = self.suites.get(benchmark_id, mode)
-                self.assertEqual(suite["status"], "held")
-                self.assertEqual(suite["cases"], [])
-                self.assertTrue(suite["reason"])
+    def test_trajectory_full_and_swe_modes_are_explicitly_held(self) -> None:
+        trajectory = self.suites.get("trajectory-bench", "full")
+        self.assertEqual(trajectory["status"], "held")
+        self.assertTrue(trajectory["reason"])
+        for mode in SUITE_MODES:
+            suite = self.suites.get("swe-bench-verified", mode)
+            self.assertEqual(suite["status"], "held")
+            self.assertEqual(suite["cases"], [])
+            self.assertTrue(suite["reason"])
 
     def test_full_mode_delegates_enumeration_to_benchmark(self) -> None:
         for benchmark_id in ("gaia", "gdpval", "vitabench", "tau2", "bfcl", "terminal-bench-2"):

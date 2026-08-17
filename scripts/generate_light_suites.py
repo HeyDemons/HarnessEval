@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 
 SEED = "harnesseval-light-v1"
+TRAJECT_REVISION = "2723fd890778dbfb6af9e3aa8ee1c22272979468"
 VITA_REVISION = "742e240855bf8686a0842360749d5ea970ea3987"
 TAU_REVISION = "79975ac5741e23fbb1d2ac44262d62398a6d87bd"
 BFCL_REVISION = "6ea57973c7a6097fd7c5915698c54c17c5b1b6c8"
@@ -122,31 +123,15 @@ def generate_gaia(orch_root: Path) -> dict[str, Any]:
         ]
         cases.extend(stable_pick(rows, count, "gaia", f"validation-l{level}"))
 
-    test_path = data_root / "test" / "metadata.level3.parquet"
-    file_hashes[str(test_path.relative_to(data_root))] = file_sha256(test_path)
-    test_rows = [
-        {
-            "id": str(row["task_id"]),
-            "split": "test",
-            "level": 3,
-            "attachment": str(row.get("file_name") or ""),
-            "scoreability": "official_submission_only",
-        }
-        for row in pq.read_table(test_path).to_pylist()
-    ]
-    cases.extend(stable_pick(test_rows, 4, "gaia", "test-l3"))
     manifest = base_manifest(
         "gaia",
         {"dataset": "GAIA 2023", "metadata_sha256": file_hashes},
         cases,
-        {"level_1": 10, "level_2": 20, "level_3": 30},
-        "SHA-256 rank within requested level and public split; all 26 public validation L3 cases plus 4 hidden-answer test L3 cases",
+        {"level_1": 10, "level_2": 20, "level_3": 26},
+        "SHA-256 rank within the public validation split; all 26 locally scoreable validation L3 cases are retained",
     )
     manifest["locally_scoreable_count"] = 56
-    manifest["scoring_note"] = (
-        "GAIA 2023 validation exposes only 26 level-3 cases. Four level-3 test cases complete the requested "
-        "30-case stratum but require official submission scoring and are excluded from local aggregate scores."
-    )
+    manifest["scoring_note"] = "Every selected case has a public validation answer and participates in the local score denominator."
     return manifest
 
 
@@ -198,6 +183,77 @@ def generate_gdpval(orch_root: Path) -> dict[str, Any]:
         {sector: 3 for sector in sectors},
         "Three cases per sector, greedily balancing public deliverable type, reference count, rubric size, and occupation metadata",
     )
+
+
+def generate_trajectory(orch_root: Path, inventory_path: Path) -> dict[str, Any]:
+    inventory_bytes = inventory_path.read_bytes()
+    inventory = json.loads(inventory_bytes)
+    if inventory.get("schema_version") != 1:
+        raise ValueError(f"Unsupported TRAJECT inventory schema: {inventory_path}")
+    cases = inventory.get("cases")
+    if not isinstance(cases, list) or len(cases) != 100:
+        raise ValueError("TRAJECT light inventory must contain exactly 100 cases")
+
+    ids = [str(case.get("id") or "") for case in cases]
+    audit_ids = [str(case.get("audit_id") or "") for case in cases]
+    if not all(ids) or len(set(ids)) != len(ids) or not all(audit_ids) or len(set(audit_ids)) != len(audit_ids):
+        raise ValueError("TRAJECT inventory case ids and audit ids must be non-empty and unique")
+
+    domains = Counter(str(case.get("domain")) for case in cases)
+    strata = Counter(str(case.get("sample_stratum")) for case in cases)
+    if len(domains) != 10 or set(domains.values()) != {10}:
+        raise ValueError(f"TRAJECT domain allocation is not 10 x 10: {domains}")
+    if strata != Counter({"parallel_hard": 25, "parallel_simple": 25, "sequential_hard": 25, "sequential_simple": 25}):
+        raise ValueError(f"TRAJECT topology/difficulty allocation mismatch: {strata}")
+    if any(case.get("live_status") != "all_strict_success" for case in cases):
+        raise ValueError("TRAJECT light inventory contains an endpoint that did not pass the strict live probe")
+
+    data_root = (orch_root / "TRAJECT-Bench" / "public_data").resolve()
+    source_cache: dict[Path, list[dict[str, Any]]] = {}
+    for case in cases:
+        relative, raw_index = case["id"].rsplit(":", 1)
+        source_path = (data_root / relative).resolve()
+        if data_root not in source_path.parents or not source_path.is_file():
+            raise ValueError(f"TRAJECT case path is outside the pinned public data: {case['id']}")
+        records = source_cache.setdefault(source_path, json.loads(source_path.read_text(encoding="utf-8")))
+        record = records[int(raw_index)]
+        tools = record.get("tool list")
+        if tools is None:
+            tools = record.get("tool_list")
+        if not record.get("query") or not isinstance(tools, list):
+            raise ValueError(f"TRAJECT source record is incomplete: {case['id']}")
+        if len(tools) != case["tool_calls"]:
+            raise ValueError(f"TRAJECT tool count differs from audited inventory: {case['id']}")
+
+    manifest = base_manifest(
+        "trajectory-bench",
+        {
+            "revision": TRAJECT_REVISION,
+            "inventory_sha256": hashlib.sha256(inventory_bytes).hexdigest(),
+            "source_workbook": inventory["source_workbook"],
+            "inventory_summary": inventory["inventory_summary"],
+            "source_case_records_verified": len(cases),
+        },
+        cases,
+        {
+            **{f"domain:{name}": count for name, count in sorted(domains.items())},
+            **{f"stratum:{name}": count for name, count in sorted(strata.items())},
+        },
+        "Workbook-audited endpoint-eligible cases with fixed 10-per-domain and 25-per-topology/difficulty-cell allocation",
+    )
+    manifest["selection_policy"] = {
+        "frozen": True,
+        "method": manifest["selection_policy"]["method"],
+        "model_outcomes_used": False,
+        "baseline_runs_used": False,
+        "endpoint_probe_used": True,
+        "dataset_historical_tool_outputs_used": True,
+    }
+    manifest["eligibility_note"] = (
+        "Every declared endpoint passed the live ToolBench probe. Exact historical argument combinations were not rerun, "
+        "so endpoint eligibility is not a guarantee of immutable external responses."
+    )
+    return manifest
 
 
 def vita_registry() -> dict[str, list[str]]:
@@ -354,11 +410,17 @@ def main() -> None:
     parser.add_argument("--platform-root", type=Path, default=platform_root)
     parser.add_argument("--orch-root", type=Path, default=platform_root.parent)
     parser.add_argument("--output-dir", type=Path, default=platform_root / "catalog" / "suites" / "light")
+    parser.add_argument(
+        "--trajectory-inventory",
+        type=Path,
+        default=platform_root / "catalog" / "suites" / "sources" / "trajectory_online_reproducible_100.json",
+    )
     args = parser.parse_args()
 
     manifests = [
         generate_gaia(args.orch_root.resolve()),
         generate_gdpval(args.orch_root.resolve()),
+        generate_trajectory(args.orch_root.resolve(), args.trajectory_inventory.resolve()),
         generate_vitabench(),
         generate_tau2(args.orch_root.resolve()),
         generate_bfcl(args.platform_root.resolve()),

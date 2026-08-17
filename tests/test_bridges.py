@@ -12,7 +12,7 @@ from pathlib import Path
 from benchmark_platform.bridges.adapters import load_case
 from benchmark_platform.bridges.episode import NativeTool
 from benchmark_platform.bridges.product_episode import ProductEpisodeBridge
-from benchmark_platform.bridges.prepare import _trajectory_tool
+from benchmark_platform.bridges.prepare import _trajectory_source_tools, _trajectory_tool
 from benchmark_platform.bridges.tau_episode import _visible_history as _tau_visible_history
 from benchmark_platform.bridges.vita_episode import _message_text, _visible_history
 from benchmark_platform.bridges.task_product_server import TaskProductBridge
@@ -188,6 +188,14 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(merged["domain name"], "Weather")
         self.assertEqual(merged["required parameters"][0]["value"], "Nanjing")
         self.assertNotIn("executed_output", merged)
+
+    def test_trajectory_accepts_both_official_tool_list_keys(self) -> None:
+        spaced = [{"tool name": "one"}]
+        underscored = [{"tool name": "two"}]
+        self.assertIs(_trajectory_source_tools({"tool list": spaced}, "case-a"), spaced)
+        self.assertIs(_trajectory_source_tools({"tool_list": underscored}, "case-b"), underscored)
+        with self.assertRaises(ValueError):
+            _trajectory_source_tools({}, "case-c")
 
     def test_product_episode_rendezvous_and_speculation_gate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

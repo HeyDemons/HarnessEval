@@ -32,10 +32,10 @@ harnesseval suite gaia --mode light --ids-only
 harnesseval suite all --mode full --json
 ```
 
-The current light design includes GAIA 10/20/30 by level, 27 sector-balanced
-GDPval tasks, the unbiased VitaBench-60, and representative tau2, BFCL, and
-Terminal-Bench 2 subsets. TRAJECT-Bench is held until replay endpoints are
-verified. Exact denominators, scoring limits, and selection integrity rules are
+The current light design includes 56 locally scoreable GAIA cases (10/20/26 by
+level), 27 sector-balanced GDPval tasks, 100 endpoint-audited TRAJECT cases,
+the unbiased VitaBench-60, and representative tau2, BFCL, and Terminal-Bench 2
+subsets. Exact denominators, scoring limits, and selection integrity rules are
 in [the evaluation suite specification](docs/EVALUATION_SUITES.md).
 
 ## Install

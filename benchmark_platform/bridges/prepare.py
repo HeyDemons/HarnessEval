@@ -91,6 +91,15 @@ def _trajectory_tool(tool: dict[str, Any], catalog: Any) -> dict[str, Any]:
     }
 
 
+def _trajectory_source_tools(record: dict[str, Any], case_id: str) -> list[dict[str, Any]]:
+    tools = record.get("tool list")
+    if tools is None:
+        tools = record.get("tool_list")
+    if not isinstance(tools, list):
+        raise ValueError(f"TRAJECT case has no structured tool list: {case_id}")
+    return tools
+
+
 def prepare_gaia(case_id: str, output: Path) -> None:
     candidates = sorted(Path("/data").rglob("metadata.parquet"))
     row = None
@@ -155,9 +164,10 @@ def prepare_trajectory(case_id: str, output: Path) -> None:
         raise ValueError("TRAJECT case path is outside public_data")
     record = _records(path)[int(raw_index)]
     catalog = json.loads((root / "tools" / "all_tools.json").read_text(encoding="utf-8"))
-    tools = [_trajectory_tool(tool, catalog) for tool in record.get("tool list", [])]
+    source_tools = _trajectory_source_tools(record, case_id)
+    tools = [_trajectory_tool(tool, catalog) for tool in source_tools]
     _write(output / "input" / "case.json", {"benchmark": "trajectory-bench", "case_id": case_id, "prompt": record["query"], "tools": tools})
-    _write(output / "authority" / "gold.json", {"final_answer": record.get("final_answer"), "tool_list": record.get("tool list"), "trajectory_type": record.get("trajectory_type")})
+    _write(output / "authority" / "gold.json", {"final_answer": record.get("final_answer"), "tool_list": source_tools, "trajectory_type": record.get("trajectory_type")})
 
 
 def prepare_bfcl(case_id: str, output: Path) -> None:

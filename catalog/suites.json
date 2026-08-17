@@ -9,8 +9,7 @@
         "manifest": "${SUITE_DIR}/suites/light/gdpval.json"
       },
       "trajectory-bench": {
-        "status": "held",
-        "reason": "Held until the official replay endpoints and sampled case availability are verified."
+        "manifest": "${SUITE_DIR}/suites/light/trajectory-bench.json"
       },
       "vitabench": {
         "manifest": "${SUITE_DIR}/suites/light/vitabench.json"
@@ -43,7 +42,7 @@
       "trajectory-bench": {
         "status": "held",
         "selection": "official_full",
-        "reason": "Held until the official replay endpoints and sampled case availability are verified."
+        "reason": "The endpoint-audited 100-case light suite is ready; the complete case universe is still held because endpoint validity is not universal."
       },
       "vitabench": {
         "status": "ready",
