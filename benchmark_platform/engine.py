@@ -6,9 +6,11 @@ import os
 import shlex
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from .catalog import Benchmark, Catalog
 from .store import CaseStore, TERMINAL_STATUSES
@@ -36,6 +38,59 @@ def terminal_agent_command(command_override: list[str] | None, smoke: bool) -> s
     return None
 
 
+def _container_reachable_proxy(proxy: str) -> str:
+    """Translate a macOS loopback proxy URL into Docker's host gateway name."""
+    parsed = urlsplit(proxy)
+    if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        return proxy
+    credentials = ""
+    if parsed.username is not None:
+        credentials = parsed.username
+        if parsed.password is not None:
+            credentials += f":{parsed.password}"
+        credentials += "@"
+    port = f":{parsed.port}" if parsed.port is not None else ""
+    return urlunsplit(
+        (
+            parsed.scheme,
+            f"{credentials}host.docker.internal{port}",
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        )
+    )
+
+
+def local_proxy_url() -> str | None:
+    """Return the active host proxy suitable for container use, if one exists."""
+    for name in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"):
+        if value := os.environ.get(name, "").strip():
+            return _container_reachable_proxy(value)
+    if sys.platform != "darwin" or shutil.which("scutil") is None:
+        return None
+    completed = subprocess.run(
+        ["scutil", "--proxy"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        return None
+    values: dict[str, str] = {}
+    for line in completed.stdout.splitlines():
+        key, separator, value = line.partition(" : ")
+        if separator:
+            values[key.strip()] = value.strip()
+    for prefix, scheme in (("HTTPS", "http"), ("HTTP", "http"), ("SOCKS", "socks5")):
+        if values.get(f"{prefix}Enable") != "1":
+            continue
+        host = values.get(f"{prefix}Proxy", "")
+        port = values.get(f"{prefix}Port", "")
+        if host and port.isdigit():
+            return _container_reachable_proxy(f"{scheme}://{host}:{port}")
+    return None
+
+
 class Platform:
     def __init__(self, root: Path, orch_root: Path, catalog_path: Path):
         self.root = root.resolve()
@@ -44,6 +99,57 @@ class Platform:
 
     def _docker(self, *args: str) -> list[str]:
         return ["docker", *args]
+
+    def _egress_env(self, network: str) -> list[str]:
+        """Docker-run flags that pin container egress explicitly.
+
+        Docker Desktop and colima inject their daemon-level proxy settings into every
+        container. When that proxy is stale or host-local it is unreachable from the
+        container namespace, and urllib honours it, so every API call fails with
+        ECONNREFUSED before a request leaves the VM. `--network host` does not help on
+        macOS: it joins the Linux VM namespace, not the macOS host stack.
+
+        BENCHMARK_RUN_PROXY supports reproducible overrides around the default auto mode:
+          unset or "auto" -> mirror the host proxy, or direct when the host has none
+          "inherit"       -> preserve Docker's injected proxy settings unchanged
+          "direct"        -> neutralise injected proxies and egress directly
+          "<url>"         -> route container egress through <url>
+        Containers on `--network none` get nothing; they have no egress to configure.
+        """
+        if network == "none":
+            return []
+        configured = os.environ.get("BENCHMARK_RUN_PROXY")
+        mode = configured.strip() if configured is not None else "auto"
+        if not mode:
+            mode = "auto"
+        if mode.lower() == "inherit":
+            return []
+        if mode.lower() == "auto":
+            proxy = local_proxy_url() or ""
+        elif mode.lower() == "direct":
+            proxy = ""
+        else:
+            proxy = _container_reachable_proxy(mode)
+            parsed = urlsplit(proxy)
+            if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+                raise ValueError(
+                    "BENCHMARK_RUN_PROXY must be 'auto', 'inherit', 'direct', or a complete proxy URL"
+                )
+        flags: list[str] = []
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            flags.extend(["-e", f"{name}={proxy}"])
+        no_proxy = (
+            (
+                os.environ.get("BENCHMARK_RUN_NO_PROXY")
+                or os.environ.get("NO_PROXY")
+                or os.environ.get("no_proxy")
+                or "localhost,127.0.0.1,::1,host.docker.internal"
+            ).strip()
+            if proxy
+            else "*"
+        )
+        flags.extend(["-e", f"NO_PROXY={no_proxy}", "-e", f"no_proxy={no_proxy}"])
+        return flags
 
     def image_exists(self, image: str) -> bool:
         return subprocess.run(
@@ -102,6 +208,20 @@ class Platform:
         observed = json.loads(inspect.stdout)[0].get("Config", {}).get("Labels", {}) or {}
         return all(observed.get(name) == value for name, value in expected.items())
 
+    def _ensure_base_images(self, adapter: dict[str, Any], *, pull: bool) -> dict[str, Any] | None:
+        """Pull declared build bases only when missing or explicitly refreshed."""
+        for base_image in adapter.get("pre_pull", []):
+            if not pull and self.image_exists(base_image):
+                continue
+            pull_result = subprocess.run(self._docker("pull", base_image), check=False).returncode
+            if pull_result != 0:
+                return {
+                    "status": "failed",
+                    "returncode": pull_result,
+                    "reason": f"Unable to pull base image {base_image}",
+                }
+        return None
+
     def build(self, benchmark: Benchmark, *, pull: bool = False) -> dict[str, Any]:
         adapter = benchmark.adapter
         if adapter["kind"] == "terminal-task":
@@ -112,15 +232,8 @@ class Platform:
             source_result = self._ensure_source_checkout(source)
             if source_result["status"] != "completed":
                 return {"benchmark": benchmark.id, "status": "failed", "source_checkout": source_result}
-        for base_image in adapter.get("pre_pull", []):
-            pull_result = subprocess.run(self._docker("pull", base_image), check=False).returncode
-            if pull_result != 0:
-                return {
-                    "benchmark": benchmark.id,
-                    "status": "failed",
-                    "returncode": pull_result,
-                    "reason": f"Unable to pull base image {base_image}",
-                }
+        if base_failure := self._ensure_base_images(adapter, pull=pull):
+            return {"benchmark": benchmark.id, **base_failure}
         command = self._docker("build")
         if pull:
             command.append("--pull")
@@ -264,15 +377,8 @@ class Platform:
                 "returncode": returncode,
                 "elapsed_seconds": time.perf_counter() - started,
             }
-        for base_image in adapter.get("pre_pull", []):
-            pull_result = subprocess.run(self._docker("pull", base_image), check=False).returncode
-            if pull_result != 0:
-                return {
-                    "benchmark": benchmark.id,
-                    "status": "failed",
-                    "returncode": pull_result,
-                    "reason": f"Unable to pull base image {base_image}",
-                }
+        if base_failure := self._ensure_base_images(adapter, pull=pull):
+            return {"benchmark": benchmark.id, **base_failure}
         command = self._docker("build")
         if pull:
             command.append("--pull")
@@ -854,7 +960,21 @@ class Platform:
 
     def _prepare_bridge_case(self, benchmark: Benchmark, case_id: str, run_dir: Path) -> Path:
         prepared = run_dir.resolve() / ".bridge_inputs" / slug(benchmark.id) / slug(case_id)
-        if (prepared / "input" / "case.json").is_file() and (prepared / "authority" / "gold.json").is_file():
+        prepare_source = self.root / "benchmark_platform" / "bridges" / "prepare.py"
+        preparation_identity = {
+            "schema_version": 1,
+            "benchmark": benchmark.id,
+            "case_id": case_id,
+            "prepare_sha256": hashlib.sha256(prepare_source.read_bytes()).hexdigest(),
+            "source": benchmark.source,
+        }
+        identity_path = prepared / "preparation_identity.json"
+        if (
+            (prepared / "input" / "case.json").is_file()
+            and (prepared / "authority" / "gold.json").is_file()
+            and identity_path.is_file()
+            and json.loads(identity_path.read_text(encoding="utf-8")) == preparation_identity
+        ):
             return prepared
         staging = prepared.with_name(f".{prepared.name}.staging-{os.getpid()}")
         if staging.exists():
@@ -886,6 +1006,7 @@ class Platform:
         if completed.returncode != 0:
             shutil.rmtree(staging, ignore_errors=True)
             raise RuntimeError(f"Bridge case preparation failed: {completed.stderr or completed.stdout}")
+        atomic_json(staging / "preparation_identity.json", preparation_identity)
         prepared.parent.mkdir(parents=True, exist_ok=True)
         if prepared.exists():
             shutil.rmtree(prepared)
@@ -1017,6 +1138,7 @@ class Platform:
         if not adapter.get("run_as_root", False):
             command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
         command.extend(["-e", "HOME=/tmp", "-e", "PYTHONUNBUFFERED=1"])
+        command.extend(self._egress_env(network))
         if working_dir := adapter.get("working_dir"):
             command.extend(["-w", working_dir])
         for name in env_names:
@@ -1111,6 +1233,7 @@ class Platform:
 
         def controller_command(action: str) -> list[str]:
             command = self._docker("run", "--rm", "--init", "--network", "bridge")
+            command.extend(self._egress_env("bridge"))
             command.extend(["-v", f"{socket_path}:/var/run/docker.sock:rw"])
             command.extend(["-e", "DOCKER_HOST=unix:///var/run/docker.sock"])
             for name in adapter.get("pass_env", []):
@@ -1154,10 +1277,10 @@ class Platform:
                 create = self._docker("create", "--init", "--name", task_container)
                 create.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.task-container-agent=1"])
                 create.extend(["--platform", public_case["task_image"]["platform"]])
+                create.extend(["--network", "bridge"])
+                create.extend(self._egress_env("bridge"))
                 create.extend(
                     [
-                        "--network",
-                        "bridge",
                         "-w",
                         public_case["workspace_root"],
                         public_case["task_image"]["name"],
@@ -1297,6 +1420,7 @@ class Platform:
             [
                 "--network",
                 "bridge" if adapter.get("allow_internet") else "none",
+                *self._egress_env("bridge" if adapter.get("allow_internet") else "none"),
                 "-w",
                 "/app",
                 image,
@@ -1367,6 +1491,7 @@ class Platform:
                     verify.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.verifier-only=1"])
                     if platform := adapter.get("platform"):
                         verify.extend(["--platform", platform])
+                    verify.extend(self._egress_env("bridge"))
                     verify.extend(
                         [
                             "--network",
@@ -1468,6 +1593,7 @@ class Platform:
         if platform := adapter.get("platform"):
             create.extend(["--platform", platform])
         create.extend(["--network", "bridge" if metadata["environment"].get("allow_internet") else "none"])
+        create.extend(self._egress_env("bridge" if metadata["environment"].get("allow_internet") else "none"))
         if smoke:
             create.extend(["-v", f"{task_dir / 'solution'}:/solution:ro"])
         create.extend(["-w", "/app", image, "bash", "-lc", shell_command])
@@ -1517,6 +1643,7 @@ class Platform:
                     verify.extend(["--label", "orch.benchmark-platform=1", "--label", f"orch.benchmark={benchmark.id}"])
                     if platform := adapter.get("platform"):
                         verify.extend(["--platform", platform])
+                    verify.extend(self._egress_env("bridge"))
                     verify.extend(
                         [
                             "--network",

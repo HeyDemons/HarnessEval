@@ -12,6 +12,36 @@ from typing import Any, Awaitable, Callable, Mapping
 from .api import Completion, OpenAICompatibleClient
 
 
+JSON_SCHEMA_TYPE_ALIASES = {
+    "bool": "boolean",
+    "dict": "object",
+    "double": "number",
+    "float": "number",
+    "int": "integer",
+    "list": "array",
+    "str": "string",
+    "tuple": "array",
+}
+
+
+def normalize_json_schema(value: Any) -> Any:
+    """Translate common source-schema aliases without changing constraints or fields."""
+    if isinstance(value, list):
+        return [normalize_json_schema(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    normalized = {key: normalize_json_schema(item) for key, item in value.items()}
+    declared = normalized.get("type")
+    if isinstance(declared, str):
+        normalized["type"] = JSON_SCHEMA_TYPE_ALIASES.get(declared.lower(), declared)
+    elif isinstance(declared, list):
+        normalized["type"] = [
+            JSON_SCHEMA_TYPE_ALIASES.get(item.lower(), item) if isinstance(item, str) else item
+            for item in declared
+        ]
+    return normalized
+
+
 def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None) -> Any:
     """Decode one complete JSON value without slicing through quoted content."""
     decoder = json.JSONDecoder()
@@ -42,12 +72,36 @@ def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None
                 value, end = decoder.raw_decode(source[start:])
             except json.JSONDecodeError:
                 continue
-            if source[start + end :].strip():
-                continue
+            remainder = source[start + end :].strip()
+            if remainder:
+                # A model may emit a whitespace-separated sequence of complete values,
+                # narrating a whole trajectory in one turn. Accept the sequence only if
+                # it tiles the remainder exactly, and take the FIRST value: the later
+                # ones were produced without ever observing a tool result, so honouring
+                # them would let a fabricated {"final": ...} end the episode with zero
+                # tool calls. Anything else is still a protocol violation.
+                if not _tiles_json_sequence(decoder, remainder):
+                    continue
             if expected_type is not None and not isinstance(value, expected_type):
                 continue
             return value
     raise ValueError("Response did not contain one complete JSON value")
+
+
+def _tiles_json_sequence(decoder: json.JSONDecoder, text: str) -> bool:
+    """True when text is exactly a whitespace-separated run of complete JSON values."""
+    cursor = 0
+    while cursor < len(text):
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text):
+            break
+        try:
+            _, end = decoder.raw_decode(text[cursor:])
+        except json.JSONDecodeError:
+            return False
+        cursor += end
+    return True
 
 
 class JsonlTrace:
@@ -99,7 +153,7 @@ class ToolSpec:
         return {
             "name": self.name,
             "description": self.description,
-            "parameters": dict(self.parameters),
+            "parameters": normalize_json_schema(dict(self.parameters)),
             "parallel": self.parallel,
             "read_only": self.read_only,
         }
@@ -169,7 +223,11 @@ class ToolEnvironment:
             raise ValueError(f"Handlers reference unknown tools: {unknown_handlers}")
         self.trace = trace
         self.calls: list[dict[str, Any]] = []
-        self._state_lock = asyncio.Lock()
+        self._state_condition = asyncio.Condition()
+        self._active_shared = 0
+        self._exclusive_active = False
+        self._waiting_exclusive = 0
+        self._state_version = 0
 
     @property
     def names(self) -> list[str]:
@@ -183,19 +241,73 @@ class ToolEnvironment:
             sort_keys=True,
         )
 
+    @property
+    def state_version(self) -> int:
+        """Monotonic environment version advanced by every invoked mutating tool."""
+        return self._state_version
+
+    async def _enter_shared(self) -> None:
+        async with self._state_condition:
+            await self._state_condition.wait_for(
+                lambda: not self._exclusive_active and self._waiting_exclusive == 0
+            )
+            self._active_shared += 1
+
+    async def _leave_shared(self) -> None:
+        async with self._state_condition:
+            self._active_shared -= 1
+            self._state_condition.notify_all()
+
+    async def _enter_exclusive(self) -> None:
+        async with self._state_condition:
+            self._waiting_exclusive += 1
+            try:
+                await self._state_condition.wait_for(
+                    lambda: not self._exclusive_active and self._active_shared == 0
+                )
+                self._exclusive_active = True
+            finally:
+                self._waiting_exclusive -= 1
+                self._state_condition.notify_all()
+
+    async def _leave_exclusive(self, *, mutated: bool) -> None:
+        async with self._state_condition:
+            if mutated:
+                self._state_version += 1
+            self._exclusive_active = False
+            self._state_condition.notify_all()
+
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         tool = self.tools.get(name)
         await self.trace.emit("tool_request", name=name, arguments=arguments)
+        state_before = self._state_version
         if tool is None:
             result = {"ok": False, "error": "unknown_tool", "available_tools": self.names}
-        elif errors := validate_arguments(tool.parameters, arguments):
+        elif errors := validate_arguments(normalize_json_schema(tool.parameters), arguments):
             result = {"ok": False, "error": "invalid_arguments", "details": errors}
-        elif tool.parallel:
-            result = await self._invoke(tool, arguments)
-        else:
-            async with self._state_lock:
+        elif tool.parallel and tool.read_only:
+            await self._enter_shared()
+            try:
+                state_before = self._state_version
                 result = await self._invoke(tool, arguments)
-        record = {"name": name, "arguments": arguments, "result": result}
+            finally:
+                await self._leave_shared()
+        else:
+            await self._enter_exclusive()
+            try:
+                state_before = self._state_version
+                result = await self._invoke(tool, arguments)
+            finally:
+                # A failed mutating tool may have applied a partial side effect. Treat
+                # every invocation as a state boundary; invalid arguments never enter.
+                await self._leave_exclusive(mutated=not tool.read_only)
+        record = {
+            "name": name,
+            "arguments": arguments,
+            "result": result,
+            "state_version_before": state_before,
+            "state_version_after": self._state_version,
+        }
         self.calls.append(record)
         await self.trace.emit("tool_result", **record)
         return result

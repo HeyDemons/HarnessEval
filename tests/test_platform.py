@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from benchmark_platform.catalog import Catalog
 from benchmark_platform.cli import build_parser
@@ -81,6 +82,81 @@ class PlatformTests(unittest.TestCase):
                 os.environ.pop("OPENAI_API_KEY", None)
             else:
                 os.environ["OPENAI_API_KEY"] = previous
+
+    def test_runtime_proxy_has_explicit_inherit_direct_and_url_modes(self) -> None:
+        platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("benchmark_platform.engine.local_proxy_url", return_value=None),
+        ):
+            automatic = platform._egress_env("bridge")
+        automatic_env = {
+            automatic[index + 1].split("=", 1)[0]: automatic[index + 1].split("=", 1)[1]
+            for index in range(0, len(automatic), 2)
+        }
+        self.assertEqual(automatic_env["HTTPS_PROXY"], "")
+        self.assertEqual(automatic_env["NO_PROXY"], "*")
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "benchmark_platform.engine.local_proxy_url",
+                return_value="http://host.docker.internal:7890",
+            ),
+        ):
+            automatic_proxy = platform._egress_env("bridge")
+        self.assertIn("HTTP_PROXY=http://host.docker.internal:7890", automatic_proxy)
+
+        with patch.dict(os.environ, {"BENCHMARK_RUN_PROXY": "inherit"}, clear=True):
+            self.assertEqual(platform._egress_env("bridge"), [])
+        with patch.dict(os.environ, {"BENCHMARK_RUN_PROXY": "direct"}, clear=True):
+            direct = platform._egress_env("bridge")
+        direct_env = {
+            direct[index + 1].split("=", 1)[0]: direct[index + 1].split("=", 1)[1]
+            for index in range(0, len(direct), 2)
+        }
+        self.assertEqual(direct_env["HTTPS_PROXY"], "")
+        self.assertEqual(direct_env["NO_PROXY"], "*")
+
+        with patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_RUN_PROXY": "http://127.0.0.1:7890",
+                "BENCHMARK_RUN_NO_PROXY": "localhost,service.internal",
+            },
+            clear=True,
+        ):
+            proxied = platform._egress_env("bridge")
+        proxied_env = {
+            proxied[index + 1].split("=", 1)[0]: proxied[index + 1].split("=", 1)[1]
+            for index in range(0, len(proxied), 2)
+        }
+        self.assertEqual(proxied_env["HTTP_PROXY"], "http://host.docker.internal:7890")
+        self.assertEqual(proxied_env["NO_PROXY"], "localhost,service.internal")
+        self.assertEqual(platform._egress_env("none"), [])
+
+        with patch.dict(os.environ, {"BENCHMARK_RUN_PROXY": "not-a-url"}, clear=True):
+            with self.assertRaises(ValueError):
+                platform._egress_env("bridge")
+
+    def test_pre_pull_uses_local_base_unless_refresh_is_explicit(self) -> None:
+        platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
+        adapter = {"pre_pull": ["example/base:fixed"]}
+        with (
+            patch.object(platform, "image_exists", return_value=True),
+            patch("benchmark_platform.engine.subprocess.run") as run,
+        ):
+            self.assertIsNone(platform._ensure_base_images(adapter, pull=False))
+            run.assert_not_called()
+
+        with (
+            patch.object(platform, "image_exists", return_value=True),
+            patch("benchmark_platform.engine.subprocess.run") as run,
+        ):
+            run.return_value.returncode = 0
+            self.assertIsNone(platform._ensure_base_images(adapter, pull=True))
+            run.assert_called_once_with(["docker", "pull", "example/base:fixed"], check=False)
 
     def test_root_execution_is_limited_to_docker_socket_controller(self) -> None:
         catalog = Catalog(ROOT / "catalog" / "benchmarks.json", ROOT, ROOT.parent)

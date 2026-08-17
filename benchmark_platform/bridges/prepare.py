@@ -32,6 +32,65 @@ def _parquet_row(path: Path, case_id: str, id_field: str) -> dict[str, Any]:
     raise KeyError(f"Case not found: {case_id}")
 
 
+def _objects(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for item in value.values():
+            yield from _objects(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _objects(item)
+
+
+def _trajectory_tool(tool: dict[str, Any], catalog: Any) -> dict[str, Any]:
+    name = str(tool.get("tool name") or "")
+    candidates = [
+        item
+        for item in _objects(catalog)
+        if item.get("tool name") == name
+        and item.get("domain name")
+        and item.get("parent tool name")
+        and item.get("API name")
+    ]
+    signatures = {
+        (item["domain name"], item["parent tool name"], item["API name"])
+        for item in candidates
+    }
+    if len(signatures) != 1:
+        raise ValueError(f"Expected one executable TRAJECT tool mapping for {name!r}, found {sorted(signatures)!r}")
+    definition = max(
+        candidates,
+        key=lambda item: len(item.get("required_parameters") or []) + len(item.get("optional_parameters") or []),
+    )
+
+    def parameters(label: str) -> list[dict[str, Any]]:
+        values = {
+            str(item.get("name")): item.get("value")
+            for item in tool.get(label, []) or []
+            if item.get("name")
+        }
+        schema_label = label.replace(" ", "_")
+        merged = []
+        for item in definition.get(schema_label, []) or []:
+            parameter = dict(item)
+            if parameter.get("name") in values:
+                parameter["value"] = values[parameter["name"]]
+            merged.append(parameter)
+        known = {str(item.get("name")) for item in merged}
+        merged.extend(dict(item) for item in tool.get(label, []) or [] if str(item.get("name")) not in known)
+        return merged
+
+    return {
+        "tool name": name,
+        "tool description": tool.get("tool description") or definition.get("tool description", ""),
+        "domain name": definition["domain name"],
+        "parent tool name": definition["parent tool name"],
+        "API name": definition["API name"],
+        "required parameters": parameters("required parameters"),
+        "optional parameters": parameters("optional parameters"),
+    }
+
+
 def prepare_gaia(case_id: str, output: Path) -> None:
     candidates = sorted(Path("/data").rglob("metadata.parquet"))
     row = None
@@ -58,6 +117,10 @@ def prepare_gaia(case_id: str, output: Path) -> None:
     prompt = str(row["Question"])
     if attachment:
         prompt += f"\n\nAttached file is available in the isolated workspace as: {attachment}"
+    prompt += (
+        "\n\nOutput contract: the final response must contain only the concise answer "
+        "that should be passed to the GAIA exact-match scorer."
+    )
     _write(output / "input" / "case.json", {"benchmark": "gaia", "case_id": case_id, "prompt": prompt, "attachment": attachment})
     _write(output / "authority" / "gold.json", {"answer": row.get("Final answer"), "level": row.get("Level")})
 
@@ -91,9 +154,8 @@ def prepare_trajectory(case_id: str, output: Path) -> None:
     if root not in path.parents or not path.is_file():
         raise ValueError("TRAJECT case path is outside public_data")
     record = _records(path)[int(raw_index)]
-    tools = []
-    for tool in record.get("tool list", []):
-        tools.append({key: value for key, value in tool.items() if key not in {"executed_output", "execution_status"}})
+    catalog = json.loads((root / "tools" / "all_tools.json").read_text(encoding="utf-8"))
+    tools = [_trajectory_tool(tool, catalog) for tool in record.get("tool list", [])]
     _write(output / "input" / "case.json", {"benchmark": "trajectory-bench", "case_id": case_id, "prompt": record["query"], "tools": tools})
     _write(output / "authority" / "gold.json", {"final_answer": record.get("final_answer"), "tool_list": record.get("tool list"), "trajectory_type": record.get("trajectory_type")})
 

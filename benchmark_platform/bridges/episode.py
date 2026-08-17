@@ -5,7 +5,7 @@ import json
 import queue
 import threading
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,7 +23,7 @@ class NativeTool:
     description: str
     parameters: Mapping[str, Any]
     read_only: bool = False
-    parallel: bool = True
+    parallel: bool = False
 
     def spec(self) -> ToolSpec:
         return ToolSpec(
@@ -41,11 +41,37 @@ class ActionRequest:
     id: str
     name: str
     arguments: dict[str, Any]
-    reply: queue.Queue[dict[str, Any]] = field(default_factory=queue.Queue)
+    # An asyncio.Future resolved from the native thread via call_soon_threadsafe, not a
+    # queue.Queue awaited through asyncio.to_thread. The queue version pinned a default
+    # executor worker for as long as a request went unanswered, and the native adapter
+    # legitimately stops calling next_wave with requests still pending (step budget
+    # exhausted, episode ended, adapter raised). concurrent.futures' atexit hook joins
+    # executor workers *before* daemon threads are killed, so one unanswered request
+    # hung the interpreter at exit forever: the episode was complete but no result was
+    # ever written. Observed on vitabench A0812003 actor-only, 2h at 0% CPU.
+    reply: asyncio.Future[dict[str, Any]] | None = None
 
     @property
     def is_message(self) -> bool:
         return self.name == SEND_MESSAGE_TOOL
+
+    def resolve(self, payload: dict[str, Any]) -> None:
+        """Hand a result to the awaiting coroutine. Safe from any thread; a no-op if
+        the episode loop is already gone or the request was answered twice."""
+        future = self.reply
+        if future is None:
+            return
+        loop = future.get_loop()
+        def set_result() -> None:
+            if not future.done():
+                future.set_result(payload)
+
+        try:
+            loop.call_soon_threadsafe(set_result)
+        except RuntimeError:
+            # The native adapter may deliver a late result while the episode loop is
+            # already closing. There is no waiter left to receive it.
+            return
 
 
 @dataclass(frozen=True)
@@ -90,12 +116,13 @@ class EpisodeBroker:
 
     async def _request(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         request = ActionRequest(uuid.uuid4().hex, name, arguments)
+        request.reply = asyncio.get_running_loop().create_future()
         self._events.put(request)
         # Every coroutine in an asyncio.gather wave enqueues before the first
         # one resumes here, so the native adapter can emit one multi-tool turn.
         await asyncio.sleep(0)
         self._ready.set()
-        return await asyncio.to_thread(request.reply.get)
+        return await request.reply
 
     async def _run(self) -> None:
         from benchmark_platform.harnesses.core import ToolEnvironment
@@ -164,7 +191,7 @@ class EpisodeBroker:
                     raise RuntimeError("A native wave cannot mix user communication and tool calls")
                 if user_message is None:
                     raise RuntimeError("Native user reply is missing")
-                message_requests[0].reply.put({"ok": True, "result": {"user_message": user_message}})
+                message_requests[0].resolve({"ok": True, "result": {"user_message": user_message}})
             else:
                 supplied = dict(tool_results or {})
                 missing = sorted(set(self._pending) - set(supplied))
@@ -173,7 +200,7 @@ class EpisodeBroker:
                     raise RuntimeError(f"Native tool result mismatch; missing={missing}, extra={extra}")
                 for request_id, request in self._pending.items():
                     content, error = supplied[request_id]
-                    request.reply.put(self._decode_native_result(content, error))
+                    request.resolve(self._decode_native_result(content, error))
             self._pending = {}
 
         while True:

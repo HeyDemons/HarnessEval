@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,16 @@ from .base import BridgeCase, native_spec, read_case, workspace_tools
 def _tool_name(original: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9_]+", "_", original).strip("_").lower() or "tool"
     return f"{stem[:48]}_{hashlib.sha256(original.encode('utf-8')).hexdigest()[:8]}"
+
+
+def _redact(value: Any, secret: str) -> Any:
+    if isinstance(value, str):
+        return value.replace(secret, "[REDACTED]") if secret else value
+    if isinstance(value, list):
+        return [_redact(item, secret) for item in value]
+    if isinstance(value, dict):
+        return {name: _redact(item, secret) for name, item in value.items()}
+    return value
 
 
 def load_workspace(benchmark: str, case_id: str, root: Path) -> BridgeCase:
@@ -66,11 +77,27 @@ def load_trajectory(case_id: str, root: Path) -> BridgeCase:
                 "tool_name": tool.get("parent tool name", tool.get("tool name", "")),
                 "api_name": tool.get("API name", tool.get("tool name", "")),
                 "tool_input": arguments,
+                # ToolBench requires this field. "none" preserves the complete
+                # response while avoiding the upstream example's hard truncation.
+                "strip": "none",
                 "toolbench_key": key,
             }
             request = urllib.request.Request(service_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "toolbench_key": key}, method="POST")
-            with urllib.request.urlopen(request) as response:
-                return json.loads(response.read().decode("utf-8"))
+            try:
+                with urllib.request.urlopen(request) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                body = exc.read().decode("utf-8", errors="replace")
+                try:
+                    detail: Any = json.loads(body)
+                except json.JSONDecodeError:
+                    detail = body
+                return {
+                    "ok": False,
+                    "error": "trajectory_tool_http_error",
+                    "status": exc.code,
+                    "detail": _redact(detail, key),
+                }
 
         handlers[name] = invoke
     return BridgeCase("trajectory-bench", case_id, value["prompt"], specs, handlers, {"source_tools": len(specs)})

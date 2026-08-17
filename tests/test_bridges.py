@@ -5,10 +5,15 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from benchmark_platform.bridges.adapters import load_case
+from benchmark_platform.bridges.episode import NativeTool
+from benchmark_platform.bridges.product_episode import ProductEpisodeBridge
+from benchmark_platform.bridges.prepare import _trajectory_tool
+from benchmark_platform.bridges.task_product_server import TaskProductBridge
 from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment
 from benchmark_platform.harnesses.methods import run_profile
@@ -96,6 +101,83 @@ def make_case(root: Path, benchmark: str) -> None:
 
 
 class BridgeMatrixTests(unittest.TestCase):
+    def test_task_product_bridge_only_prelaunches_read_only_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = TaskProductBridge(
+                benchmark="terminal-bench-2",
+                case_id="case",
+                prompt="Edit the task workspace",
+                container="unused-until-a-tool-is-called",
+                workspace_root="/app",
+                job=Path(directory),
+            )
+            try:
+                manifest = bridge.manifest()
+                self.assertEqual(manifest["safe_tools"], ["read_file", "list_files"])
+                self.assertEqual(
+                    [tool["name"] for tool in manifest["tools"]],
+                    ["read_file", "list_files", "write_file", "run_command"],
+                )
+            finally:
+                bridge.close()
+
+    def test_trajectory_tool_joins_public_execution_metadata_without_output(self) -> None:
+        visible = {
+            "tool name": "Weather lookup",
+            "tool description": "Get weather",
+            "required parameters": [{"name": "city", "value": "Nanjing"}],
+            "executed_output": "hidden answer",
+        }
+        catalog = [
+            {
+                "tool name": "Weather lookup",
+                "domain name": "Weather",
+                "parent tool name": "Weather API",
+                "API name": "Current",
+                "required_parameters": [
+                    {"name": "city", "type": "STRING", "description": "City name"}
+                ],
+            }
+        ]
+        merged = _trajectory_tool(visible, catalog)
+        self.assertEqual(merged["domain name"], "Weather")
+        self.assertEqual(merged["required parameters"][0]["value"], "Nanjing")
+        self.assertNotIn("executed_output", merged)
+
+    def test_product_episode_rendezvous_and_speculation_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = ProductEpisodeBridge("native", "case", Path(directory))
+            bridge.publish_manifest(
+                prompt="visible prompt",
+                tools=[
+                    NativeTool(
+                        "lookup",
+                        "read state",
+                        {"type": "object", "properties": {}},
+                        read_only=True,
+                        parallel=True,
+                    )
+                ],
+                metadata={"native_lifecycle": True},
+                allow_speculation=False,
+            )
+            self.assertEqual(bridge.manifest()["safe_tools"], [])
+            self.assertFalse(bridge.execute("lookup", {}, speculative=True)["ok"])
+
+            def native_side() -> None:
+                action = bridge.next_action()
+                bridge.resolve(action, {"ok": True, "result": "value"})
+                final = bridge.next_action()
+                bridge.complete({"status": "completed", "native_score": 1.0}, final)
+
+            thread = threading.Thread(target=native_side)
+            thread.start()
+            self.assertEqual(bridge.execute("lookup", {}, speculative=False)["result"], "value")
+            result = bridge.finalize({"profile": "actor-only", "answer": "done", "committed_calls": []})
+            thread.join(timeout=1)
+            self.assertEqual(result["native_score"], 1.0)
+            self.assertFalse(thread.is_alive())
+
     def test_all_profiles_load_every_single_turn_bridge(self) -> None:
         async def exercise(root: Path, benchmark: str, profile_id: str) -> tuple[str, RecordingClient, str]:
             bridge = load_case(benchmark, "case", root)
@@ -169,6 +251,31 @@ class BridgeMatrixTests(unittest.TestCase):
             stdout = result["result"]["stdout"]
             self.assertTrue(stdout.startswith("x" * 200000))
             self.assertTrue(stdout.rstrip().endswith("absent"))
+
+    def test_workspace_command_exposes_nonzero_exit_as_tool_failure(self) -> None:
+        async def exercise(root: Path):
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "failed-command.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            return await environment.call(
+                "run_command",
+                {
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import sys; print('complete failure output'); sys.exit(7)",
+                    ]
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            result = asyncio.run(exercise(root))
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "command_failed")
+            self.assertEqual(result["returncode"], 7)
+            self.assertEqual(result["stdout"], "complete failure output\n")
 
 
 if __name__ == "__main__":

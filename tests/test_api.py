@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import unittest
 from unittest.mock import patch
@@ -84,6 +85,30 @@ class NativeTransportTests(unittest.TestCase):
             json.loads(observed["payload"]["messages"][1]["tool_calls"][0]["function"]["arguments"])["query"],
             large_argument,
         )
+
+    def test_remote_disconnect_uses_transport_retry_budget(self) -> None:
+        client = OpenAICompatibleClient(
+            ApiConfig("https://example.invalid/v1", "secret", "model", transport_retries=1)
+        )
+        response = _Response(
+            {
+                "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        )
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=[http.client.RemoteDisconnected("closed"), response],
+            ) as urlopen,
+            patch("benchmark_platform.harnesses.api.time.sleep") as sleep,
+        ):
+            completion = asyncio.run(client.complete_native([{"role": "user", "content": "test"}]))
+
+        self.assertEqual(completion.content, "done")
+        self.assertEqual(completion.transport_retries, 1)
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(1)
 
 
 if __name__ == "__main__":

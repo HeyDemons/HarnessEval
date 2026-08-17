@@ -283,7 +283,7 @@ async def run_sa(ctx: RunContext) -> str:
     safe_names = [name for name, tool in ctx.environment.tools.items() if tool.read_only and tool.parallel]
     top_k = int(ctx.policy.get("sa_top_k", 3))
 
-    async def predict_and_execute() -> dict[str, dict[str, Any]]:
+    async def predict_and_execute() -> dict[str, tuple[int, dict[str, Any]]]:
         if not safe_names:
             return {}
         draft = await ctx.complete_json(
@@ -301,16 +301,31 @@ async def run_sa(ctx: RunContext) -> str:
             ],
         )
         actions = draft.get("actions") if isinstance(draft, dict) else []
-        cache: dict[str, dict[str, Any]] = {}
+        speculation_epoch = ctx.environment.state_version
+        cache: dict[str, tuple[int, dict[str, Any]]] = {}
         valid = [item for item in actions[:top_k] if isinstance(item, dict) and item.get("tool") in safe_names and isinstance(item.get("arguments"), dict)]
 
         async def execute(item: dict[str, Any]) -> None:
             name = str(item["tool"])
             arguments = item["arguments"]
-            cache[_action_key(name, arguments)] = await ctx.environment.call(name, arguments)
+            result = await ctx.environment.call(name, arguments)
+            cache[_action_key(name, arguments)] = (speculation_epoch, result)
 
         await asyncio.gather(*(execute(item) for item in valid))
-        await ctx.trace.emit("sa_draft_ready", actions=valid, cached=list(cache))
+        if ctx.environment.state_version != speculation_epoch:
+            cache.clear()
+            await ctx.trace.emit(
+                "sa_cache_invalidated",
+                reason="state_changed_during_speculation",
+                speculation_epoch=speculation_epoch,
+                current_epoch=ctx.environment.state_version,
+            )
+        await ctx.trace.emit(
+            "sa_draft_ready",
+            actions=valid,
+            cached=list(cache),
+            state_version=speculation_epoch,
+        )
         return cache
 
     draft_task = asyncio.create_task(predict_and_execute())
@@ -318,10 +333,28 @@ async def run_sa(ctx: RunContext) -> str:
         {"role": "system", "content": "Use complete observations only. Available tools: " + ctx.environment.schema + '\nReturn JSON {"tool":"name","arguments":{}} or {"final":"answer"}.'},
         {"role": "user", "content": ctx.prompt},
     ]
-    cache: dict[str, dict[str, Any]] | None = None
+    cache: dict[str, tuple[int, dict[str, Any]]] | None = None
+    # Protocol handling must match _json_tool_loop (methods.py), which actor-only uses:
+    # normalize a single-key {tool_name: {...}} action, and on a malformed response feed
+    # the error back and retry within the turn budget instead of aborting. run_sa
+    # previously raised on both, so one model protocol slip cost sa the entire episode
+    # while actor-only recovered from the identical slip. That biases every sa-vs-
+    # actor-only comparison by the probability of a slip — observed on GAIA L2, where the
+    # model returned the correct answer under {"answer": ...} instead of {"final": ...}.
+    from .methods import _normalize_action  # imported here: methods imports this module
+
     for _ in range(ctx.max_turns):
         raw = await ctx.complete("sa_actor", messages, json_mode=True)
-        action = extract_json(raw, expected_type=dict)
+        try:
+            action = _normalize_action(extract_json(raw, expected_type=dict), ctx.environment.names)
+        except ValueError as exc:
+            messages.extend(
+                [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": f"Protocol error: {exc}. Return one complete action object."},
+                ]
+            )
+            continue
         if "final" in action:
             if not draft_task.done():
                 draft_task.cancel()
@@ -331,19 +364,57 @@ async def run_sa(ctx: RunContext) -> str:
         name = str(action.get("tool", ""))
         arguments = action.get("arguments")
         if not isinstance(arguments, dict):
-            raise ValueError("SA Actor arguments must be an object")
+            messages.extend(
+                [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": "Protocol error: arguments must be one JSON object."},
+                ]
+            )
+            continue
         if cache is None:
             cache = await draft_task
         key = _action_key(name, arguments)
-        if key in cache:
-            result = cache.pop(key)
-            await ctx.trace.emit("sa_cache_hit", name=name, arguments=arguments)
+        cached = cache.pop(key, None)
+        if cached is not None and cached[0] == ctx.environment.state_version:
+            result = cached[1]
+            await ctx.trace.emit(
+                "sa_cache_hit",
+                name=name,
+                arguments=arguments,
+                state_version=ctx.environment.state_version,
+            )
         else:
+            if cached is not None:
+                await ctx.trace.emit(
+                    "sa_cache_stale",
+                    name=name,
+                    arguments=arguments,
+                    cached_state_version=cached[0],
+                    current_state_version=ctx.environment.state_version,
+                )
+            state_before = ctx.environment.state_version
             result = await ctx.environment.call(name, arguments)
-            await ctx.trace.emit("sa_cache_miss", name=name, arguments=arguments)
+            await ctx.trace.emit(
+                "sa_cache_miss",
+                name=name,
+                arguments=arguments,
+                state_version=ctx.environment.state_version,
+            )
+            if ctx.environment.state_version != state_before and cache:
+                invalidated = len(cache)
+                cache.clear()
+                await ctx.trace.emit(
+                    "sa_cache_invalidated",
+                    reason="state_transition",
+                    name=name,
+                    previous_state_version=state_before,
+                    current_state_version=ctx.environment.state_version,
+                    entries=invalidated,
+                )
+        canonical_action = json.dumps(action, ensure_ascii=False, separators=(",", ":"))
         messages.extend(
             [
-                {"role": "assistant", "content": raw},
+                {"role": "assistant", "content": canonical_action},
                 {"role": "user", "content": "Observation: " + json.dumps(result, ensure_ascii=False)},
             ]
         )

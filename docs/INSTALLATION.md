@@ -47,6 +47,27 @@ assume a proxy bound to macOS localhost is container-reachable.
 `BENCHMARK_PIP_INDEX_URL` selects an alternate Python package index for
 supported image builds.
 
+Runtime benchmark and model traffic uses a separate explicit control:
+
+```bash
+# Default: mirror the active macOS proxy, or use direct egress when none is active.
+harnesseval bridge-run ...
+
+# Ignore a stale daemon proxy and use direct container egress.
+BENCHMARK_RUN_PROXY=direct harnesseval bridge-run ...
+
+# Use a proxy URL reachable from the Docker VM.
+BENCHMARK_RUN_PROXY=http://host.docker.internal:7890 harnesseval bridge-run ...
+```
+
+In the default `auto` mode, HarnessEval checks host proxy environment variables
+and then macOS `scutil --proxy`. Loopback proxy hosts are translated to
+`host.docker.internal`, because a container's `127.0.0.1` is not the Mac host.
+Use `BENCHMARK_RUN_PROXY=inherit` to preserve Docker daemon settings exactly.
+When a URL is supplied, `BENCHMARK_RUN_NO_PROXY` may override the bypass list of
+`localhost,127.0.0.1,::1,host.docker.internal`. Proxy settings are applied only
+to containers with an enabled network; `--network none` remains isolated.
+
 Dockerfiles continue to use the official Debian source by default. In regions
 where that CDN route is unstable, `BENCHMARK_APT_MIRROR` can select a trusted
 mirror without editing the image definition:

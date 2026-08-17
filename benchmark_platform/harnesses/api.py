@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import time
@@ -136,9 +137,16 @@ class OpenAICompatibleClient:
                     raise RuntimeError(f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}") from exc
                 if retries >= self.config.transport_retries:
                     raise RuntimeError(f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}") from exc
-            except (TimeoutError, urllib.error.URLError) as exc:
+            # http.client.RemoteDisconnected subclasses ConnectionResetError and
+            # BadStatusLine, neither of which is a urllib.error.URLError, so it escaped
+            # this handler and killed the episode outright. Large tool-schema payloads
+            # (VitaBench cross-domain sends 66 schemas) make such transient disconnects
+            # routine, which is precisely what the retry budget exists for.
+            except (TimeoutError, urllib.error.URLError, http.client.HTTPException, ConnectionError) as exc:
                 if retries >= self.config.transport_retries:
-                    raise RuntimeError(f"API transport failed after {retries} retries: {exc}") from exc
+                    raise RuntimeError(
+                        f"API transport failed after {retries} retries: {type(exc).__name__}: {exc}"
+                    ) from exc
             retries += 1
             time.sleep(2 ** (retries - 1))
 

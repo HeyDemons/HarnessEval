@@ -9,7 +9,14 @@ import unittest
 from pathlib import Path
 
 from benchmark_platform.harnesses.api import Completion
-from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment, ToolSpec, extract_json
+from benchmark_platform.harnesses.core import (
+    JsonlTrace,
+    RunContext,
+    ToolEnvironment,
+    ToolSpec,
+    extract_json,
+    normalize_json_schema,
+)
 from benchmark_platform.harnesses.methods import run_profile
 
 
@@ -37,6 +44,29 @@ def tool_specs() -> list[ToolSpec]:
 
 
 class HarnessTests(unittest.TestCase):
+    def test_source_schema_aliases_are_normalized_recursively(self) -> None:
+        source = {
+            "type": "dict",
+            "properties": {
+                "weight": {"type": "float", "minimum": 0},
+                "tags": {"type": "list", "items": {"type": "str"}},
+                "flags": {"type": ["bool", "null"]},
+            },
+            "required": ["weight"],
+        }
+        self.assertEqual(
+            normalize_json_schema(source),
+            {
+                "type": "object",
+                "properties": {
+                    "weight": {"type": "number", "minimum": 0},
+                    "tags": {"type": "array", "items": {"type": "string"}},
+                    "flags": {"type": ["boolean", "null"]},
+                },
+                "required": ["weight"],
+            },
+        )
+
     def run_profile(
         self,
         profile: str,
@@ -209,6 +239,104 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(answer, "6")
         self.assertEqual(len(environment.calls), 1)
+
+    def test_sa_invalidates_speculation_after_state_transition(self) -> None:
+        state = {"balance": 1}
+
+        async def read_balance(_arguments):
+            return {"balance": state["balance"]}
+
+        async def set_balance(arguments):
+            state["balance"] = arguments["value"]
+            return {"balance": state["balance"]}
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(
+                [
+                    ToolSpec(
+                        "read_balance",
+                        "read",
+                        {"type": "object"},
+                        ("unused",),
+                        parallel=True,
+                        read_only=True,
+                    ),
+                    ToolSpec(
+                        "set_balance",
+                        "write",
+                        {
+                            "type": "object",
+                            "properties": {"value": {"type": "integer"}},
+                            "required": ["value"],
+                        },
+                        ("unused",),
+                    ),
+                ],
+                trace,
+                {"read_balance": read_balance, "set_balance": set_balance},
+            )
+            client = ScriptedClient(
+                [
+                    '{"tool":"set_balance","arguments":{"value":2}}',
+                    '{"actions":[{"tool":"read_balance","arguments":{}}]}',
+                    '{"tool":"read_balance","arguments":{}}',
+                    '{"final":"2"}',
+                ]
+            )
+            context = RunContext(
+                "sa",
+                "set the balance to 2, then read it",
+                client,
+                environment,
+                trace,
+                {"max_turns": 5},
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [json.loads(line) for line in trace.path.read_text().splitlines()]
+
+        self.assertEqual(answer, "2")
+        self.assertEqual(state["balance"], 2)
+        self.assertEqual([call["name"] for call in environment.calls], ["read_balance", "set_balance", "read_balance"])
+        self.assertEqual(environment.calls[-1]["result"]["result"]["balance"], 2)
+        self.assertTrue(any(event["event"] == "sa_cache_invalidated" for event in events))
+
+    def test_concatenated_actions_record_only_the_executed_action(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = ScriptedClient(
+                [
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}'
+                    '{"tool":"lookup","arguments":{"key":"beta"}}',
+                    '{"final":"6"}',
+                ]
+            )
+            context = RunContext(
+                "actor-only",
+                "retrieve alpha",
+                client,
+                environment,
+                trace,
+                {"max_turns": 4},
+            )
+            answer = asyncio.run(run_profile(context))
+
+        assistant_history = [
+            message["content"]
+            for message in client.messages[-1]
+            if message["role"] == "assistant"
+        ]
+        self.assertEqual(answer, "6")
+        self.assertEqual([call["arguments"] for call in environment.calls], [{"key": "alpha"}])
+        self.assertEqual(
+            assistant_history,
+            ['{"tool":"lookup","arguments":{"key":"alpha"}}'],
+        )
+
+    def test_json_parser_rejects_non_json_trailing_text(self) -> None:
+        with self.assertRaises(ValueError):
+            extract_json('{"tool":"lookup","arguments":{}} and then continue')
 
     def test_json_parser_preserves_large_complete_value(self) -> None:
         value = {"text": "x" * 200_000, "tail": [1, 2, 3]}

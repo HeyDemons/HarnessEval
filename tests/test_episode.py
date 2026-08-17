@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
+from enum import Enum
 from pathlib import Path
+from types import SimpleNamespace
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 from benchmark_platform.bridges.episode import (
     SEND_MESSAGE_TOOL,
@@ -11,6 +18,8 @@ from benchmark_platform.bridges.episode import (
     FinalResponse,
     NativeTool,
 )
+from benchmark_platform.bridges.tau_episode import _native_tools as tau_native_tools
+from benchmark_platform.bridges.vita_episode import _native_tools as vita_native_tools
 from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.profiles import PROFILES
 
@@ -87,7 +96,13 @@ class EpisodeBrokerTests(unittest.TestCase):
                 profile="cmws",
                 prompt="look up both values",
                 tools=[
-                    NativeTool("lookup", "lookup", {"type": "object"}),
+                    NativeTool(
+                        "lookup",
+                        "lookup",
+                        {"type": "object"},
+                        read_only=True,
+                        parallel=True,
+                    ),
                 ],
                 trace_path=Path(directory) / "trace.jsonl",
                 policy={},
@@ -135,6 +150,110 @@ class EpisodeBrokerTests(unittest.TestCase):
             result = broker.next_wave(user_message="B")
             self.assertIsInstance(result, FinalResponse)
             self.assertEqual(result.answer, "Option B")
+
+    def test_abandoned_request_does_not_block_interpreter_exit(self) -> None:
+        """A native adapter may stop calling next_wave with a request still pending:
+        step budget exhausted, episode ended, adapter raised. The awaiting coroutine
+        must not hold a concurrent.futures worker, because that executor is joined by
+        an atexit hook before daemon threads are killed, hanging the process at exit
+        after the episode has already finished."""
+        script = textwrap.dedent(
+            """
+            import json, sys, tempfile
+            from pathlib import Path
+            sys.path.insert(0, %r)
+            from tests.test_episode import ScriptedClient
+            from benchmark_platform.bridges.episode import EpisodeBroker, NativeTool
+
+            with tempfile.TemporaryDirectory() as directory:
+                broker = EpisodeBroker(
+                    profile="actor-only",
+                    prompt="look up a value",
+                    tools=[NativeTool("lookup", "lookup", {"type": "object"})],
+                    trace_path=Path(directory) / "trace.jsonl",
+                    policy={},
+                    client=ScriptedClient(
+                        [json.dumps({"tool": "lookup", "arguments": {"key": "a"}})]
+                    ),
+                )
+                broker.start()
+                wave = broker.next_wave()
+                assert len(wave) == 1
+                # Abandon it: never supply the result, exactly as the native loop does
+                # when it stops early. The process must still exit.
+                print("abandoned", flush=True)
+            """
+        ) % str(REPO_ROOT)
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        self.assertIn("abandoned", completed.stdout)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_native_tool_contracts_default_deny_unsafe_prelaunch(self) -> None:
+        class ToolType(Enum):
+            READ = "read"
+            WRITE = "write"
+            GENERIC = "generic"
+
+        def declared(name: str, tool_type: ToolType | None, mutates: bool | None = None):
+            def function():
+                return None
+
+            if tool_type is not None:
+                setattr(function, "__tool_type__", tool_type)
+            if mutates is not None:
+                setattr(function, "__mutates_state__", mutates)
+            return SimpleNamespace(
+                _func=function,
+                openai_schema={
+                    "function": {
+                        "name": name,
+                        "description": name,
+                        "parameters": {"type": "object"},
+                    }
+                },
+            )
+
+        vita = vita_native_tools(
+            [
+                declared("read", ToolType.READ),
+                declared("write", ToolType.WRITE),
+                declared("generic", ToolType.GENERIC),
+                declared("unknown", None),
+            ]
+        )
+        self.assertEqual(
+            [(tool.name, tool.read_only, tool.parallel) for tool in vita],
+            [
+                ("read", True, True),
+                ("write", False, False),
+                ("generic", False, False),
+                ("unknown", False, False),
+            ],
+        )
+
+        tau = tau_native_tools(
+            [
+                declared("safe_read", ToolType.READ, False),
+                declared("mutating_read", ToolType.READ, True),
+                declared("nonmutating_write", ToolType.WRITE, False),
+                declared("unknown", None),
+            ]
+        )
+        self.assertEqual(
+            [(tool.name, tool.read_only, tool.parallel) for tool in tau],
+            [
+                ("safe_read", True, True),
+                ("mutating_read", False, False),
+                ("nonmutating_write", False, False),
+                ("unknown", False, False),
+            ],
+        )
 
 
 if __name__ == "__main__":

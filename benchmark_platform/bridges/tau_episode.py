@@ -30,18 +30,73 @@ def _write(path: Path, value: Any) -> None:
     pending.replace(path)
 
 
+# tau2 declares tool semantics upstream via @is_tool(tool_type=ToolType.*,
+# mutates_state=bool), which its toolkit stores on the wrapped function as
+# `__tool_type__` and `__mutates_state__`; Tool keeps that function in `_func`.
+# `openai_schema` carries none of it, so reading only the schema drops the declaration
+# and every tool falls back to NativeTool's conservative read_only=False. That empties
+# the speculation set (`run_sa` filters on `tool.read_only and tool.parallel`), which
+# silently degrades `sa`/PERSEUS to actor-only plus one wasted predictor call and makes
+# speculation unmeasurable on this benchmark. Same defect as vita_episode.py had.
+#
+# Both signals must agree before a tool may be pre-executed: `mutates_state=False` AND
+# ToolType.READ. tau2 lets a tool override mutates_state independently of its type, so
+# neither alone is sufficient. THINK and GENERIC are excluded — default-deny, because a
+# wrong read-only mark lets a state-changing call execute speculatively.
+_TOOL_TYPE_ATTR = "__tool_type__"
+_MUTATES_STATE_ATTR = "__mutates_state__"
+
+
+def _declared_read_only(tool: Any) -> bool | None:
+    """True when tau2 declares the tool safe to pre-execute; None if undeclared."""
+    func = getattr(tool, "_func", None)
+    tool_type = getattr(func, _TOOL_TYPE_ATTR, None)
+    if tool_type is None:
+        return None
+    is_read = str(getattr(tool_type, "value", tool_type)).lower().endswith("read")
+    mutates = getattr(func, _MUTATES_STATE_ATTR, None)
+    return bool(is_read) and mutates is False
+
+
 def _native_tools(tools: list[Any]) -> list[NativeTool]:
     declared = []
     for tool in tools:
         schema = tool.openai_schema.get("function", tool.openai_schema)
+        # An unreachable declaration must not silently become "safe".
+        read_only = _declared_read_only(tool) is True
         declared.append(
             NativeTool(
                 name=str(schema["name"]),
                 description=str(schema.get("description", "")),
                 parameters=schema.get("parameters") or {"type": "object", "properties": {}},
+                read_only=read_only,
+                parallel=read_only,
             )
         )
     return declared
+
+
+def _tool_contract(tools: list[Any]) -> dict[str, Any]:
+    """Provenance of the contract, recorded per run so the mapping is auditable."""
+    rows: dict[str, list[str]] = {}
+    undeclared: list[str] = []
+    for tool in tools:
+        name = str(tool.openai_schema.get("function", tool.openai_schema)["name"])
+        func = getattr(tool, "_func", None)
+        tool_type = getattr(func, _TOOL_TYPE_ATTR, None)
+        if tool_type is None:
+            undeclared.append(name)
+            continue
+        key = f"{str(getattr(tool_type, 'value', tool_type)).upper()}/mutates={getattr(func, _MUTATES_STATE_ATTR, None)}"
+        rows.setdefault(key, []).append(name)
+    return {
+        "provenance": "benchmark-declared",
+        "source": "@is_tool(tool_type=, mutates_state=) via Tool._func.__tool_type__/__mutates_state__",
+        "safe_for_prelaunch": "ToolType.READ and mutates_state is False",
+        "total": len(tools),
+        "by_declaration": {key: sorted(value) for key, value in sorted(rows.items())},
+        "undeclared": sorted(undeclared),
+    }
 
 
 def _message_text(message: Any) -> str:
@@ -314,6 +369,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         "native_score": reward,
         "native_score_status": "completed" if reward is not None else "not_requested",
         "simulation": simulation.model_dump(mode="json"),
+        "tool_contract": _tool_contract(getattr(orchestrator.agent, "tools", None) or []),
         **(broker.metrics() if broker else {}),
     }
 

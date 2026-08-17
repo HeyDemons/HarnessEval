@@ -111,13 +111,16 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
             **kwargs,
         )
         stdout, stderr = await process.communicate()
-        return {
+        payload = {
             "argv": argv,
             "cwd": str(cwd.relative_to(root)),
             "returncode": process.returncode,
             "stdout": stdout.decode("utf-8", errors="replace"),
             "stderr": stderr.decode("utf-8", errors="replace"),
         }
+        if process.returncode != 0:
+            return {"ok": False, "error": "command_failed", **payload}
+        return {"ok": True, "result": payload}
 
     specs.extend(
         [

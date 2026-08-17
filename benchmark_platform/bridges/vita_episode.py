@@ -19,18 +19,67 @@ def _write(path: Path, value: Any) -> None:
     pending.replace(path)
 
 
+# VitaBench declares tool semantics upstream via @is_tool(tool_type=ToolType.READ /
+# WRITE / GENERIC), stored by the decorator on the wrapped function as
+# `__tool_type__`. Tool keeps that function in `_func`, but it is absent from
+# `openai_schema` (name/description/parameters only), so reading only the schema drops
+# the declaration. Every tool then fell back to NativeTool's conservative
+# read_only=False, which empties the speculation set for `sa` (paper_methods.run_sa
+# filters on `tool.read_only and tool.parallel`) and for PERSEUS. Both degenerated to
+# actor-only plus one wasted predictor call, making speculation unmeasurable here.
+#
+# Only ToolType.READ is treated as safe for pre-execution. WRITE mutates state.
+# GENERIC is a pure utility in practice (distance, weather, holiday lookup) but the
+# name is not a read guarantee, so it is excluded — default-deny, since a wrong
+# read-only mark would let a mutating call execute speculatively.
+_TOOL_TYPE_ATTR = "__tool_type__"
+
+
+def _declared_read_only(tool: Any) -> bool | None:
+    """Upstream ToolType for a tool, or None when the declaration is unreachable."""
+    declared = getattr(getattr(tool, "_func", None), _TOOL_TYPE_ATTR, None)
+    if declared is None:
+        return None
+    return str(getattr(declared, "name", declared)).upper() == "READ"
+
+
 def _native_tools(tools: list[Any]) -> list[NativeTool]:
     declared = []
     for tool in tools:
         schema = tool.openai_schema.get("function", tool.openai_schema)
+        # An unreachable declaration must not silently become "safe".
+        read_only = _declared_read_only(tool) is True
         declared.append(
             NativeTool(
                 name=str(schema["name"]),
                 description=str(schema.get("description", "")),
                 parameters=schema.get("parameters") or {"type": "object", "properties": {}},
+                read_only=read_only,
+                parallel=read_only,
             )
         )
     return declared
+
+
+def _tool_contract(tools: list[Any]) -> dict[str, Any]:
+    """Provenance of the contract, recorded per run so the mapping is auditable."""
+    by_type: dict[str, list[str]] = {}
+    undeclared: list[str] = []
+    for tool in tools:
+        name = str(tool.openai_schema.get("function", tool.openai_schema)["name"])
+        raw = getattr(getattr(tool, "_func", None), _TOOL_TYPE_ATTR, None)
+        if raw is None:
+            undeclared.append(name)
+            continue
+        by_type.setdefault(str(getattr(raw, "name", raw)).upper(), []).append(name)
+    return {
+        "provenance": "benchmark-declared",
+        "source": "@is_tool(tool_type=ToolType.*) via Tool._func.__tool_type__",
+        "safe_for_prelaunch": "ToolType.READ only",
+        "total": len(tools),
+        "by_tool_type": {key: sorted(value) for key, value in sorted(by_type.items())},
+        "undeclared": sorted(undeclared),
+    }
 
 
 def _message_text(message: Any) -> str:
@@ -236,6 +285,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         "schema_version": 1,
         "status": "completed",
         "benchmark": "vitabench",
+        "tool_contract": _tool_contract(environment.get_tools()),
         "case_id": case_id,
         "profile": profile,
         "native_lifecycle": True,

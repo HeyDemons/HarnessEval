@@ -55,9 +55,10 @@ async def _json_tool_loop(ctx: RunContext, role: str) -> str:
             )
             continue
         result = await ctx.environment.call(str(action.get("tool", "")), arguments)
+        canonical_action = json.dumps(action, ensure_ascii=False, separators=(",", ":"))
         messages.extend(
             [
-                {"role": "assistant", "content": raw},
+                {"role": "assistant", "content": canonical_action},
                 {"role": "user", "content": "Observation: " + json.dumps(result, ensure_ascii=False)},
             ]
         )

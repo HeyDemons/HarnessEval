@@ -140,7 +140,7 @@ def evaluate(instance_id: str, patch_path: Path, output: Path) -> None:
 
             run_evaluation.make_test_spec = make_arm64_test_spec
             reporting.make_test_spec = make_arm64_test_spec
-        report = run_evaluation.main(
+        report_reference = run_evaluation.main(
             dataset_name=str(dataset_path),
             split="test",
             instance_ids=[instance_id],
@@ -157,7 +157,20 @@ def evaluate(instance_id: str, patch_path: Path, output: Path) -> None:
             modal=False,
             report_dir=str(report_dir),
         )
-    report = report or {}
+        if isinstance(report_reference, dict):
+            report = report_reference
+        elif isinstance(report_reference, (str, Path)):
+            report_path = Path(report_reference)
+            if not report_path.is_absolute():
+                report_path = Path.cwd() / report_path
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        elif report_reference is None:
+            report = {}
+        else:
+            raise TypeError(
+                "Unsupported SWE-bench report reference: "
+                f"{type(report_reference).__name__}"
+            )
     _write(
         output,
         {
