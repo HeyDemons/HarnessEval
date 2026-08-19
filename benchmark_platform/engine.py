@@ -91,6 +91,23 @@ def local_proxy_url() -> str | None:
     return None
 
 
+# The client knobs a baseline container is allowed to receive. One definition: this list
+# was duplicated across four call sites, so HARNESS_API_STREAM reached the --pass-env
+# flags while every one of them still rejected it, and every arm died on the first case.
+HARNESS_ENV = frozenset({
+    "HARNESS_API_BASE",
+    "HARNESS_API_KEY",
+    "HARNESS_MODEL",
+    "HARNESS_TEMPERATURE",
+    "HARNESS_API_TIMEOUT_S",
+    "HARNESS_API_RETRIES",
+    "HARNESS_MAX_OUTPUT_TOKENS",
+    "HARNESS_REASONING_EFFORT",
+    "HARNESS_API_STREAM",
+    "HARNESS_USER_AGENT",
+})
+
+
 class Platform:
     def __init__(self, root: Path, orch_root: Path, catalog_path: Path):
         self.root = root.resolve()
@@ -565,16 +582,7 @@ class Platform:
                 raise RuntimeError(f"Harness runtime image is unavailable: {image}")
             if subprocess.run(self._docker("pull", image), check=False).returncode != 0:
                 raise RuntimeError(f"Unable to pull harness runtime image: {image}")
-        harness_env = [
-            "HARNESS_API_BASE",
-            "HARNESS_API_KEY",
-            "HARNESS_MODEL",
-            "HARNESS_TEMPERATURE",
-            "HARNESS_API_TIMEOUT_S",
-            "HARNESS_API_RETRIES",
-            "HARNESS_MAX_OUTPUT_TOKENS",
-            "HARNESS_REASONING_EFFORT",
-        ]
+        harness_env = sorted(HARNESS_ENV)
         api_base = os.environ.get("HARNESS_API_BASE", "")
         resume_identity = {
             "profile": profile["id"],
@@ -705,16 +713,7 @@ class Platform:
                 raise RuntimeError(f"Benchmark image build failed: {built}")
         native_episode = benchmark.id in {"vitabench", "tau2"}
         prepared = None if native_episode else self._prepare_bridge_case(benchmark, case_id, run_dir)
-        harness_env = {
-            "HARNESS_API_BASE",
-            "HARNESS_API_KEY",
-            "HARNESS_MODEL",
-            "HARNESS_TEMPERATURE",
-            "HARNESS_API_TIMEOUT_S",
-            "HARNESS_API_RETRIES",
-            "HARNESS_MAX_OUTPUT_TOKENS",
-            "HARNESS_REASONING_EFFORT",
-        }
+        harness_env = set(HARNESS_ENV)
         allowed = harness_env | set(benchmark.raw.get("env_allowlist", []))
         unknown = sorted(set(pass_env) - allowed)
         if unknown:
@@ -828,16 +827,7 @@ class Platform:
         build_missing: bool,
         pass_env: list[str],
     ) -> dict[str, Any]:
-        harness_env = {
-            "HARNESS_API_BASE",
-            "HARNESS_API_KEY",
-            "HARNESS_MODEL",
-            "HARNESS_TEMPERATURE",
-            "HARNESS_API_TIMEOUT_S",
-            "HARNESS_API_RETRIES",
-            "HARNESS_MAX_OUTPUT_TOKENS",
-            "HARNESS_REASONING_EFFORT",
-        }
+        harness_env = set(HARNESS_ENV)
         unknown = sorted(set(pass_env) - harness_env)
         if unknown:
             raise ValueError(f"Unsupported bridge environment variable(s): {', '.join(unknown)}")
@@ -903,16 +893,7 @@ class Platform:
         build_missing: bool,
         pass_env: list[str],
     ) -> dict[str, Any]:
-        harness_env = {
-            "HARNESS_API_BASE",
-            "HARNESS_API_KEY",
-            "HARNESS_MODEL",
-            "HARNESS_TEMPERATURE",
-            "HARNESS_API_TIMEOUT_S",
-            "HARNESS_API_RETRIES",
-            "HARNESS_MAX_OUTPUT_TOKENS",
-            "HARNESS_REASONING_EFFORT",
-        }
+        harness_env = set(HARNESS_ENV)
         allowed = harness_env | {"HF_TOKEN"}
         unknown = sorted(set(pass_env) - allowed)
         if unknown:
