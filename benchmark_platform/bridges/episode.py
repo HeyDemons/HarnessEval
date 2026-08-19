@@ -232,10 +232,21 @@ class EpisodeBroker:
 
         deadline = time.monotonic() + HANDSHAKE_TIMEOUT_S
         while True:
-            if not self._ready.wait(max(0.0, deadline - time.monotonic())):
-                raise RuntimeError(
-                    f"Baseline produced no action or answer within {HANDSHAKE_TIMEOUT_S:.0f}s"
-                )
+            while not self._ready.wait(1.0):
+                # A baseline is free to declare a final answer whenever it likes, and several
+                # do it before the benchmark's own conversation has ended -- dylan stops early
+                # by design. Its thread is then gone, so no wave will ever arrive, and waiting
+                # out the full timeout to learn that costs half an hour of a concurrency slot
+                # per case. The producer being dead is knowable immediately.
+                if not self._thread.is_alive():
+                    raise RuntimeError(
+                        "Baseline finished without the native episode reaching its own end; "
+                        "no further wave can arrive"
+                    )
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Baseline produced no action or answer within {HANDSHAKE_TIMEOUT_S:.0f}s"
+                    )
             self._ready.clear()
             events: list[ActionRequest | FinalResponse | EpisodeFailure] = []
             while True:

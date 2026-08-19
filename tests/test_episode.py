@@ -311,6 +311,7 @@ class HandshakeTimeoutTests(unittest.TestCase):
         broker._ready = threading.Event()
         broker._pending = {}
         broker._broken = None
+        broker._thread = SimpleNamespace(is_alive=lambda: True)
         return episode, broker
 
     def test_an_unanswered_request_fails_instead_of_waiting_forever(self) -> None:
@@ -329,6 +330,18 @@ class HandshakeTimeoutTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     asyncio.run(broker._request("lookup", {}))
                 self.assertLess(time.monotonic() - started, 1)
+
+    def test_a_finished_baseline_fails_the_wave_at_once(self) -> None:
+        """dylan stops early by design; its thread is gone and no wave can ever arrive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            episode, broker = self._broker(Path(tmp))
+            broker._thread = SimpleNamespace(is_alive=lambda: False)
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 3600):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError) as caught:
+                    broker.next_wave()
+                self.assertLess(time.monotonic() - started, 5, "must not wait out the timeout")
+            self.assertIn("no further wave", str(caught.exception))
 
     def test_a_silent_baseline_fails_the_wave_instead_of_waiting_forever(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
