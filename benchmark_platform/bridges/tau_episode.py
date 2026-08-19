@@ -202,13 +202,13 @@ def _patch_tau_generation(client: OpenAICompatibleClient) -> None:
         compatible = to_litellm_messages(messages)
         schemas = [tool.openai_schema for tool in tools] if tools else None
         started = time.perf_counter()
-        completion = asyncio.run(
-            client.complete_native(
-                compatible,
-                tools=schemas,
-                tool_choice=tool_choice,
-                temperature=kwargs.get("temperature"),
-            )
+        # Called synchronously from tau2's own worker thread: go straight to the blocking
+        # client instead of spinning up an event loop per turn just to await a wrapper.
+        completion = client.complete_sync(
+            compatible,
+            tools=schemas,
+            tool_choice=tool_choice,
+            temperature=kwargs.get("temperature"),
         )
         raw_message = completion.raw["choices"][0]["message"]
         parsed_calls = []

@@ -146,7 +146,8 @@ def _patch_vita_generation(client: OpenAICompatibleClient) -> None:
             for item in formatted
             if item.get("role") in {"system", "user", "assistant"}
         ]
-        completion = asyncio.run(client.complete(compatible, temperature=kwargs.get("temperature")))
+        # Same reasoning as tau_episode: this hook is synchronous and already off the loop.
+        completion = client.complete_sync(compatible, temperature=kwargs.get("temperature"))
         return AssistantMessage(
             role="assistant",
             content=completion.content,
