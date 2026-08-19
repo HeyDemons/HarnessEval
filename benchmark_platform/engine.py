@@ -361,12 +361,25 @@ class Platform:
             if pending.exists():
                 shutil.rmtree(pending)
 
-    def _terminal_metadata(self, benchmark: Benchmark) -> tuple[Path, dict[str, Any]]:
+    def _terminal_metadata(
+        self, benchmark: Benchmark, case_id: str | None = None
+    ) -> tuple[Path, dict[str, Any]]:
         try:
             import tomllib
         except ModuleNotFoundError as exc:
             raise RuntimeError("Terminal task metadata requires Python 3.11 or newer") from exc
         task_dir = Path(benchmark.adapter["task_dir"])
+        if case_id:
+            # The catalog pins one task directory, but every suite case names its own task and
+            # the official checkout lays each one out as a sibling of the pinned task. Resolving
+            # per case is what lets the frozen suite run rather than only the pinned task; a case
+            # naming a task that is not in the checkout is an error, not a silent fallback to it.
+            candidate = task_dir.parent / case_id
+            if not (candidate / "task.toml").is_file():
+                raise FileNotFoundError(
+                    f"No terminal task directory for case {case_id!r}: {candidate}"
+                )
+            task_dir = candidate
         with (task_dir / "task.toml").open("rb") as stream:
             metadata = tomllib.load(stream)
         return task_dir, metadata
@@ -831,7 +844,7 @@ class Platform:
         unknown = sorted(set(pass_env) - harness_env)
         if unknown:
             raise ValueError(f"Unsupported bridge environment variable(s): {', '.join(unknown)}")
-        task_dir, metadata = self._terminal_metadata(benchmark)
+        task_dir, metadata = self._terminal_metadata(benchmark, case_id)
         image = metadata.get("environment", {}).get("docker_image") or benchmark.adapter["image"]
         if not self.image_exists(image):
             if not build_missing:
