@@ -39,22 +39,32 @@ PROFILES = (
     HarnessProfile(
         id="plan-execute",
         name="Plan-and-Execute",
-        topology="planner -> sequential executor -> final response",
+        topology="planner -> sequential executor steps -> last step response",
         provenance="protocol-reproduction",
-        source="https://blog.langchain.com/plan-and-execute-agents/",
-        revision=None,
+        source=(
+            "https://github.com/langchain-ai/langchain/tree/"
+            "0207dc1431c29379b724f51c09fa49e6b0333639/libs/experimental/"
+            "langchain_experimental/plan_and_execute"
+        ),
+        revision="0207dc1431c29379b724f51c09fa49e6b0333639",
         tool_contract="dynamic",
-        notes="The planner emits textual steps; a full tool-using executor resolves each step in order.",
+        notes=(
+            "The planner emits minimal textual steps; each tool-using executor receives previous steps and its "
+            "current objective, and the final step response is returned."
+        ),
     ),
     HarnessProfile(
         id="cmws",
         name="Central manager-worker swarm",
         topology="manager -> parallel worker wave -> manager synthesis",
-        provenance="protocol-reproduction",
+        provenance="local-control",
         source=None,
         revision=None,
         tool_contract="dynamic",
-        notes="The manager emits textual assignments; independent tool-using workers execute concurrently.",
+        notes=(
+            "A local conventional control: the manager emits textual assignments, and independent tool-using "
+            "workers receive only their assigned subtask before manager synthesis."
+        ),
     ),
     HarnessProfile(
         id="lats",

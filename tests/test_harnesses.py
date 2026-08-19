@@ -133,11 +133,36 @@ class HarnessTests(unittest.TestCase):
                 '{"final":"beta is 7"}',
                 '{"tool":"multiply","arguments":{"a":6,"b":7}}',
                 '{"final":"the product is 42"}',
-                "42",
             ],
         )
-        self.assertEqual(answer, "42")
+        self.assertEqual(answer, "the product is 42")
         self.assertEqual(environment.calls[-1]["result"]["result"]["product"], 42)
+
+    def test_plan_execute_matches_original_step_context_and_return_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    '{"steps":[{"id":"s1","instruction":"retrieve alpha"}]}',
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"final":"alpha is 6"}',
+                ]
+            )
+            context = RunContext(
+                "plan-execute",
+                "retrieve alpha and explain the result",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"max_turns": 8},
+            )
+            answer = asyncio.run(run_profile(context))
+
+        self.assertEqual(answer, "alpha is 6")
+        self.assertEqual(len(client.messages), 3)
+        executor_prompt = client.messages[1][1]["content"]
+        self.assertIn("Current objective: retrieve alpha", executor_prompt)
+        self.assertNotIn(context.prompt, executor_prompt)
 
     def test_cmws_parallel_wave(self) -> None:
         answer, environment = self.run_profile(
@@ -160,6 +185,34 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(answer, "42")
         self.assertEqual(len(environment.calls), 2)
+
+    def test_cmws_workers_receive_only_their_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    '{"assignments":[{"id":"w1","instruction":"retrieve alpha"}]}',
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"final":"alpha is 6"}',
+                    '{"final":"6"}',
+                ]
+            )
+            context = RunContext(
+                "cmws",
+                "retrieve alpha and beta, then multiply them",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"max_turns": 8},
+            )
+            answer = asyncio.run(run_profile(context))
+
+        self.assertEqual(answer, "6")
+        worker_prompt = client.messages[1][1]["content"]
+        synthesis_prompt = client.messages[-1][0]["content"]
+        self.assertIn("Assignment: retrieve alpha", worker_prompt)
+        self.assertNotIn(context.prompt, worker_prompt)
+        self.assertIn(context.prompt, synthesis_prompt)
 
     def test_lats_tree_search_executes_rollout_and_value_backpropagation(self) -> None:
         answer, environment = self.run_profile(

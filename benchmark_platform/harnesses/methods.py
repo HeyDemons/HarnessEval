@@ -131,18 +131,26 @@ async def run_plan_execute(ctx: RunContext) -> str:
         "planner",
         [
             {
+                "role": "system",
+                "content": (
+                    "Let's first understand the problem and devise a plan to solve the problem. Please make the "
+                    "plan the minimum number of steps required to accurately complete the task. If the task is a "
+                    "question, the final step should almost always be 'Given the above steps taken, please respond "
+                    "to the users original question'. Do not execute the steps."
+                ),
+            },
+            {
                 "role": "user",
                 "content": (
-                    "Create a complete ordered execution plan. Do not execute or answer.\n"
-                    'Return JSON only: {"steps":[{"id":"s1","instruction":"a self-contained step"}]}.\n'
-                    f"Task: {ctx.prompt}"
+                    'Return the plan as JSON only: {"steps":[{"id":"s1","instruction":"step"}]}.\n'
+                    f"{ctx.prompt}"
                 ),
             }
         ],
     )
     steps = plan.get("steps")
-    if not isinstance(steps, list):
-        raise ValueError("Plan-and-Execute planner omitted steps")
+    if not isinstance(steps, list) or not steps:
+        raise ValueError("Plan-and-Execute planner omitted non-empty steps")
     completed: list[dict[str, str]] = []
     for index, step in enumerate(steps, start=1):
         step_id, instruction = _instruction(step, kind="Plan-and-Execute", index=index)
@@ -150,27 +158,12 @@ async def run_plan_execute(ctx: RunContext) -> str:
             ctx,
             f"executor_{step_id}",
             prompt=(
-                "Execute only the current plan step. Select and use tools yourself as needed, then return the "
-                "complete result of this step as `final`.\n"
-                f"Original task: {ctx.prompt}\n"
-                f"Current step: {instruction}\n"
-                f"Completed steps: {json.dumps(completed, ensure_ascii=False)}"
+                f"Previous steps: {json.dumps(completed, ensure_ascii=False)}\n\n"
+                f"Current objective: {instruction}"
             ),
         )
         completed.append({"id": step_id, "instruction": instruction, "result": result})
-    return await ctx.complete(
-        "executor_final",
-        [
-            {
-                "role": "user",
-                "content": (
-                    f"Return the final answer to this task: {ctx.prompt}\n"
-                    f"Plan: {json.dumps(plan, ensure_ascii=False)}\n"
-                    f"Completed step results: {json.dumps(completed, ensure_ascii=False)}"
-                ),
-            }
-        ],
-    )
+    return completed[-1]["result"]
 
 
 async def run_cmws(ctx: RunContext) -> str:
@@ -202,7 +195,7 @@ async def run_cmws(ctx: RunContext) -> str:
                 prompt=(
                     "Work independently on the assigned subtask. Select and use tools yourself as needed, then "
                     "return a concise but complete report as `final`.\n"
-                    f"Original task: {ctx.prompt}\nAssignment: {instruction}"
+                    f"Assignment: {instruction}"
                 ),
             )
             return {

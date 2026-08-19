@@ -38,7 +38,6 @@ RESPONSES = {
     "plan-execute": [
         '{"steps":[{"id":"s1","instruction":"inspect available evidence"}]}',
         '{"final":"inspection complete"}',
-        "ok",
     ],
     "cmws": [
         '{"assignments":[{"id":"w1","instruction":"inspect available evidence"}]}',

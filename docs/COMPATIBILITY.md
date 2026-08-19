@@ -46,16 +46,30 @@ evidence; it is not a benchmark score.
 
 | Profile | Harness seconds | LLM calls | Tool calls | Answer |
 | --- | ---: | ---: | ---: | --- |
-| Plan-and-Execute | 17.44 | 10 | 4 | `252` |
-| CMWS | 21.23 | 9 | 5 | `1764` |
+| Plan-and-Execute, source-aligned run 1 | 17.58 | 9 | 4 | `42` |
+| Plan-and-Execute, source-aligned run 2 | 56.59 | 8 | 4 | `252` |
+| CMWS, assignment-isolated run 1 | 12.37 | 10 | 5 | `42` |
+| CMWS, assignment-isolated run 2 | 16.02 | 10 | 5 | `42` |
 | LATS | 16.64 | 8 | 3 | `42` |
 | MemGPT | 7.70 | 4 | 3 | `42` |
 
-Plan-and-Execute and CMWS no longer fail when the planner or manager emits
-textual work without a `tool` field: their executor and workers selected and
-called tools themselves. Their wrong answers are retained because the model
-overran delegated step boundaries and duplicated work. HarnessEval does not add
-task-specific prompt repairs to turn a transport smoke into a favorable score.
+Plan-and-Execute is aligned to `langchain-experimental==0.0.65` at revision
+`0207dc1431c29379b724f51c09fa49e6b0333639`: each executor sees previous steps
+and its current objective, the full task is not injected by default, and the
+last step response is returned without another synthesis call. The repeated
+run still exposed a source-method limitation rather than a transport failure:
+the model multiplied during the beta-retrieval step, recorded `42` as beta, and
+the next executor correctly computed `6 * 42 = 252`. The first aligned run was
+correct, and an Actor-only control completed the same request as `42` in 5.36
+seconds with four LLM calls and three tool calls.
+
+CMWS is explicitly a local conventional control, not an attributed paper
+reproduction. Workers now receive only their assignment; the manager retains
+the original task for synthesis. Both repeated runs were correct. The manager
+still placed a dependent multiplication assignment in the same nominally
+independent wave, so that worker re-fetched alpha and beta. This is visible
+baseline behavior, not hidden workflow repair. HarnessEval does not add
+task-specific prompts or post-hoc answer correction.
 
 The expanded theory-profile suite covers all thirteen registered profiles: 52
 single-turn, 26 native-conversation, and 26 task-container protocol subtests.

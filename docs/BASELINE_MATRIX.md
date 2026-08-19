@@ -9,8 +9,8 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 13 x 8 table.
 | --- | --- | --- |
 | Actor-only | Dynamic | Shared JSON tool loop control |
 | ReAct | Dynamic | Published Thought/Action/Observation protocol |
-| Plan-and-Execute | Dynamic | Text planner then sequential tool-using agent executors |
-| CMWS | Dynamic | Central manager and parallel tool-using worker agents |
+| Plan-and-Execute | Dynamic | Source-aligned minimal text planner; sequential executors receive only previous steps and the current objective; the last step response is returned |
+| CMWS | Dynamic | Local control with a central manager, assignment-isolated parallel workers, and manager synthesis |
 | LATS | Dynamic branch-isolated | Published MCTS proposal, value, rollout, reflection, and backpropagation; requires read-only tools or environment snapshots |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
 | AFlow | Dynamic frozen workflow | Evaluation requires a workflow optimized on a disjoint split |
