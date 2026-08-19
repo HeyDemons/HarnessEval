@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import queue
+import threading
+import time
 import subprocess
 import sys
 import tempfile
@@ -9,6 +13,7 @@ import unittest
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -285,3 +290,53 @@ class EpisodeBrokerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandshakeTimeoutTests(unittest.TestCase):
+    """Neither side of the native handshake may wait without a bound.
+
+    The adapter is allowed to stop asking for the next wave with requests still pending, and
+    the coroutine awaiting that reply then waits forever while the adapter waits for the
+    message only that coroutine can produce. Neither side is on a socket, so nothing times
+    out on its own: an observed arm sat for an hour with 64 threads in futex_wait_queue and
+    the sweep sat behind it.
+    """
+
+    def _broker(self, tmp: Path):
+        sys.path.insert(0, str(REPO_ROOT))
+        from benchmark_platform.bridges import episode
+
+        broker = episode.EpisodeBroker.__new__(episode.EpisodeBroker)
+        broker._events = queue.Queue()
+        broker._ready = threading.Event()
+        broker._pending = {}
+        broker._broken = None
+        return episode, broker
+
+    def test_an_unanswered_request_fails_instead_of_waiting_forever(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            episode, broker = self._broker(Path(tmp))
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 0.25):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError) as caught:
+                    asyncio.run(broker._request("lookup", {}))
+                waited = time.monotonic() - started
+            self.assertIn("never answered", str(caught.exception))
+            self.assertLess(waited, 5, "must give up on its own, not hang")
+            # A later call must fail at once rather than wait the timeout all over again.
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 30):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(broker._request("lookup", {}))
+                self.assertLess(time.monotonic() - started, 1)
+
+    def test_a_silent_baseline_fails_the_wave_instead_of_waiting_forever(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            episode, broker = self._broker(Path(tmp))
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 0.25):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError) as caught:
+                    broker.next_wave()
+                waited = time.monotonic() - started
+            self.assertIn("no action or answer", str(caught.exception))
+            self.assertLess(waited, 5, "must give up on its own, not hang")
