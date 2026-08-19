@@ -109,7 +109,12 @@ def load_bfcl(case_id: str, root: Path) -> BridgeCase:
     handlers = {}
     for item in value.get("functions", []):
         function = item.get("function", item)
-        name = str(function["name"])
+        # A tool name must match ^[a-zA-Z0-9_-]{1,64}$, and 21 of the 65 declarable cases in
+        # the light suite ship dotted names -- those tool schemas were being sent as-is. The
+        # official harness substitutes the same way for every underscore_to_dot model and its
+        # checker converts the answer key to match, so this is the documented mapping and not
+        # a local workaround; bfcl_score.py passes an OpenAI-family model name to match it.
+        name = str(function["name"]).replace(".", "_")
         parameters = function.get("parameters") or {"type": "object", "properties": {}}
         if parameters.get("type") == "dict":
             parameters = {**parameters, "type": "object"}
