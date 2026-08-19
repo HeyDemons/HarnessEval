@@ -35,8 +35,21 @@ class RecordingClient:
 RESPONSES = {
     "actor-only": ['{"final":"ok"}'],
     "react": ["Thought: complete\nFinal Answer: ok"],
-    "plan-execute": ['{"steps":[]}', "ok"],
-    "cmws": ['{"assignments":[]}', '{"final":"ok"}'],
+    "plan-execute": [
+        '{"steps":[{"id":"s1","instruction":"inspect available evidence"}]}',
+        '{"final":"inspection complete"}',
+        "ok",
+    ],
+    "cmws": [
+        '{"assignments":[{"id":"w1","instruction":"inspect available evidence"}]}',
+        '{"final":"inspection complete"}',
+        '{"final":"ok"}',
+    ],
+    "lats": [
+        '{"thought":"complete","final":"ok"}',
+        '{"score":1.0,"success":true,"feedback":"complete"}',
+    ],
+    "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
     "aflow": ['{"final":"ok"}'],
     "dylan": ["ok", "ok", "ok"],
     "magentic-one": [
@@ -342,6 +355,14 @@ class BridgeMatrixTests(unittest.TestCase):
             policy = {"max_turns": 4}
             if profile_id == "aflow":
                 policy["aflow_workflow"] = ["Custom"]
+            if profile_id == "lats":
+                policy.update(
+                    {
+                        "lats_iterations": 1,
+                        "lats_generate_samples": 1,
+                        "lats_value_samples": 1,
+                    }
+                )
             context = RunContext(profile_id, bridge.prompt, client, environment, trace, policy)
             answer = await run_profile(context)
             return answer, client, environment.schema
@@ -352,6 +373,22 @@ class BridgeMatrixTests(unittest.TestCase):
                 make_case(root, benchmark)
                 for profile in PROFILES:
                     with self.subTest(benchmark=benchmark, profile=profile.id):
+                        if profile.id == "lats":
+                            bridge = load_case(benchmark, "case", root)
+                            if any(not tool.read_only for tool in bridge.tools):
+                                trace = JsonlTrace(root / f"{profile.id}-unsupported.jsonl")
+                                environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+                                context = RunContext(
+                                    profile.id,
+                                    bridge.prompt,
+                                    RecordingClient(list(RESPONSES[profile.id])),
+                                    environment,
+                                    trace,
+                                    {"lats_iterations": 1, "lats_generate_samples": 1},
+                                )
+                                with self.assertRaisesRegex(ValueError, "branch-isolated"):
+                                    asyncio.run(run_profile(context))
+                                continue
                         answer, client, schema = asyncio.run(exercise(root, benchmark, profile.id))
                         self.assertTrue(answer)
                         tool_name = json.loads(schema)[0]["name"]

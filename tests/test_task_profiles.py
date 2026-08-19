@@ -56,6 +56,10 @@ class TaskProfileMatrixTests(unittest.TestCase):
             for benchmark in ("terminal-bench-2", "swe-bench-verified"):
                 for profile in PROFILES:
                     with self.subTest(benchmark=benchmark, profile=profile.id):
+                        if profile.id == "lats":
+                            with self.assertRaisesRegex(ValueError, "branch-isolated"):
+                                asyncio.run(exercise(root, benchmark, profile.id))
+                            continue
                         answer, client, schema = asyncio.run(exercise(root, benchmark, profile.id))
                         self.assertTrue(answer)
                         tool_name = json.loads(schema)[0]["name"]

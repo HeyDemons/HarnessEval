@@ -428,11 +428,17 @@ class RunContext:
         )
         return completion.content
 
-    async def complete_json(self, role: str, messages: list[dict[str, str]]) -> dict[str, Any]:
+    async def complete_json(
+        self,
+        role: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float | None = None,
+    ) -> dict[str, Any]:
         conversation = list(messages)
         protocol_repairs = int(self.policy.get("protocol_repairs", 1))
         for attempt in range(protocol_repairs + 1):
-            raw = await self.complete(role, conversation, json_mode=True)
+            raw = await self.complete(role, conversation, json_mode=True, temperature=temperature)
             try:
                 value = extract_json(raw, expected_type=dict)
                 return value

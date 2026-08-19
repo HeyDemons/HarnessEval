@@ -30,10 +30,15 @@ def compatibility_rows(
             )
             if profile.id == "aflow":
                 baseline_requirement = "frozen_workflow_from_disjoint_optimization_split"
+            elif profile.id == "lats":
+                baseline_requirement = "branch_snapshot_or_all_tools_read_only"
             elif profile.tool_contract == "no-external-tools":
                 baseline_requirement = "published_method_has_no_external_tool_loop"
             else:
                 baseline_requirement = "dynamic_tool_schema"
+            runnable = bridge_status.startswith("implemented")
+            if profile.id == "lats":
+                runnable = runnable and benchmark.id in {"trajectory-bench", "bfcl"}
             rows.append(
                 {
                     "baseline": profile.id,
@@ -42,7 +47,7 @@ def compatibility_rows(
                     "bridge_status": bridge_status,
                     "tool_contract": profile.tool_contract,
                     "baseline_requirement": baseline_requirement,
-                    "runnable": bridge_status.startswith("implemented"),
+                    "runnable": runnable,
                     "publishable_score": False,
                 }
             )

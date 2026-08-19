@@ -1,7 +1,7 @@
 # Baseline And Tool Compatibility
 
 HarnessEval separates source fidelity, tool transport, benchmark lifecycle, and
-scoring. Run `harnesseval matrix --json` for the machine-readable 11 x 8 table.
+scoring. Run `harnesseval matrix --json` for the machine-readable 13 x 8 table.
 
 ## Baselines
 
@@ -9,8 +9,10 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 11 x 8 table.
 | --- | --- | --- |
 | Actor-only | Dynamic | Shared JSON tool loop control |
 | ReAct | Dynamic | Published Thought/Action/Observation protocol |
-| Plan-and-Execute | Dynamic | Planner then deterministic executor |
-| CMWS | Dynamic | Central manager and parallel worker wave |
+| Plan-and-Execute | Dynamic | Text planner then sequential tool-using agent executors |
+| CMWS | Dynamic | Central manager and parallel tool-using worker agents |
+| LATS | Dynamic branch-isolated | Published MCTS proposal, value, rollout, reflection, and backpropagation; requires read-only tools or environment snapshots |
+| MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
 | AFlow | Dynamic frozen workflow | Evaluation requires a workflow optimized on a disjoint split |
 | DyLAN | No external tools | Published text-agent network is not silently converted to ReAct |
 | Magentic-One | Dynamic | Ledger, speaker selection, stall and replan topology |
@@ -36,15 +38,28 @@ applications.
 | Terminal-Bench 2 | Task container filesystem | Implemented with separate agent and verifier containers | Official task reward |
 | SWE-bench Verified | Nested official task containers | Implemented through the official controller and fresh evaluator container | Official repository tests; macOS ARM64 currently supports the configured digest-pinned case |
 
-All 88 baseline x benchmark cells have an explicit lifecycle route, and each
-route is exercised by a scripted protocol subtest (44 single-turn, 22 native
-conversation, and 22 task-container). This proves bridge and tool-contract
+All 104 baseline x benchmark cells have an explicit lifecycle route, and each
+route is exercised by a scripted protocol subtest (52 single-turn, 26 native
+conversation, and 26 task-container). This proves bridge and tool-contract
 compatibility, not model task success. DyLAN and Multi-Persona are
 executed without external tools because their published methods do not define a
 tool loop; a tool-dependent task may therefore end in a normal capability
 failure. Exposing hidden user scenarios as prompts, replacing task containers
 with text questions, or silently giving either method a ReAct loop would produce
 an easier but invalid comparison.
+
+LATS is marked non-runnable for benchmark lifecycles that do not expose a
+branch snapshot/restore contract. It can run directly on all-read-only declared
+toolsets, including the current TRAJECT and BFCL schema bridges. Executing
+several mutating branches in one shared environment would not be LATS and is
+therefore rejected.
+
+The generic harness does not expose hidden benchmark answers to a baseline
+during execution. LATS therefore uses its language-model value evaluations for
+trajectory progress and terminal success; official benchmark scoring still
+runs only after delivery. This preserves evaluator isolation but is a disclosed
+boundary from task-specific LATS environments that return an online exact
+reward for a terminal action.
 
 On Apple Silicon, the SWE bridge accepts only the catalog's configured,
 digest-pinned ARM64 case. Other SWE case IDs fail before execution instead of

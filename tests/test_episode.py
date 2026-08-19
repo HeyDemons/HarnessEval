@@ -27,8 +27,21 @@ from benchmark_platform.harnesses.profiles import PROFILES
 PROFILE_RESPONSES = {
     "actor-only": ['{"final":"ok"}'],
     "react": ["Thought: complete\nFinal Answer: ok"],
-    "plan-execute": ['{"steps":[]}', "ok"],
-    "cmws": ['{"assignments":[]}', '{"final":"ok"}'],
+    "plan-execute": [
+        '{"steps":[{"id":"s1","instruction":"inspect available evidence"}]}',
+        '{"final":"inspection complete"}',
+        "ok",
+    ],
+    "cmws": [
+        '{"assignments":[{"id":"w1","instruction":"inspect available evidence"}]}',
+        '{"final":"inspection complete"}',
+        '{"final":"ok"}',
+    ],
+    "lats": [
+        '{"thought":"complete","final":"ok"}',
+        '{"score":1.0,"success":true,"feedback":"complete"}',
+    ],
+    "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
     "aflow": ['{"final":"ok"}'],
     "dylan": ["ok", "ok", "ok"],
     "magentic-one": [
@@ -82,6 +95,10 @@ class EpisodeBrokerTests(unittest.TestCase):
                             client=client,
                         )
                         broker.start()
+                        if profile.id == "lats":
+                            with self.assertRaisesRegex(RuntimeError, "branch-isolated"):
+                                broker.next_wave()
+                            continue
                         result = broker.next_wave()
                         self.assertIsInstance(result, FinalResponse)
                         transcript = json.dumps(client.requests, ensure_ascii=False)
@@ -111,11 +128,15 @@ class EpisodeBrokerTests(unittest.TestCase):
                         json.dumps(
                             {
                                 "assignments": [
-                                    {"id": "a", "tool": "lookup", "arguments": {"key": "a"}},
-                                    {"id": "b", "tool": "lookup", "arguments": {"key": "b"}},
+                                    {"id": "a", "instruction": "look up a"},
+                                    {"id": "b", "instruction": "look up b"},
                                 ]
                             }
                         ),
+                        '{"tool":"lookup","arguments":{"key":"a"}}',
+                        '{"tool":"lookup","arguments":{"key":"b"}}',
+                        '{"final":"a report"}',
+                        '{"final":"b report"}',
                         '{"final":"done"}',
                     ]
                 ),

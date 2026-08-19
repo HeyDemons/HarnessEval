@@ -26,10 +26,10 @@ def _normalize_action(action: dict[str, Any], names: list[str]) -> dict[str, Any
     return action
 
 
-async def _json_tool_loop(ctx: RunContext, role: str) -> str:
+async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = None) -> str:
     messages = [
         {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
-        {"role": "user", "content": ctx.prompt},
+        {"role": "user", "content": ctx.prompt if prompt is None else prompt},
     ]
     for _ in range(ctx.max_turns):
         raw = await ctx.complete(role, messages, json_mode=True)
@@ -116,18 +116,14 @@ async def run_react(ctx: RunContext) -> str:
     raise RuntimeError("ReAct turn budget exhausted without a final answer")
 
 
-def _substitute(value: Any, observations: dict[str, Any]) -> Any:
-    if isinstance(value, str) and value.startswith("$"):
-        step, _, field = value[1:].partition(".")
-        selected = observations[step]
-        for part in field.split(".") if field else []:
-            selected = selected[int(part)] if isinstance(selected, list) else selected[part]
-        return selected
-    if isinstance(value, list):
-        return [_substitute(item, observations) for item in value]
-    if isinstance(value, dict):
-        return {key: _substitute(item, observations) for key, item in value.items()}
-    return value
+def _instruction(item: Any, *, kind: str, index: int) -> tuple[str, str]:
+    if isinstance(item, str) and item.strip():
+        return str(index), item.strip()
+    if isinstance(item, dict):
+        instruction = item.get("instruction") or item.get("step") or item.get("task")
+        if isinstance(instruction, str) and instruction.strip():
+            return str(item.get("id", index)), instruction.strip()
+    raise ValueError(f"{kind} item {index} must contain a non-empty textual instruction")
 
 
 async def run_plan_execute(ctx: RunContext) -> str:
@@ -138,9 +134,7 @@ async def run_plan_execute(ctx: RunContext) -> str:
                 "role": "user",
                 "content": (
                     "Create a complete ordered execution plan. Do not execute or answer.\n"
-                    f"Available tools: {ctx.environment.schema}\n"
-                    'Return JSON only: {"steps":[{"id":"s1","tool":"tool_name","arguments":{}}]}. '
-                    "Later arguments may reference $step_id.field.\n"
+                    'Return JSON only: {"steps":[{"id":"s1","instruction":"a self-contained step"}]}.\n'
                     f"Task: {ctx.prompt}"
                 ),
             }
@@ -149,10 +143,21 @@ async def run_plan_execute(ctx: RunContext) -> str:
     steps = plan.get("steps")
     if not isinstance(steps, list):
         raise ValueError("Plan-and-Execute planner omitted steps")
-    observations: dict[str, Any] = {}
-    for step in steps:
-        arguments = _substitute(step["arguments"], observations)
-        observations[str(step["id"])] = await ctx.environment.call(str(step["tool"]), arguments)
+    completed: list[dict[str, str]] = []
+    for index, step in enumerate(steps, start=1):
+        step_id, instruction = _instruction(step, kind="Plan-and-Execute", index=index)
+        result = await _json_tool_loop(
+            ctx,
+            f"executor_{step_id}",
+            prompt=(
+                "Execute only the current plan step. Select and use tools yourself as needed, then return the "
+                "complete result of this step as `final`.\n"
+                f"Original task: {ctx.prompt}\n"
+                f"Current step: {instruction}\n"
+                f"Completed steps: {json.dumps(completed, ensure_ascii=False)}"
+            ),
+        )
+        completed.append({"id": step_id, "instruction": instruction, "result": result})
     return await ctx.complete(
         "executor_final",
         [
@@ -161,7 +166,7 @@ async def run_plan_execute(ctx: RunContext) -> str:
                 "content": (
                     f"Return the final answer to this task: {ctx.prompt}\n"
                     f"Plan: {json.dumps(plan, ensure_ascii=False)}\n"
-                    f"Observations: {json.dumps(observations, ensure_ascii=False)}"
+                    f"Completed step results: {json.dumps(completed, ensure_ascii=False)}"
                 ),
             }
         ],
@@ -176,8 +181,7 @@ async def run_cmws(ctx: RunContext) -> str:
                 "role": "user",
                 "content": (
                     "Decompose the task into independent worker assignments. Do not execute or answer.\n"
-                    f"Available tools: {ctx.environment.schema}\n"
-                    'Return JSON only: {"assignments":[{"id":"w1","instruction":"...","tool":"tool_name","arguments":{}}]}.\n'
+                    'Return JSON only: {"assignments":[{"id":"w1","instruction":"a self-contained worker task"}]}.\n'
                     f"Task: {ctx.prompt}"
                 ),
             }
@@ -188,12 +192,22 @@ async def run_cmws(ctx: RunContext) -> str:
         raise ValueError("CMWS manager omitted assignments")
     semaphore = asyncio.Semaphore(ctx.max_parallel) if ctx.max_parallel is not None else None
 
-    async def worker(assignment: dict[str, Any]) -> dict[str, Any]:
+    async def worker(index: int, assignment: Any) -> dict[str, Any]:
+        assignment_id, instruction = _instruction(assignment, kind="CMWS", index=index)
+
         async def execute() -> dict[str, Any]:
-            result = await ctx.environment.call(str(assignment["tool"]), assignment["arguments"])
+            result = await _json_tool_loop(
+                ctx,
+                f"worker_{assignment_id}",
+                prompt=(
+                    "Work independently on the assigned subtask. Select and use tools yourself as needed, then "
+                    "return a concise but complete report as `final`.\n"
+                    f"Original task: {ctx.prompt}\nAssignment: {instruction}"
+                ),
+            )
             return {
-                "id": assignment["id"],
-                "instruction": assignment.get("instruction", ""),
+                "id": assignment_id,
+                "instruction": instruction,
                 "result": result,
             }
 
@@ -202,33 +216,25 @@ async def run_cmws(ctx: RunContext) -> str:
         async with semaphore:
             return await execute()
 
-    reports = await asyncio.gather(*(worker(assignment) for assignment in assignments))
+    reports = await asyncio.gather(
+        *(worker(index, assignment) for index, assignment in enumerate(assignments, start=1))
+    )
     decision = await ctx.complete_json(
         "manager_synthesis",
         [
             {
                 "role": "user",
                 "content": (
-                    "Synthesize the independent reports. Return JSON only, either one final tool action or a final answer.\n"
-                    f"Available tools: {ctx.environment.schema}\n"
+                    "Synthesize the independent worker reports into the answer.\n"
                     f"Task: {ctx.prompt}\nReports: {json.dumps(reports, ensure_ascii=False)}\n"
-                    'Schema: {"tool":"tool_name","arguments":{}} or {"final":"answer"}'
+                    'Return JSON only: {"final":"answer"}'
                 ),
             }
         ],
     )
-    if "final" in decision:
-        return str(decision["final"])
-    result = await ctx.environment.call(str(decision["tool"]), decision["arguments"])
-    return await ctx.complete(
-        "manager_delivery",
-        [
-            {
-                "role": "user",
-                "content": f"Task: {ctx.prompt}\nFinal tool result: {json.dumps(result, ensure_ascii=False)}\nReturn the answer.",
-            }
-        ],
-    )
+    if "final" not in decision:
+        raise ValueError("CMWS manager synthesis omitted final")
+    return str(decision["final"])
 
 
 async def run_profile(ctx: RunContext) -> str:
@@ -244,7 +250,9 @@ async def run_profile(ctx: RunContext) -> str:
         run_aflow,
         run_dylan,
         run_llmcompiler,
+        run_lats,
         run_magentic_one,
+        run_memgpt,
         run_multi_persona,
         run_rewoo,
         run_sa,
@@ -256,6 +264,8 @@ async def run_profile(ctx: RunContext) -> str:
         "magentic-one": run_magentic_one,
         "multi-persona": run_multi_persona,
         "llmcompiler": run_llmcompiler,
+        "lats": run_lats,
+        "memgpt": run_memgpt,
         "rewoo": run_rewoo,
         "sa": run_sa,
     }

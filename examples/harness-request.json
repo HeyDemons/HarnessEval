@@ -40,6 +40,13 @@
   ],
   "policy": {
     "max_turns": 8,
-    "protocol_repairs": 1
+    "protocol_repairs": 1,
+    "lats_iterations": 2,
+    "lats_generate_samples": 1,
+    "lats_value_samples": 1,
+    "lats_rollout_width": 1,
+    "lats_tree_depth": 7,
+    "lats_rollout_depth": 4,
+    "lats_temperature": 1.0
   }
 }

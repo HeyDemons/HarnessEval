@@ -114,23 +114,25 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(answer, "42")
 
-    def test_plan_execute_nested_observation_reference(self) -> None:
+    def test_plan_execute_uses_agent_executors_for_textual_steps(self) -> None:
         answer, environment = self.run_profile(
             "plan-execute",
             [
                 json.dumps(
                     {
                         "steps": [
-                            {"id": "s1", "tool": "lookup", "arguments": {"key": "alpha"}},
-                            {"id": "s2", "tool": "lookup", "arguments": {"key": "beta"}},
-                            {
-                                "id": "s3",
-                                "tool": "multiply",
-                                "arguments": {"a": "$s1.result.value", "b": "$s2.result.value"},
-                            },
+                            {"id": "s1", "instruction": "retrieve alpha"},
+                            {"id": "s2", "instruction": "retrieve beta"},
+                            {"id": "s3", "instruction": "multiply the retrieved values"},
                         ]
                     }
                 ),
+                '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"final":"alpha is 6"}',
+                '{"tool":"lookup","arguments":{"key":"beta"}}',
+                '{"final":"beta is 7"}',
+                '{"tool":"multiply","arguments":{"a":6,"b":7}}',
+                '{"final":"the product is 42"}',
                 "42",
             ],
         )
@@ -144,17 +146,104 @@ class HarnessTests(unittest.TestCase):
                 json.dumps(
                     {
                         "assignments": [
-                            {"id": "w1", "instruction": "alpha", "tool": "lookup", "arguments": {"key": "alpha"}},
-                            {"id": "w2", "instruction": "beta", "tool": "lookup", "arguments": {"key": "beta"}},
+                            {"id": "w1", "instruction": "retrieve alpha"},
+                            {"id": "w2", "instruction": "retrieve beta"},
                         ]
                     }
                 ),
-                '{"tool":"multiply","arguments":{"a":6,"b":7}}',
-                "42",
+                '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"tool":"lookup","arguments":{"key":"beta"}}',
+                '{"final":"alpha is 6"}',
+                '{"final":"beta is 7"}',
+                '{"final":"42"}',
             ],
         )
         self.assertEqual(answer, "42")
-        self.assertEqual(len(environment.calls), 3)
+        self.assertEqual(len(environment.calls), 2)
+
+    def test_lats_tree_search_executes_rollout_and_value_backpropagation(self) -> None:
+        answer, environment = self.run_profile(
+            "lats",
+            [
+                '{"thought":"retrieve alpha","tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"score":0.7,"success":false,"feedback":"use the value"}',
+                '{"thought":"finish from the observation","final":"6"}',
+                '{"score":1.0,"success":true,"feedback":"complete"}',
+            ],
+            policy={
+                "lats_iterations": 1,
+                "lats_generate_samples": 1,
+                "lats_value_samples": 1,
+                "lats_rollout_width": 1,
+                "lats_tree_depth": 2,
+                "lats_rollout_depth": 2,
+            },
+        )
+        self.assertEqual(answer, "6")
+        self.assertEqual([item["name"] for item in environment.calls], ["lookup"])
+
+    def test_lats_rejects_non_snapshotable_mutating_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            tool = ToolSpec(
+                "mutate",
+                "mutate",
+                {"type": "object"},
+                (sys.executable, str(ROOT / "examples" / "tools" / "arithmetic.py"), "lookup"),
+            )
+            context = RunContext(
+                "lats",
+                "change state",
+                ScriptedClient([]),
+                ToolEnvironment([tool], trace),
+                trace,
+                {},
+            )
+            with self.assertRaisesRegex(ValueError, "branch-isolated environment snapshots"):
+                asyncio.run(run_profile(context))
+
+    def test_memgpt_memory_functions_heartbeat_and_benchmark_tool(self) -> None:
+        answer, environment = self.run_profile(
+            "memgpt",
+            [
+                '{"thought":"save the task fact","function":"archival_memory_insert",'
+                '"arguments":{"content":"alpha must be retrieved","request_heartbeat":true}}',
+                '{"thought":"retrieve the saved fact","function":"archival_memory_search",'
+                '"arguments":{"query":"alpha","page":0,"request_heartbeat":true}}',
+                '{"thought":"use the benchmark tool","function":"lookup",'
+                '"arguments":{"key":"alpha","request_heartbeat":true}}',
+                '{"thought":"deliver","function":"send_message","arguments":{"message":"6"}}',
+            ],
+        )
+        self.assertEqual(answer, "6")
+        self.assertEqual([item["name"] for item in environment.calls], ["lookup"])
+
+    def test_memgpt_summarizes_only_after_provider_context_error(self) -> None:
+        class ContextLimitClient(ScriptedClient):
+            async def complete(self, messages, *, temperature=None, json_mode=False):
+                self.messages.append(messages)
+                response = next(self.responses)
+                if isinstance(response, Exception):
+                    raise response
+                return Completion(response, 1, 1, 0.0, 0, {})
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = ContextLimitClient(
+                [
+                    '{"thought":"retrieve alpha","function":"lookup",'
+                    '"arguments":{"key":"alpha","request_heartbeat":true}}',
+                    RuntimeError("maximum context length exceeded"),
+                    "alpha was retrieved as 6",
+                    '{"thought":"deliver","function":"send_message","arguments":{"message":"6"}}',
+                ]
+            )
+            context = RunContext("memgpt", "retrieve alpha", client, environment, trace, {"max_turns": 4})
+            answer = asyncio.run(run_profile(context))
+            self.assertEqual(answer, "6")
+            events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(sum(event["event"] == "memgpt_active_memory_summarized" for event in events), 1)
 
     def test_aflow_frozen_custom_operator(self) -> None:
         answer, environment = self.run_profile(

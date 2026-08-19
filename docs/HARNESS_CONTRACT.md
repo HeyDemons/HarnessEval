@@ -38,6 +38,16 @@ parameters, not hidden platform limits. HarnessEval does not set a character,
 byte, log, prompt, or tool-result cap. `HARNESS_MAX_OUTPUT_TOKENS` is omitted by
 default and is sent only when the user explicitly configures it.
 
+Paper-profile policy parameters are also explicit. LATS uses
+`lats_iterations`, `lats_generate_samples`, `lats_value_samples`,
+`lats_rollout_width`, `lats_tree_depth`, `lats_rollout_depth`,
+`lats_failure_memory`, `lats_reflection_limit`, and `lats_temperature`; their
+defaults reproduce the source search shape.
+Each remembered trajectory remains complete. MemGPT uses `memgpt_core_memory_chars` and
+`memgpt_memory_warning_tokens`, matching the original core-memory and active
+context warning thresholds. Memory pressure is handled through semantic
+summarization into recall memory, never by slicing tool results or messages.
+
 Each tool is an argv command, never a shell string. Arguments arrive as one JSON
 object on stdin. A successful tool must write one complete JSON value to stdout.
 Nonzero exits and malformed output are returned to the agent as structured

@@ -11,7 +11,7 @@ envelopes while leaving task semantics, tools, and scoring with each benchmark.
 - A generic `run` path for any harness command already available in a task image.
 - A portable harness request contract for user-supplied tools and
   OpenAI-compatible APIs.
-- Eleven source-pinned theory profiles, including AFlow, DyLAN,
+- Thirteen theory profiles, including LATS, MemGPT, AFlow, DyLAN,
   Magentic-One, Multi-Persona, LLMCompiler, ReWOO, and Speculative Actions.
 - Atomic per-case results, append-only attempts, process locks, resume, and
   complete terminal/JSONL logs.
@@ -147,6 +147,13 @@ AFlow additionally requires a frozen operator list produced on a disjoint
 optimization split, for example `--policy '{"aflow_workflow":["Custom"]}'`.
 DyLAN and Multi-Persona intentionally receive no external tools because their
 published protocols do not define a tool loop.
+
+LATS preserves tree expansion over independent environment states. It runs only
+when every declared tool is read-only; benchmark environments with mutating
+tools require a snapshot/restore bridge and are rejected instead of being
+silently reduced to a serial loop. MemGPT exposes its core, recall, and archival
+memory functions alongside the benchmark's dynamic tools and chains work through
+function-result heartbeats until `send_message`.
 
 `harnesseval matrix` reports every baseline x benchmark cell. `runnable` means
 the lifecycle bridge exists; it does not mean the case succeeded or that a

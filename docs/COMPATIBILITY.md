@@ -39,15 +39,29 @@ committed under `evidence/`; no workstation path or task content is published.
 
 ## Harness Contract Smoke
 
-The original four built-in profiles completed a real OpenAI-compatible API, harness,
-tool, and final-answer loop in Docker on 2026-08-15. Actor-only used 20.25
-seconds, ReAct 21.69, Plan-and-Execute 12.28, and CMWS 24.28; each returned
-`42`. CMWS issued two independent tool requests within 0.001 seconds and
-received both results within 0.002 seconds, exercising a real concurrent wave.
+The current Plan-and-Execute, CMWS, LATS, and MemGPT profiles completed a real
+OpenAI-compatible API, Docker harness, tool, and final-answer loop on
+2026-08-19. The identical arithmetic request produced the following transport
+evidence; it is not a benchmark score.
 
-The expanded theory-profile suite covers all eleven registered profiles: 44
-single-turn, 22 native-conversation, and 22 task-container protocol subtests.
-All 88 baseline x benchmark lifecycle cells pass their bridge contract. Native
+| Profile | Harness seconds | LLM calls | Tool calls | Answer |
+| --- | ---: | ---: | ---: | --- |
+| Plan-and-Execute | 17.44 | 10 | 4 | `252` |
+| CMWS | 21.23 | 9 | 5 | `1764` |
+| LATS | 16.64 | 8 | 3 | `42` |
+| MemGPT | 7.70 | 4 | 3 | `42` |
+
+Plan-and-Execute and CMWS no longer fail when the planner or manager emits
+textual work without a `tool` field: their executor and workers selected and
+called tools themselves. Their wrong answers are retained because the model
+overran delegated step boundaries and duplicated work. HarnessEval does not add
+task-specific prompt repairs to turn a transport smoke into a favorable score.
+
+The expanded theory-profile suite covers all thirteen registered profiles: 52
+single-turn, 26 native-conversation, and 26 task-container protocol subtests.
+All 104 baseline x benchmark lifecycle cells have an explicit bridge contract.
+LATS cells without read-only tools or snapshot/restore support pass by refusing
+the invalid shared-state execution before an LLM call. Native
 conversation and task-container rows use the same profile implementations but
 different benchmark-owned lifecycle brokers; they are not flattened into
 single-turn text tasks. These scripted protocol tests establish routing and

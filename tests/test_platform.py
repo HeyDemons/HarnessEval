@@ -203,7 +203,16 @@ class PlatformTests(unittest.TestCase):
         self.assertFalse(any(row["publishable_score"] for row in rows))
         configured = [row for row in rows if row["benchmark"] == "swe-bench-verified"]
         self.assertTrue(configured)
-        self.assertTrue(all(row["runnable"] for row in configured))
+        self.assertTrue(all(row["runnable"] for row in configured if row["baseline"] != "lats"))
+        lats = next(row for row in configured if row["baseline"] == "lats")
+        self.assertFalse(lats["runnable"])
+        self.assertEqual(lats["baseline_requirement"], "branch_snapshot_or_all_tools_read_only")
+        lats_trajectory = next(
+            row
+            for row in rows
+            if row["baseline"] == "lats" and row["benchmark"] == "trajectory-bench"
+        )
+        self.assertTrue(lats_trajectory["runnable"])
 
     def test_adapter_fingerprint_is_content_based(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
