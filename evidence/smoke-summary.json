@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-08-16",
+  "generated_at": "2026-08-19",
   "scope": "sanitized infrastructure, toolset, lifecycle, and harness-protocol evidence; not model leaderboard scores",
   "benchmarks": [
     {
@@ -66,28 +66,29 @@
     "gdpval": {"requested": 1, "valid_records": 1, "required_fields": ["title", "href", "body"]}
   },
   "baseline_matrix": {
-    "profiles": 11,
+    "profiles": 14,
     "benchmarks": 8,
-    "cells": 88,
-    "explicit_lifecycle_routes": 88,
+    "cells": 112,
+    "explicit_lifecycle_routes": 112,
     "publishable_scores_without_running_cases": 0,
     "profile_protocol_subtests": {
-      "single_turn": 44,
-      "native_conversation": 22,
-      "task_container": 22,
-      "passed": 88
+      "single_turn": 56,
+      "native_conversation": 28,
+      "task_container": 28,
+      "passed": 112
     }
   },
   "api_loop_evidence": [
     {"profile": "actor-only", "status": "completed", "execution_seconds": 20.251, "llm_calls": 4, "tool_calls": 3, "answer": "42"},
     {"profile": "react", "status": "completed", "execution_seconds": 21.686, "llm_calls": 6, "tool_calls": 3, "answer": "42"},
     {"profile": "plan-execute", "status": "completed", "execution_seconds": 12.275, "llm_calls": 2, "tool_calls": 3, "answer": "42"},
-    {"profile": "cmws", "status": "completed", "execution_seconds": 24.275, "llm_calls": 2, "tool_calls": 2, "answer": "42", "parallel_tool_wave": true}
+    {"profile": "cmas", "status": "completed", "execution_seconds": 9.891, "llm_calls": 6, "tool_calls": 2, "answer": "42", "parallel_worker_wave": true},
+    {"profile": "dmas", "status": "completed", "execution_seconds": 27.637, "llm_calls": 6, "tool_calls": 2, "answer": "42", "mode": "agentnet_aligned_cold_start"}
   ],
   "tests": {
-    "passed": 38,
+    "passed": 78,
     "failed": 0,
-    "subtests_passed": 88,
+    "subtests_passed": 112,
     "large_structured_tool_value_characters": 200000,
     "content_slicing": false
   },

@@ -39,9 +39,16 @@ RESPONSES = {
         '{"steps":[{"id":"s1","instruction":"inspect available evidence"}]}',
         '{"final":"inspection complete"}',
     ],
-    "cmws": [
+    "cmas": [
         '{"assignments":[{"id":"w1","instruction":"inspect available evidence"}]}',
         '{"final":"inspection complete"}',
+        '{"final":"ok"}',
+    ],
+    "dmas": [
+        '{"requirements":{"reasoning":1.0}}',
+        '{"decision":"execute","reason":"complete locally","next_agent_id":null,'
+        '"executable":null,"remaining":null,"description":"inspect and answer"}',
+        "Inspect the evidence and answer.",
         '{"final":"ok"}',
     ],
     "lats": [

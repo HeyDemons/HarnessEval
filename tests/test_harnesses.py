@@ -164,9 +164,9 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("Current objective: retrieve alpha", executor_prompt)
         self.assertNotIn(context.prompt, executor_prompt)
 
-    def test_cmws_parallel_wave(self) -> None:
+    def test_cmas_parallel_wave(self) -> None:
         answer, environment = self.run_profile(
-            "cmws",
+            "cmas",
             [
                 json.dumps(
                     {
@@ -186,7 +186,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "42")
         self.assertEqual(len(environment.calls), 2)
 
-    def test_cmws_workers_receive_only_their_assignment(self) -> None:
+    def test_cmas_workers_receive_only_their_assignment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
             client = ScriptedClient(
@@ -198,7 +198,7 @@ class HarnessTests(unittest.TestCase):
                 ]
             )
             context = RunContext(
-                "cmws",
+                "cmas",
                 "retrieve alpha and beta, then multiply them",
                 client,
                 ToolEnvironment(tool_specs(), trace),
@@ -213,6 +213,104 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("Assignment: retrieve alpha", worker_prompt)
         self.assertNotIn(context.prompt, worker_prompt)
         self.assertIn(context.prompt, synthesis_prompt)
+
+    def test_dmas_split_result_only_handoff_and_peer_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    '{"requirements":{"mathematical":1.0,"tool_use":1.0}}',
+                    '{"decision":"split","reason":"private decomposition rationale",'
+                    '"next_agent_id":"1","executable":"retrieve alpha",'
+                    '"remaining":"retrieve beta and multiply alpha by beta","description":null}',
+                    "Use lookup to retrieve alpha.",
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"final":"6"}',
+                    '{"status":"incompleted","reason":"beta and multiplication remain",'
+                    '"next_agent_id":"1","remaining":"retrieve beta and multiply alpha by beta"}',
+                    '{"decision":"execute","reason":"I can finish from the completed alpha result",'
+                    '"next_agent_id":null,"executable":null,"remaining":null,'
+                    '"description":"use the completed alpha result"}',
+                    "Use the completed alpha result, retrieve beta, and multiply.",
+                    '{"tool":"lookup","arguments":{"key":"beta"}}',
+                    '{"tool":"multiply","arguments":{"a":6,"b":7}}',
+                    '{"final":"42"}',
+                ]
+            )
+            context = RunContext(
+                "dmas",
+                "retrieve alpha and beta, multiply them",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"max_turns": 8, "dmas_agent_count": 10, "dmas_seed": 0},
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
+
+        self.assertEqual(answer, "42")
+        self.assertEqual([call["name"] for call in context.environment.calls], ["lookup", "lookup", "multiply"])
+        later_messages = client.messages[6:]
+        self.assertTrue(
+            any(
+                "retrieve beta and multiply alpha by beta" in message["content"]
+                for request in later_messages
+                for message in request
+            )
+        )
+        self.assertFalse(
+            any(
+                "private decomposition rationale" in message["content"]
+                for request in later_messages
+                for message in request
+            )
+        )
+        self.assertEqual(
+            [event["decision"] for event in events if event["event"] == "dmas_route"],
+            ["split", "execute"],
+        )
+        self.assertEqual(len([event for event in events if event["event"] == "dmas_progress"]), 1)
+        self.assertFalse(
+            any(
+                "manager" in event.get("role", "")
+                for event in events
+                if event["event"] in {"llm_request", "llm_response"}
+            )
+        )
+
+    def test_dmas_forwarding_preserves_task_and_avoids_visited_agents(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    '{"requirements":{"reasoning":1.0}}',
+                    '{"decision":"forward","reason":"seek another agent",'
+                    '"next_agent_id":"missing","executable":null,"remaining":null,"description":null}',
+                    '{"decision":"forward","reason":"seek another agent",'
+                    '"next_agent_id":"missing","executable":null,"remaining":null,"description":null}',
+                    '{"decision":"execute","reason":"complete locally",'
+                    '"next_agent_id":null,"executable":null,"remaining":null,'
+                    '"description":"answer the unchanged task"}',
+                    "Answer directly.",
+                    '{"final":"ok"}',
+                ]
+            )
+            context = RunContext(
+                "dmas",
+                "preserve this complete task during forwarding",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"max_turns": 8, "dmas_agent_count": 4, "dmas_seed": 0},
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
+
+        routes = [event for event in events if event["event"] == "dmas_route"]
+        self.assertEqual(answer, "ok")
+        self.assertEqual([event["decision"] for event in routes], ["forward", "forward", "execute"])
+        self.assertEqual(len({event["agent_id"] for event in routes}), 3)
+        self.assertTrue(all(event["current_task"] == context.prompt for event in routes))
 
     def test_lats_tree_search_executes_rollout_and_value_backpropagation(self) -> None:
         answer, environment = self.run_profile(

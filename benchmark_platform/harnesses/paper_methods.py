@@ -9,6 +9,7 @@ from collections import Counter
 from typing import Any
 
 from .core import RunContext, extract_json
+from .dmas import run_dmas
 from .lats import run_lats
 from .memgpt import run_memgpt
 

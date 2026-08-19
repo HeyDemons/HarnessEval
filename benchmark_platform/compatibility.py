@@ -30,6 +30,8 @@ def compatibility_rows(
             )
             if profile.id == "aflow":
                 baseline_requirement = "frozen_workflow_from_disjoint_optimization_split"
+            elif profile.id == "dmas":
+                baseline_requirement = "agentnet_aligned_cold_start_without_cross_case_memory"
             elif profile.id == "lats":
                 baseline_requirement = "branch_snapshot_or_all_tools_read_only"
             elif profile.tool_contract == "no-external-tools":

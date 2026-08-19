@@ -54,16 +54,29 @@ PROFILES = (
         ),
     ),
     HarnessProfile(
-        id="cmws",
-        name="Central manager-worker swarm",
+        id="cmas",
+        name="Centralized multi-agent system",
         topology="manager -> parallel worker wave -> manager synthesis",
         provenance="local-control",
         source=None,
         revision=None,
         tool_contract="dynamic",
         notes=(
-            "A local conventional control: the manager emits textual assignments, and independent tool-using "
+            "A local centralized control: the manager emits textual assignments, and independent tool-using "
             "workers receive only their assigned subtask before manager synthesis."
+        ),
+    ),
+    HarnessProfile(
+        id="dmas",
+        name="Decentralized multi-agent system",
+        topology="capability match -> local router DAG -> local executor/split -> peer handoff",
+        provenance="protocol-reproduction",
+        source="https://github.com/zoe-yyx/AgentNet",
+        revision="325d39f2a940be5fa903d28c411bd3426b8007f5",
+        tool_contract="dynamic-decentralized-dag",
+        notes=(
+            "Reproduces AgentNet's evaluation-time router/executor, forward/split/execute, result-only handoff, "
+            "and acyclic forwarding protocol. The default is a disclosed cold start without cross-case RAG memory."
         ),
     ),
     HarnessProfile(

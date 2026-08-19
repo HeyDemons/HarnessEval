@@ -166,7 +166,7 @@ async def run_plan_execute(ctx: RunContext) -> str:
     return completed[-1]["result"]
 
 
-async def run_cmws(ctx: RunContext) -> str:
+async def run_cmas(ctx: RunContext) -> str:
     plan = await ctx.complete_json(
         "manager",
         [
@@ -182,11 +182,11 @@ async def run_cmws(ctx: RunContext) -> str:
     )
     assignments = plan.get("assignments")
     if not isinstance(assignments, list):
-        raise ValueError("CMWS manager omitted assignments")
+        raise ValueError("CMAS manager omitted assignments")
     semaphore = asyncio.Semaphore(ctx.max_parallel) if ctx.max_parallel is not None else None
 
     async def worker(index: int, assignment: Any) -> dict[str, Any]:
-        assignment_id, instruction = _instruction(assignment, kind="CMWS", index=index)
+        assignment_id, instruction = _instruction(assignment, kind="CMAS", index=index)
 
         async def execute() -> dict[str, Any]:
             result = await _json_tool_loop(
@@ -226,7 +226,7 @@ async def run_cmws(ctx: RunContext) -> str:
         ],
     )
     if "final" not in decision:
-        raise ValueError("CMWS manager synthesis omitted final")
+        raise ValueError("CMAS manager synthesis omitted final")
     return str(decision["final"])
 
 
@@ -237,11 +237,12 @@ async def run_profile(ctx: RunContext) -> str:
         return await run_react(ctx)
     if ctx.profile == "plan-execute":
         return await run_plan_execute(ctx)
-    if ctx.profile == "cmws":
-        return await run_cmws(ctx)
+    if ctx.profile == "cmas":
+        return await run_cmas(ctx)
     from .paper_methods import (
         run_aflow,
         run_dylan,
+        run_dmas,
         run_llmcompiler,
         run_lats,
         run_magentic_one,
@@ -254,6 +255,7 @@ async def run_profile(ctx: RunContext) -> str:
     extended = {
         "aflow": run_aflow,
         "dylan": run_dylan,
+        "dmas": run_dmas,
         "magentic-one": run_magentic_one,
         "multi-persona": run_multi_persona,
         "llmcompiler": run_llmcompiler,

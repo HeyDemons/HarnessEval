@@ -39,7 +39,7 @@ committed under `evidence/`; no workstation path or task content is published.
 
 ## Harness Contract Smoke
 
-The current Plan-and-Execute, CMWS, LATS, and MemGPT profiles completed a real
+The current Plan-and-Execute, CMAS, DMAS, LATS, and MemGPT profiles completed a real
 OpenAI-compatible API, Docker harness, tool, and final-answer loop on
 2026-08-19. The identical arithmetic request produced the following transport
 evidence; it is not a benchmark score.
@@ -48,8 +48,8 @@ evidence; it is not a benchmark score.
 | --- | ---: | ---: | ---: | --- |
 | Plan-and-Execute, source-aligned run 1 | 17.58 | 9 | 4 | `42` |
 | Plan-and-Execute, source-aligned run 2 | 56.59 | 8 | 4 | `252` |
-| CMWS, assignment-isolated run 1 | 12.37 | 10 | 5 | `42` |
-| CMWS, assignment-isolated run 2 | 16.02 | 10 | 5 | `42` |
+| CMAS | 9.89 | 6 | 2 | `42` |
+| DMAS, AgentNet-aligned cold start | 27.64 | 6 | 2 | `42` |
 | LATS | 16.64 | 8 | 3 | `42` |
 | MemGPT | 7.70 | 4 | 3 | `42` |
 
@@ -63,17 +63,25 @@ the next executor correctly computed `6 * 42 = 252`. The first aligned run was
 correct, and an Actor-only control completed the same request as `42` in 5.36
 seconds with four LLM calls and three tool calls.
 
-CMWS is explicitly a local conventional control, not an attributed paper
+CMAS is explicitly a local centralized control, not an attributed paper
 reproduction. Workers now receive only their assignment; the manager retains
-the original task for synthesis. Both repeated runs were correct. The manager
-still placed a dependent multiplication assignment in the same nominally
-independent wave, so that worker re-fetched alpha and beta. This is visible
-baseline behavior, not hidden workflow repair. HarnessEval does not add
-task-specific prompts or post-hoc answer correction.
+the original task for synthesis. Its renamed smoke completed correctly without
+changing that topology.
 
-The expanded theory-profile suite covers all thirteen registered profiles: 52
-single-turn, 26 native-conversation, and 26 task-container protocol subtests.
-All 104 baseline x benchmark lifecycle cells have an explicit bridge contract.
+DMAS follows the evaluation-time protocol of NeurIPS 2025 AgentNet revision
+`325d39f2a940be5fa903d28c411bd3426b8007f5`. The real smoke mapped task
+capabilities, selected agent 7, and let that node's local router choose direct
+execution before its local reasoning/executor completed two tool calls. No
+manager or final synthesis was invoked. The simple task did not require a peer
+handoff; a scripted protocol test separately traverses split, local execution,
+result-only handoff, and execution by the next agent. Cross-task RAG memory and
+graph evolution are intentionally inactive in cold-start evaluation because no
+disjoint trained state was supplied. HarnessEval does not add task-specific
+prompts or post-hoc answer correction.
+
+The expanded theory-profile suite covers all fourteen registered profiles: 56
+single-turn, 28 native-conversation, and 28 task-container protocol subtests.
+All 112 baseline x benchmark lifecycle cells have an explicit bridge contract.
 LATS cells without read-only tools or snapshot/restore support pass by refusing
 the invalid shared-state execution before an LLM call. Native
 conversation and task-container rows use the same profile implementations but

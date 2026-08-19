@@ -31,9 +31,16 @@ PROFILE_RESPONSES = {
         '{"steps":[{"id":"s1","instruction":"inspect available evidence"}]}',
         '{"final":"inspection complete"}',
     ],
-    "cmws": [
+    "cmas": [
         '{"assignments":[{"id":"w1","instruction":"inspect available evidence"}]}',
         '{"final":"inspection complete"}',
+        '{"final":"ok"}',
+    ],
+    "dmas": [
+        '{"requirements":{"reasoning":1.0}}',
+        '{"decision":"execute","reason":"complete locally","next_agent_id":null,'
+        '"executable":null,"remaining":null,"description":"inspect and answer"}',
+        "Inspect the evidence and answer.",
         '{"final":"ok"}',
     ],
     "lats": [
@@ -109,7 +116,7 @@ class EpisodeBrokerTests(unittest.TestCase):
     def test_parallel_profile_wave_is_one_native_wave(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = EpisodeBroker(
-                profile="cmws",
+                profile="cmas",
                 prompt="look up both values",
                 tools=[
                     NativeTool(

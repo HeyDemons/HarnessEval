@@ -1,7 +1,7 @@
 # Baseline And Tool Compatibility
 
 HarnessEval separates source fidelity, tool transport, benchmark lifecycle, and
-scoring. Run `harnesseval matrix --json` for the machine-readable 13 x 8 table.
+scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 
 ## Baselines
 
@@ -10,7 +10,8 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 13 x 8 table.
 | Actor-only | Dynamic | Shared JSON tool loop control |
 | ReAct | Dynamic | Published Thought/Action/Observation protocol |
 | Plan-and-Execute | Dynamic | Source-aligned minimal text planner; sequential executors receive only previous steps and the current objective; the last step response is returned |
-| CMWS | Dynamic | Local control with a central manager, assignment-isolated parallel workers, and manager synthesis |
+| CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
+| DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
 | LATS | Dynamic branch-isolated | Published MCTS proposal, value, rollout, reflection, and backpropagation; requires read-only tools or environment snapshots |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
 | AFlow | Dynamic frozen workflow | Evaluation requires a workflow optimized on a disjoint split |
@@ -38,9 +39,9 @@ applications.
 | Terminal-Bench 2 | Task container filesystem | Implemented with separate agent and verifier containers | Official task reward |
 | SWE-bench Verified | Nested official task containers | Implemented through the official controller and fresh evaluator container | Official repository tests; macOS ARM64 currently supports the configured digest-pinned case |
 
-All 104 baseline x benchmark cells have an explicit lifecycle route, and each
-route is exercised by a scripted protocol subtest (52 single-turn, 26 native
-conversation, and 26 task-container). This proves bridge and tool-contract
+All 112 baseline x benchmark cells have an explicit lifecycle route, and each
+route is exercised by a scripted protocol subtest (56 single-turn, 28 native
+conversation, and 28 task-container). This proves bridge and tool-contract
 compatibility, not model task success. DyLAN and Multi-Persona are
 executed without external tools because their published methods do not define a
 tool loop; a tool-dependent task may therefore end in a normal capability
@@ -60,6 +61,16 @@ trajectory progress and terminal success; official benchmark scoring still
 runs only after delivery. This preserves evaluator isolation but is a disclosed
 boundary from task-specific LATS environments that return an online exact
 reward for a terminal action.
+
+DMAS reproduces the evaluation-time control flow of AgentNet revision
+`325d39f2a940be5fa903d28c411bd3426b8007f5`: ten agents by default, a complete
+directed communication graph, capability-matched entry, a three-hop unchanged-
+task forwarding path, and up to thirty local executions. Router reasoning is
+private to the current node; only completed subtask results enter the task
+context passed to a peer. AgentNet's cross-task edge evolution, capability
+updates, and RAG memories require a disjoint training phase and frozen state.
+HarnessEval does not learn them from evaluation cases, so the built-in default
+is explicitly a cold-start inference baseline.
 
 On Apple Silicon, the SWE bridge accepts only the catalog's configured,
 digest-pinned ARM64 case. Other SWE case IDs fail before execution instead of
