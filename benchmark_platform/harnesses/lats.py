@@ -375,6 +375,15 @@ async def _commit_path(ctx: RunContext, node: _Node) -> None:
 
 async def run_lats(ctx: RunContext) -> str:
     """LATS MCTS with proposal, value, reflection, rollout, and backpropagation."""
+    branch_safe = ctx.policy.get("branch_safe_tools")
+    if isinstance(branch_safe, list):
+        verified = {str(name) for name in branch_safe}
+        unverified = sorted(set(ctx.environment.names) - verified)
+        if unverified:
+            raise ValueError(
+                "LATS requires a verified branch-safe tool contract; unverified tools: "
+                f"{unverified}"
+            )
     mutable = [tool.name for tool in ctx.environment.tools.values() if not tool.read_only]
     if mutable:
         raise ValueError(

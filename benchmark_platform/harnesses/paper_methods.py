@@ -498,6 +498,10 @@ def _action_key(name: str, arguments: dict[str, Any]) -> str:
 async def run_sa(ctx: RunContext) -> str:
     """Benchmark-neutral response-first Speculative Actions protocol reproduction."""
     safe_names = [name for name, tool in ctx.environment.tools.items() if tool.read_only and tool.parallel]
+    policy_safe = ctx.policy.get("speculation_safe_tools")
+    if isinstance(policy_safe, list):
+        allowed = {str(name) for name in policy_safe}
+        safe_names = [name for name in safe_names if name in allowed]
     top_k = int(ctx.policy.get("sa_top_k", 3))
 
     async def predict_and_execute() -> dict[str, tuple[int, dict[str, Any]]]:

@@ -390,7 +390,7 @@ class PlatformTests(unittest.TestCase):
             for row in rows
             if row["baseline"] == "lats" and row["benchmark"] == "trajectory-bench"
         )
-        self.assertTrue(lats_trajectory["runnable"])
+        self.assertFalse(lats_trajectory["runnable"])
         lats_gaia = next(
             row
             for row in rows

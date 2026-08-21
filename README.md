@@ -222,9 +222,9 @@ DyLAN and Multi-Persona intentionally receive no external tools because their
 published protocols do not define a tool loop.
 
 LATS preserves tree expansion over independent environment states. It runs only
-when every declared tool is read-only; benchmark environments with mutating
-tools require a snapshot/restore bridge and are rejected instead of being
-silently reduced to a serial loop. MemGPT exposes its core, recall, and archival
+when every declared tool has a verified read-only contract; benchmark environments
+with mutating or unverified remote tools require a snapshot/restore or provenance
+bridge and are rejected instead of being silently reduced to a serial loop. MemGPT exposes its core, recall, and archival
 memory functions alongside the benchmark's dynamic tools and chains work through
 function-result heartbeats until `send_message`.
 

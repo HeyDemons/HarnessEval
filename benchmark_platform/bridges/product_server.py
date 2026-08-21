@@ -71,15 +71,22 @@ class ProductBridge:
         # and turns a bridge/network problem into model feedback. The agent-side extension
         # acknowledges the actor's declared calls locally and terminates that first batch.
         declaration_only = self.metadata.get("lifecycle") == "single_turn_declaration_only"
-        self.safe_tools = (
-            []
-            if declaration_only
-            else [
+        explicit_safe = self.metadata.get("safe_for_prelaunch")
+        if declaration_only:
+            self.safe_tools = []
+        elif isinstance(explicit_safe, list):
+            declared_names = {str(name) for name in explicit_safe}
+            self.safe_tools = [
+                tool.name
+                for tool in bridge.tools
+                if tool.name in declared_names and tool.read_only and tool.parallel
+            ]
+        else:
+            self.safe_tools = [
                 tool.name
                 for tool in bridge.tools
                 if tool.read_only and tool.parallel
             ]
-        )
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.benchmark in {"gaia", "gdpval"}:

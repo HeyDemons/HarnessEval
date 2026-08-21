@@ -40,7 +40,7 @@ def compatibility_rows(
                 baseline_requirement = "dynamic_tool_schema"
             runnable = bridge_status.startswith("implemented")
             if profile.id == "lats":
-                runnable = runnable and benchmark.id in {"trajectory-bench", "bfcl"}
+                runnable = runnable and benchmark.id == "bfcl"
             rows.append(
                 {
                     "baseline": profile.id,

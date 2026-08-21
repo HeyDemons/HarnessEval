@@ -9,8 +9,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import completion_client_from_env
-from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment
+from benchmark_platform.harnesses.api import ProviderError, completion_client_from_env
+from benchmark_platform.harnesses.core import (
+    DeclarationOnlyComplete,
+    JsonlTrace,
+    RunContext,
+    ToolEnvironment,
+)
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import get_profile
 
@@ -21,6 +26,13 @@ def _write(path: Path, value: Any) -> None:
     pending = path.with_name(f".{path.name}.tmp")
     pending.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     pending.replace(path)
+
+
+def _published_calls(environment: ToolEnvironment) -> list[dict[str, Any]]:
+    return [
+        {"name": str(record["name"]), "arguments": dict(record.get("arguments") or {})}
+        for record in environment.calls
+    ]
 
 
 async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job: Path, policy: dict[str, Any]) -> dict[str, Any]:
@@ -34,10 +46,19 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         for path in [case_root, *case_root.rglob("*")]:
             path.chmod(path.stat().st_mode | (0o222 if path.is_file() else 0o333))
     bridge = load_case(benchmark, case_id, case_root)
-    environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+    environment = ToolEnvironment(
+        bridge.tools,
+        trace,
+        bridge.handlers,
+        declaration_only=benchmark == "bfcl",
+    )
     effective_policy = dict(policy)
     if benchmark == "bfcl":
         effective_policy["declaration_only_tools"] = True
+    if benchmark == "trajectory-bench":
+        safe = list(bridge.metadata.get("safe_for_prelaunch") or [])
+        effective_policy["speculation_safe_tools"] = safe
+        effective_policy["branch_safe_tools"] = safe
     context = RunContext(
         profile_id,
         bridge.prompt,
@@ -66,13 +87,19 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             "completion_tokens": context.completion_tokens,
             "bridge": bridge.metadata,
         }
+        if benchmark == "bfcl":
+            result["committed_calls"] = environment.committed_calls
+            result["tool_calls"] = len(environment.committed_calls)
+        elif benchmark == "trajectory-bench":
+            result["trajectory_calls"] = _published_calls(environment)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-        if benchmark == "bfcl" and environment.calls:
+        if benchmark == "bfcl" and environment.declaration_committed:
             # BFCL scores the declared calls themselves. Some multi-turn profiles have a
-            # stricter terminal protocol (for example MemGPT's heartbeat and Magentic-One's
-            # final synthesis) than BFCL's one-response lifecycle. Once a call exists, a
-            # later profile termination error must not erase that measurable prediction.
+            # stricter terminal protocol than BFCL's one-response lifecycle. Once the first
+            # call-bearing assistant response is committed, the benchmark is complete and a
+            # later internal profile step cannot add to or erase that batch.
+            expected_stop = isinstance(exc, DeclarationOnlyComplete)
             result = {
                 "schema_version": 1,
                 "status": "completed",
@@ -84,21 +111,27 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
                 "final_answer": None,
                 "execution_seconds": time.perf_counter() - started,
                 "llm_calls": context.llm_calls,
-                "tool_calls": len(environment.calls),
+                "tool_calls": len(environment.committed_calls),
+                "committed_calls": environment.committed_calls,
                 "prompt_tokens": context.prompt_tokens,
                 "completion_tokens": context.completion_tokens,
                 "bridge": bridge.metadata,
                 "termination": {
-                    "kind": "profile_error_after_calls",
-                    "error": error,
+                    "kind": (
+                        "declaration_batch_committed"
+                        if expected_stop
+                        else "profile_error_after_declaration_commit"
+                    ),
+                    **({} if expected_stop else {"error": error}),
                 },
             }
-            await trace.emit(
-                "bridge_warning",
-                kind="profile_error_after_calls",
-                error=error,
-                tool_calls=len(environment.calls),
-            )
+            if not expected_stop:
+                await trace.emit(
+                    "bridge_warning",
+                    kind="profile_error_after_declaration_commit",
+                    error=error,
+                    tool_calls=len(environment.committed_calls),
+                )
         else:
             result = {
                 "schema_version": 1,
@@ -110,7 +143,15 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
                 "error": error,
                 "llm_calls": context.llm_calls,
                 "tool_calls": len(environment.calls),
+                "failure_kind": (
+                    "provider_error" if isinstance(exc, ProviderError) else "agent_runtime"
+                ),
             }
+            if isinstance(exc, ProviderError):
+                result["provider_error_kind"] = exc.kind
+                result["provider_status_code"] = exc.status_code
+            if benchmark == "trajectory-bench":
+                result["trajectory_calls"] = _published_calls(environment)
             await trace.emit("bridge_error", error=result["error"])
     _write(job / "harness_result.json", result)
     return result

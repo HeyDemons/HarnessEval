@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import os
 import re
@@ -11,6 +12,16 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from .api import Completion, CompletionClient
 from .content import ToolImage, json_safe, tool_result_content
+
+
+_ASSISTANT_RESPONSE_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "harnesseval_assistant_response_id",
+    default=None,
+)
+
+
+class DeclarationOnlyComplete(RuntimeError):
+    """The benchmark already received its one committed assistant call batch."""
 
 
 # Every tool subprocess is handed this allowlist and nothing else, so no API credential can
@@ -340,6 +351,8 @@ class ToolEnvironment:
         tools: list[ToolSpec],
         trace: JsonlTrace,
         handlers: Mapping[str, ToolHandler] | None = None,
+        *,
+        declaration_only: bool = False,
     ):
         names = [tool.name for tool in tools]
         if len(names) != len(set(names)):
@@ -351,6 +364,9 @@ class ToolEnvironment:
             raise ValueError(f"Handlers reference unknown tools: {unknown_handlers}")
         self.trace = trace
         self.calls: list[dict[str, Any]] = []
+        self.declaration_only = declaration_only
+        self._declaration_committed = False
+        self._committed_response_id: int | None = None
         self._state_condition = asyncio.Condition()
         self._active_shared = 0
         self._exclusive_active = False
@@ -374,6 +390,29 @@ class ToolEnvironment:
     def state_version(self) -> int:
         """Monotonic environment version advanced by every invoked mutating tool."""
         return self._state_version
+
+    @property
+    def declaration_committed(self) -> bool:
+        return self._declaration_committed
+
+    @property
+    def committed_calls(self) -> list[dict[str, Any]]:
+        if not self.declaration_only or not self._declaration_committed:
+            return []
+        return [
+            {"name": str(record["name"]), "arguments": dict(record.get("arguments") or {})}
+            for record in self.calls
+            if record.get("assistant_response_id") == self._committed_response_id
+        ]
+
+    def _accept_declaration_call(self, response_id: int | None) -> bool:
+        if not self.declaration_only:
+            return True
+        if not self._declaration_committed:
+            self._declaration_committed = True
+            self._committed_response_id = response_id
+            return True
+        return response_id == self._committed_response_id
 
     async def _enter_shared(self) -> None:
         async with self._state_condition:
@@ -407,8 +446,28 @@ class ToolEnvironment:
             self._state_condition.notify_all()
 
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        response_id = _ASSISTANT_RESPONSE_ID.get()
+        if not self._accept_declaration_call(response_id):
+            result = {
+                "ok": False,
+                "error": "declaration_batch_already_committed",
+                "committed_response_id": self._committed_response_id,
+            }
+            await self.trace.emit(
+                "declaration_call_ignored",
+                name=name,
+                arguments=arguments,
+                assistant_response_id=response_id,
+                committed_response_id=self._committed_response_id,
+            )
+            return result
         tool = self.tools.get(name)
-        await self.trace.emit("tool_request", name=name, arguments=arguments)
+        await self.trace.emit(
+            "tool_request",
+            name=name,
+            arguments=arguments,
+            assistant_response_id=response_id,
+        )
         state_before = self._state_version
         if tool is None:
             result = {"ok": False, "error": "unknown_tool", "available_tools": self.names}
@@ -436,6 +495,7 @@ class ToolEnvironment:
             "result": result,
             "state_version_before": state_before,
             "state_version_after": self._state_version,
+            "assistant_response_id": response_id,
         }
         self._remember_images(result)
         self.calls.append(record)
@@ -478,7 +538,22 @@ class ToolEnvironment:
             tool = self.tools.get(name)
             if tool is None or not tool.read_only:
                 raise ValueError(f"Cannot commit non-isolated tool record {name!r}")
-            await self.trace.emit("tool_request", name=name, arguments=arguments)
+            response_id = record.get("assistant_response_id")
+            if not self._accept_declaration_call(response_id):
+                await self.trace.emit(
+                    "declaration_call_ignored",
+                    name=name,
+                    arguments=arguments,
+                    assistant_response_id=response_id,
+                    committed_response_id=self._committed_response_id,
+                )
+                continue
+            await self.trace.emit(
+                "tool_request",
+                name=name,
+                arguments=arguments,
+                assistant_response_id=response_id,
+            )
             self._remember_images(record["result"])
             self.calls.append(record)
             await self.trace.emit("tool_result", **record)
@@ -511,6 +586,7 @@ class ToolEnvironment:
             "result": result,
             "state_version_before": state_before,
             "state_version_after": self._state_version,
+            "assistant_response_id": _ASSISTANT_RESPONSE_ID.get(),
         }
         return record
 
@@ -642,6 +718,10 @@ class RunContext:
         json_mode: bool = False,
         temperature: float | None = None,
     ) -> str:
+        if self.environment.declaration_only and self.environment.declaration_committed:
+            raise DeclarationOnlyComplete(
+                "Declaration-only benchmark already received its committed call batch"
+            )
         messages = self.environment.with_images(messages)
         await self.trace.emit(
             "llm_request",
@@ -656,10 +736,13 @@ class RunContext:
             temperature=temperature,
         )
         self.llm_calls += 1
+        response_id = self.llm_calls
+        _ASSISTANT_RESPONSE_ID.set(response_id)
         self.prompt_tokens += completion.prompt_tokens
         self.completion_tokens += completion.completion_tokens
         await self.trace.emit(
             "llm_response",
+            response_id=response_id,
             role=role,
             content=completion.content,
             raw=completion.raw,

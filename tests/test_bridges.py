@@ -208,6 +208,7 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(bridge.metadata["messages"], messages)
         self.assertTrue(result["result"]["declaration_only"])
         self.assertEqual(result["result"]["execution"], "not_run")
+        self.assertTrue(result["result"]["terminate"])
 
     def test_bfcl_product_does_not_prelaunch_declaration_only_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -228,7 +229,24 @@ class BridgeMatrixTests(unittest.TestCase):
         )
         self.assertEqual(manifest["safe_tools"], [])
 
-    def test_bfcl_runner_keeps_calls_when_only_profile_termination_fails(self) -> None:
+    def test_trajectory_product_does_not_prelaunch_unverified_remote_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            job = root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "trajectory-bench")
+            bridge = ProductBridge("trajectory-bench", "case", source, job)
+            try:
+                manifest = bridge.manifest()
+            finally:
+                bridge.close()
+
+        self.assertEqual(manifest["metadata"]["mutability_contract"], "unverified")
+        self.assertEqual(manifest["safe_tools"], [])
+
+    def test_bfcl_runner_keeps_committed_batch_when_profile_termination_fails(self) -> None:
         messages = [
             {"role": "system", "content": "Use the declarations exactly."},
             {"role": "user", "content": "Call lookup_item."},
@@ -294,20 +312,186 @@ class BridgeMatrixTests(unittest.TestCase):
 
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["tool_calls"], 1)
+        self.assertEqual(
+            completed["committed_calls"],
+            [{"name": "lookup_item", "arguments": {"id": "7"}}],
+        )
         self.assertNotIn("error", completed)
-        self.assertEqual(completed["termination"]["kind"], "profile_error_after_calls")
+        self.assertEqual(
+            completed["termination"]["kind"],
+            "profile_error_after_declaration_commit",
+        )
         self.assertIn("terminal protocol", completed["termination"]["error"])
         self.assertEqual(manifest["metadata"]["messages"], messages)
         self.assertTrue(
             any(
                 event["event"] == "bridge_warning"
-                and event["kind"] == "profile_error_after_calls"
+                and event["kind"] == "profile_error_after_declaration_commit"
                 for event in events
             )
         )
         self.assertEqual(failed["status"], "failed")
         self.assertEqual(failed["tool_calls"], 0)
         self.assertIn("provider failed before a prediction", failed["error"])
+
+    def test_bfcl_actor_stops_before_a_second_assistant_response(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            job = root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = RecordingClient(
+                [
+                    '{"tool":"lookup_item","arguments":{"id":"first"}}',
+                    '{"tool":"lookup_item","arguments":{"id":"must-not-run"}}',
+                ]
+            )
+            with patch.object(
+                bridge_runner,
+                "completion_client_from_env",
+                return_value=client,
+            ):
+                result = asyncio.run(
+                    bridge_runner.execute(
+                        "bfcl",
+                        "actor-only",
+                        "case",
+                        source,
+                        job,
+                        {"max_turns": 4},
+                    )
+                )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(client.requests), 1)
+        self.assertEqual(
+            result["committed_calls"],
+            [{"name": "lookup_item", "arguments": {"id": "first"}}],
+        )
+        self.assertEqual(result["termination"]["kind"], "declaration_batch_committed")
+
+    def test_bfcl_keeps_parallel_calls_from_one_assistant_response(self) -> None:
+        async def one_response_batch(context):
+            await context.complete("planner", [{"role": "user", "content": "plan"}])
+            await asyncio.gather(
+                context.environment.call("lookup_item", {"id": "a"}),
+                context.environment.call("lookup_item", {"id": "b"}),
+            )
+            await context.complete("must_not_run", [{"role": "user", "content": "again"}])
+            raise AssertionError("unreachable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            job = root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = RecordingClient(["planned", "must-not-run"])
+            with (
+                patch.object(bridge_runner, "completion_client_from_env", return_value=client),
+                patch.object(bridge_runner, "run_profile", new=one_response_batch),
+            ):
+                result = asyncio.run(
+                    bridge_runner.execute("bfcl", "llmcompiler", "case", source, job, {})
+                )
+
+        self.assertEqual(len(client.requests), 1)
+        self.assertEqual(
+            result["committed_calls"],
+            [
+                {"name": "lookup_item", "arguments": {"id": "a"}},
+                {"name": "lookup_item", "arguments": {"id": "b"}},
+            ],
+        )
+
+    def test_bfcl_representative_profiles_commit_without_a_followup_turn(self) -> None:
+        scenarios = {
+            "actor-only": (
+                ['{"tool":"lookup_item","arguments":{"id":"a"}}'],
+                [{"name": "lookup_item", "arguments": {"id": "a"}}],
+            ),
+            "react": (
+                ['Thought: call it\nAction: lookup_item\nAction Input: {"id":"a"}'],
+                [{"name": "lookup_item", "arguments": {"id": "a"}}],
+            ),
+            "plan-execute": (
+                [
+                    '{"steps":[{"id":"s1","instruction":"lookup a"}]}',
+                    '{"tool":"lookup_item","arguments":{"id":"a"}}',
+                ],
+                [{"name": "lookup_item", "arguments": {"id": "a"}}],
+            ),
+            "cmas": (
+                [
+                    '{"assignments":[{"id":"w1","instruction":"lookup a"}]}',
+                    '{"tool":"lookup_item","arguments":{"id":"a"}}',
+                ],
+                [{"name": "lookup_item", "arguments": {"id": "a"}}],
+            ),
+            "memgpt": (
+                [
+                    '{"thought":"lookup","function":"lookup_item",'
+                    '"arguments":{"id":"a"}}'
+                ],
+                [{"name": "lookup_item", "arguments": {"id": "a"}}],
+            ),
+            "multi-persona": (
+                ["Final answer: no function is relevant"],
+                [],
+            ),
+            "llmcompiler": (
+                [
+                    '{"tasks":['
+                    '{"id":"1","tool":"lookup_item","arguments":{"id":"a"},"dependencies":[]},'
+                    '{"id":"2","tool":"lookup_item","arguments":{"id":"b"},"dependencies":[]}'
+                    ']}'
+                ],
+                [
+                    {"name": "lookup_item", "arguments": {"id": "a"}},
+                    {"name": "lookup_item", "arguments": {"id": "b"}},
+                ],
+            ),
+            "rewoo": (
+                [
+                    "Plan: first lookup\n#E1 = lookup_item[{\"id\":\"a\"}]\n"
+                    "Plan: second lookup\n#E2 = lookup_item[{\"id\":\"b\"}]"
+                ],
+                [
+                    {"name": "lookup_item", "arguments": {"id": "a"}},
+                    {"name": "lookup_item", "arguments": {"id": "b"}},
+                ],
+            ),
+        }
+        for profile, (responses, expected) in scenarios.items():
+            with self.subTest(profile=profile), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = root / "input"
+                job = root / "job"
+                source.mkdir()
+                job.mkdir()
+                make_case(source, "bfcl")
+                client = RecordingClient(responses)
+                with patch.object(
+                    bridge_runner,
+                    "completion_client_from_env",
+                    return_value=client,
+                ):
+                    result = asyncio.run(
+                        bridge_runner.execute(
+                            "bfcl",
+                            profile,
+                            "case",
+                            source,
+                            job,
+                            {"max_turns": 4},
+                        )
+                    )
+                self.assertEqual(result["status"], "completed")
+                self.assertEqual(result["committed_calls"], expected)
+                self.assertEqual(len(client.requests), len(responses))
 
     def test_vita_visible_history_structures_tool_calls_without_runtime_timestamp(self) -> None:
         class ToolCall:
@@ -430,6 +614,49 @@ class BridgeMatrixTests(unittest.TestCase):
             self.assertEqual(accepted["transport"], "dataset_recorded_replay")
             self.assertEqual(rejected["error"], "trajectory_replay_arguments_mismatch")
 
+    def test_trajectory_duplicate_endpoint_declares_one_tool_and_replays_each_call(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_json(
+                root / "case.json",
+                {
+                    "prompt": "Call the same endpoint twice",
+                    "tools": [
+                        {
+                            "tool name": "lookup item",
+                            "required_parameters": [{"name": "id", "type": "STRING"}],
+                            "replay arguments": {"id": "first"},
+                            "replay output": "first result",
+                        },
+                        {
+                            "tool name": "lookup item",
+                            "required_parameters": [{"name": "id", "type": "STRING"}],
+                            "replay arguments": {"id": "second"},
+                            "replay output": "second result",
+                        },
+                    ],
+                },
+            )
+            with patch.dict(os.environ, {"TRAJECT_TOOL_MODE": "replay"}, clear=True):
+                bridge = load_case("trajectory-bench", "case", root)
+                environment = ToolEnvironment(
+                    bridge.tools,
+                    JsonlTrace(root / "trace.jsonl"),
+                    bridge.handlers,
+                )
+                async def replay_both():
+                    first = await environment.call(bridge.tools[0].name, {"id": "first"})
+                    second = await environment.call(bridge.tools[0].name, {"id": "second"})
+                    return first, second
+
+                first, second = asyncio.run(replay_both())
+
+            self.assertEqual(len(bridge.tools), 1)
+            self.assertEqual(bridge.metadata["source_tools"], 2)
+            self.assertEqual(bridge.metadata["declared_tools"], 1)
+            self.assertEqual(first["result"]["response"], "first result")
+            self.assertEqual(second["result"]["response"], "second result")
+
     def test_trajectory_accepts_both_official_tool_list_keys(self) -> None:
         spaced = [{"tool name": "one"}]
         underscored = [{"tool name": "two"}]
@@ -451,10 +678,11 @@ class BridgeMatrixTests(unittest.TestCase):
 
         observed = {}
 
-        def fake_urlopen(request):
+        def fake_urlopen(request, timeout=None):
             observed["url"] = request.full_url
             observed["payload"] = json.loads(request.data.decode("utf-8"))
             observed["headers"] = {name.lower(): value for name, value in request.header_items()}
+            observed["timeout"] = timeout
             return Response()
 
         with tempfile.TemporaryDirectory() as directory:
@@ -469,6 +697,7 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(observed["url"], "http://host.docker.internal:8080/virtual")
         self.assertEqual(observed["payload"]["toolbench_key"], "")
         self.assertEqual(json.loads(observed["payload"]["tool_input"]), {"id": "42"})
+        self.assertEqual(observed["timeout"], 60.0)
         self.assertNotIn("toolbench_key", observed["headers"])
 
     def test_trajectory_sends_nonempty_key_in_body_and_header(self) -> None:
@@ -484,7 +713,7 @@ class BridgeMatrixTests(unittest.TestCase):
 
         observed = {}
 
-        def fake_urlopen(request):
+        def fake_urlopen(request, timeout=None):
             observed["payload"] = json.loads(request.data.decode("utf-8"))
             observed["headers"] = {name.lower(): value for name, value in request.header_items()}
             return Response()

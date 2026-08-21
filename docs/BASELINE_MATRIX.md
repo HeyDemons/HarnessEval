@@ -32,7 +32,7 @@ applications.
 | --- | --- | --- | --- |
 | GAIA | Isolated workspace, argv command, DDGS web search | Implemented | Public answer normalization can finalize a run |
 | GDPval | Isolated writable Office workspace, argv command, and DDGS web search | Implemented | Automated rubric remains a proxy to expert pairwise grading |
-| TRAJECT-Bench | Per-case native API schemas | Implemented; external ToolBench service credentials required | Ordered tool-trajectory, set-inclusion, and answer diagnostics are finalized after each arm |
+| TRAJECT-Bench | Per-case native API schemas | Implemented; external ToolBench service credentials required | Parallel set exact / sequential ordered exact, inclusion, parameter-use, and answer diagnostics are finalized after each arm |
 | BFCL V4 | Per-case declared functions | The light suite contains independently scoreable single-turn categories and uses the official AST checker | Official single-turn category score; stateful categories remain full-suite only |
 | VitaBench | Native stateful environment and hidden user simulator | Implemented through the official episode lifecycle | Native trajectory evaluator is enabled by the light runner |
 | tau2/tau3 | Native stateful environment and hidden user simulator | Implemented through the official episode lifecycle | Official native reward is enabled by default |
@@ -50,8 +50,9 @@ with text questions, or silently giving either method a ReAct loop would produce
 an easier but invalid comparison.
 
 LATS is marked non-runnable for benchmark lifecycles that do not expose a
-branch snapshot/restore contract. It can run directly on all-read-only declared
-toolsets, including the current TRAJECT and BFCL schema bridges. Executing
+branch snapshot/restore contract. It can run directly on verified all-read-only
+toolsets, currently the BFCL declaration bridge. TRAJECT's remote endpoints lack
+an auditable idempotence contract and remain gated. Executing
 several mutating branches in one shared environment would not be LATS and is
 therefore rejected.
 

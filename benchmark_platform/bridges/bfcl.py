@@ -176,8 +176,9 @@ def declaration_only_result(function_name: str, arguments: dict[str, Any]) -> di
         "arguments": arguments,
         "declaration_only": True,
         "execution": "not_run",
+        "terminate": True,
         "instruction": (
-            "BFCL records function calls as the answer and does not execute them. "
-            "Submit any additional calls required by the request, then finish."
+            "BFCL records this assistant response's function-call batch as the answer, "
+            "does not execute the functions, and does not permit a later assistant turn."
         ),
     }

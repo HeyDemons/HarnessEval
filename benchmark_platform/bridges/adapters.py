@@ -18,6 +18,9 @@ from .bfcl import (
 )
 
 
+TRAJECT_TOOL_TIMEOUT_S = 60.0
+
+
 def _tool_name(original: str) -> str:
     stem = re.sub(r"[^A-Za-z0-9_]+", "_", original).strip("_").lower() or "tool"
     return f"{stem[:48]}_{hashlib.sha256(original.encode('utf-8')).hexdigest()[:8]}"
@@ -68,27 +71,50 @@ def load_trajectory(case_id: str, root: Path) -> BridgeCase:
     value = read_case(root)
     specs = []
     handlers = {}
-    for original in value.get("tools", []):
+    source_tools = [item for item in value.get("tools", []) if isinstance(item, dict)]
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for original in source_tools:
+        grouped.setdefault(_tool_name(str(original.get("tool name", ""))), []).append(original)
+
+    for name, candidates in grouped.items():
+        original = max(
+            candidates,
+            key=lambda item: len(item.get("required parameters") or item.get("required_parameters") or [])
+            + len(item.get("optional parameters") or item.get("optional_parameters") or []),
+        )
         original_name = str(original.get("tool name", ""))
-        name = _tool_name(original_name)
         specs.append(native_spec(name, f"{original_name}: {original.get('tool description', '')}", _parameter_schema(original), parallel=True, read_only=True))
 
-        async def invoke(arguments: dict[str, Any], *, tool: dict[str, Any] = original) -> Any:
+        async def invoke(
+            arguments: dict[str, Any],
+            *,
+            tools: tuple[dict[str, Any], ...] = tuple(candidates),
+        ) -> Any:
             if os.environ.get("TRAJECT_TOOL_MODE", "").strip() == "replay":
-                expected = tool.get("replay arguments")
-                if not isinstance(expected, dict) or tool.get("replay output") is None:
+                available = [
+                    tool
+                    for tool in tools
+                    if isinstance(tool.get("replay arguments"), dict)
+                    and tool.get("replay output") is not None
+                ]
+                if not available:
                     raise RuntimeError("TRAJECT replay data is unavailable for this tool")
-                if arguments != expected:
+                matched = next(
+                    (tool for tool in available if arguments == tool["replay arguments"]),
+                    None,
+                )
+                if matched is None:
                     return {
                         "ok": False,
                         "error": "trajectory_replay_arguments_mismatch",
-                        "expected_arguments": expected,
+                        "expected_arguments": [tool["replay arguments"] for tool in available],
                         "received_arguments": arguments,
                     }
                 return {
-                    "response": tool["replay output"],
+                    "response": matched["replay output"],
                     "transport": "dataset_recorded_replay",
                 }
+            tool = tools[0]
             service_url = os.environ.get("API_URL", "")
             key = os.environ.get("TOOLBENCH_KEY", "")
             if not service_url:
@@ -110,7 +136,10 @@ def load_trajectory(case_id: str, root: Path) -> BridgeCase:
                 headers["toolbench_key"] = key
             request = urllib.request.Request(service_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             try:
-                with urllib.request.urlopen(request) as response:
+                with urllib.request.urlopen(
+                    request,
+                    timeout=TRAJECT_TOOL_TIMEOUT_S,
+                ) as response:
                     return json.loads(response.read().decode("utf-8"))
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
@@ -126,7 +155,22 @@ def load_trajectory(case_id: str, root: Path) -> BridgeCase:
                 }
 
         handlers[name] = invoke
-    return BridgeCase("trajectory-bench", case_id, value["prompt"], specs, handlers, {"source_tools": len(specs)})
+    return BridgeCase(
+        "trajectory-bench",
+        case_id,
+        value["prompt"],
+        specs,
+        handlers,
+        {
+            "source_tools": len(source_tools),
+            "declared_tools": len(specs),
+            # The frozen light endpoints are live-verified, but the source data does not
+            # declare idempotence or side-effect freedom. Keep ordinary execution enabled
+            # while default-denying speculative prelaunch and branch reuse.
+            "safe_for_prelaunch": [],
+            "mutability_contract": "unverified",
+        },
+    )
 
 
 def load_bfcl(case_id: str, root: Path) -> BridgeCase:
