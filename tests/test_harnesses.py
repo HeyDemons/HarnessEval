@@ -18,6 +18,7 @@ from benchmark_platform.harnesses.core import (
     normalize_json_schema,
 )
 from benchmark_platform.harnesses.methods import run_profile
+from benchmark_platform.harnesses.rewoo import parse_rewoo_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -493,12 +494,71 @@ class HarnessTests(unittest.TestCase):
         answer, environment = self.run_profile(
             "rewoo",
             [
-                '{"steps":[{"id":"E1","tool":"lookup","arguments":{"key":"alpha"}}]}',
-                "6",
+                "\n".join(
+                    [
+                        "Plan: retrieve alpha",
+                        '#E1 = lookup[{"key":"alpha"}]',
+                        "Plan: retrieve beta",
+                        '#E2 = lookup[{"key":"beta"}]',
+                        "Plan: multiply the retrieved values",
+                        '#E3 = multiply[{"a":#E1.value,"b":#E2.value}]',
+                    ]
+                ),
+                "42",
             ],
         )
-        self.assertEqual(answer, "6")
-        self.assertEqual(len(environment.calls), 1)
+        self.assertEqual(answer, "42")
+        self.assertEqual(len(environment.calls), 3)
+        self.assertEqual(environment.calls[-1]["arguments"], {"a": 6, "b": 7})
+        self.assertEqual(environment.calls[-1]["result"]["result"]["product"], 42)
+
+    def test_rewoo_llm_worker_is_an_explicit_work_phase(self) -> None:
+        answer, environment = self.run_profile(
+            "rewoo",
+            [
+                "Plan: derive the evidence directly\n#E1 = LLM[Return the product of six and seven]",
+                "42",
+                "42",
+            ],
+        )
+        self.assertEqual(answer, "42")
+        self.assertEqual(environment.calls, [])
+
+    def test_rewoo_balanced_parser_preserves_nested_worker_input(self) -> None:
+        steps = parse_rewoo_plan(
+            'Plan: inspect nested content\n#E1 = LLM[Compare [alpha] with {"literal": "]"}]'
+        )
+        self.assertEqual(len(steps), 1)
+        self.assertEqual(steps[0].worker, "LLM")
+        self.assertEqual(steps[0].worker_input, 'Compare [alpha] with {"literal": "]"}')
+
+    def test_rewoo_worker_failure_is_visible_to_solver(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = ScriptedClient(
+                [
+                    "Plan: request unavailable evidence\n#E1 = MissingWorker[anything]",
+                    "cannot determine",
+                ]
+            )
+            context = RunContext(
+                "rewoo",
+                "answer from the available evidence",
+                client,
+                environment,
+                trace,
+                {"max_turns": 8},
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(answer, "cannot determine")
+        self.assertEqual(environment.calls, [])
+        failures = [event for event in events if event.get("event") == "rewoo_worker_result"]
+        self.assertEqual(len(failures), 1)
+        self.assertFalse(failures[0]["ok"])
+        self.assertEqual(failures[0]["output"]["error"], "unknown_worker")
+        self.assertIn("unknown_worker", client.messages[-1][0]["content"])
 
     def test_sa_exact_action_cache_hit(self) -> None:
         answer, environment = self.run_profile(

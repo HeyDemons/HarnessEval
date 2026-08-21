@@ -9,6 +9,9 @@ envelopes while leaving task semantics, tools, and scoring with each benchmark.
 
 - Eight benchmark adapters with pinned sources and explicit scoring claims.
 - A generic `run` path for any harness command already available in a task image.
+- `product-run pi`, `product-run codex`, and `product-run claude` paths that keep product CLIs on the
+  host while routing complete tool calls through benchmark-owned Docker
+  environments.
 - A portable harness request contract for user-supplied tools and
   OpenAI-compatible APIs.
 - Thirteen theory profiles, including LATS, MemGPT, AFlow, DyLAN,
@@ -57,6 +60,24 @@ The host package has no runtime dependency outside the standard library.
 Host, architecture, BuildKit, proxy, and image-download details are documented
 in [the macOS installation guide](docs/INSTALLATION.md).
 
+## CLI Execution Modes
+
+HarnessEval exposes one CLI but preserves four distinct execution boundaries:
+
+| Command | Agent location | Benchmark tools, state, and scorer | Intended use |
+| --- | --- | --- | --- |
+| `harnesseval run ... -- COMMAND` | Inside the declared task image | Inside the benchmark lifecycle | Native benchmark or externally packaged harness commands |
+| `harnesseval harness-run METHOD ...` | Inside a portable harness image | Request-defined tools and finalizer | Contract tests and user-supplied tool packages |
+| `harnesseval bridge-run METHOD BENCHMARK ...` | Inside HarnessEval's isolated baseline runtime | Benchmark-owned Docker bridge and native scorer | Built-in paper and theory baselines |
+| `harnesseval product-run PRODUCT BENCHMARK ...` | Product CLI on the macOS host | Benchmark-owned Docker bridge and native scorer | Pi, Codex CLI, and Claude Code comparisons |
+
+For `product-run`, the product executable itself is not copied into Docker.
+Only the benchmark-declared tool schemas cross the loopback bridge; complete
+calls execute in the benchmark environment and return to the host CLI. Product
+credentials remain host-only, while benchmark service credentials cross the
+container boundary only through explicit `--pass-env` allowlists. This is an
+end-to-end benchmark run, not a host-only approximation.
+
 ## Benchmark Smoke
 
 Set `--orch-root` to a directory containing any local datasets named in the
@@ -92,6 +113,25 @@ Configure any OpenAI-compatible provider with names that are safe to record:
 export HARNESS_API_BASE=https://provider.example/v1
 export HARNESS_API_KEY=...
 export HARNESS_MODEL=model-id
+```
+
+Anthropic Messages providers use `HARNESS_API_TYPE=anthropic-messages` and
+require `HARNESS_MAX_OUTPUT_TOKENS`. Official Anthropic authentication defaults
+to `HARNESS_API_AUTH=x-api-key`; compatible gateways that issue bearer tokens
+can select `HARNESS_API_AUTH=bearer` explicitly. `HARNESS_API_USER_AGENT` may
+override the recorded `HarnessEval/0.1` transport identifier when a provider
+requires a specific client identifier.
+
+For example, the same built-in method can use an Anthropic-compatible gateway
+without changing its harness logic:
+
+```bash
+export HARNESS_API_BASE=https://provider.example
+export HARNESS_API_KEY=...
+export HARNESS_MODEL=claude-model-id
+export HARNESS_API_TYPE=anthropic-messages
+export HARNESS_API_AUTH=x-api-key
+export HARNESS_MAX_OUTPUT_TOKENS=16384
 ```
 
 Run the complete API -> harness -> tool -> answer loop inside Docker:
@@ -159,6 +199,72 @@ function-result heartbeats until `send_message`.
 the lifecycle bridge exists; it does not mean the case succeeded or that a
 publishable native score is available. See
 [the baseline matrix](docs/BASELINE_MATRIX.md).
+
+## Local Product CLIs
+
+HarnessEval can drive an installed Pi CLI without copying the user's Pi home or
+credentials into a benchmark container:
+
+```bash
+harnesseval product-run pi gaia \
+  --case CASE_ID \
+  --run-dir runs/pi-gaia \
+  --provider deepseek \
+  --model deepseek-v4-flash \
+  --thinking high
+```
+
+The benchmark prompt and schemas come from the isolated Docker adapter. Pi gets
+only a generated extension for those declared tools; built-in tools, ambient
+extensions, skills, context files, prompt templates, and session reuse are
+disabled. Complete Pi events, tool arguments/results, native scores, attempts,
+and resume identities are persisted. Static, native multi-turn, and live task
+container adapters use the same command. Benchmark-side API variables cross
+only when explicitly named with `--pass-env`. Custom provider variables for Pi
+use `--pi-env` and never enter benchmark Docker.
+
+An installed official Codex CLI uses the same task, Docker bridge, scorer,
+attempt, and resume closure. For an OpenAI Responses-compatible custom
+provider:
+
+```bash
+export PACKY_API_KEY=...
+harnesseval product-run codex gaia \
+  --case CASE_ID \
+  --run-dir runs/codex-gaia \
+  --provider packy \
+  --base-url https://cf.api.fan/v1 \
+  --api-key-env PACKY_API_KEY \
+  --model gpt-5.6-terra \
+  --thinking high
+```
+
+The key value is not written to config, commands, identities, or artifacts.
+Codex runs under an attempt-local home with personal plugins, shell, built-in
+search, multi-agent tools, hooks, and memories disabled. The benchmark's exact
+tool schemas are injected over a required local MCP server; complete calls and
+results remain in the benchmark trace without character-count slicing.
+
+Claude Code can use the same benchmark and scoring closure through its native
+Anthropic Messages protocol:
+
+```bash
+export PACKY_API_KEY=...
+harnesseval product-run claude gaia \
+  --case CASE_ID \
+  --run-dir runs/claude-gaia \
+  --provider packy \
+  --base-url https://cf.api.fan \
+  --api-key-env PACKY_API_KEY \
+  --model claude-sonnet-5 \
+  --thinking high
+```
+
+The adapter runs Claude Code in bare, non-persistent mode under attempt-local
+home and configuration directories. Built-in tools and ambient resources are
+disabled; an explicit MCP allowlist exposes only the complete benchmark-owned
+tool schemas. Provider keys remain host-only and are mapped to Claude Code's
+native authentication environment without being serialized.
 
 ## Registered Benchmarks
 

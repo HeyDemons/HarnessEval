@@ -23,6 +23,7 @@ from benchmark_platform.bridges.episode import (
     FinalResponse,
     NativeTool,
 )
+from benchmark_platform.bridges.product_episode import ProductEpisodeBridge
 from benchmark_platform.bridges.tau_episode import _native_tools as tau_native_tools
 from benchmark_platform.bridges.vita_episode import _native_tools as vita_native_tools
 from benchmark_platform.harnesses.api import Completion
@@ -65,7 +66,11 @@ PROFILE_RESPONSES = {
     ],
     "multi-persona": ["Final answer: ok"],
     "llmcompiler": ['{"tasks":[]}', "ok"],
-    "rewoo": ['{"steps":[]}', "ok"],
+    "rewoo": [
+        "Plan: obtain direct evidence\n#E1 = LLM[Return ok]",
+        "ok",
+        "ok",
+    ],
     "sa": ['{"final":"ok"}'],
 }
 
@@ -81,6 +86,15 @@ class ScriptedClient:
 
 
 class EpisodeBrokerTests(unittest.TestCase):
+    def test_product_episode_status_exposes_pre_manifest_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = ProductEpisodeBridge("tau2", "case", Path(directory))
+            self.assertEqual(bridge.status()["state"], "starting")
+            bridge.fail(RuntimeError("provider unavailable"), None)
+            status = bridge.status()
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("provider unavailable", status["error"])
+
     def test_every_profile_runs_inside_native_episode_broker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

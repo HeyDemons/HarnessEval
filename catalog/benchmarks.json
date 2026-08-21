@@ -107,7 +107,7 @@
         "comparability": "official",
         "note": "The full evaluator image will use curated API-only dependencies instead of the repository's host-specific CUDA freeze."
       },
-      "env_allowlist": ["OPENAI_API_KEY", "OPENAI_BASE_URL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "TOOLBENCH_KEY", "API_URL"]
+      "env_allowlist": ["OPENAI_API_KEY", "OPENAI_BASE_URL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "TOOLBENCH_KEY", "API_URL", "TRAJECT_TOOL_MODE"]
     },
     {
       "id": "vitabench",

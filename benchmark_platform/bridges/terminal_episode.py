@@ -7,7 +7,7 @@ import time
 from pathlib import PurePosixPath
 from typing import Any
 
-from benchmark_platform.harnesses.api import ApiConfig, OpenAICompatibleClient
+from benchmark_platform.harnesses.api import completion_client_from_env
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import get_profile
@@ -173,7 +173,7 @@ async def execute(
     context = RunContext(
         profile_id,
         prompt,
-        OpenAICompatibleClient(ApiConfig.from_env()),
+        completion_client_from_env(),
         environment,
         trace,
         policy,

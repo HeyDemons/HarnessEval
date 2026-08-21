@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
-from .api import Completion, OpenAICompatibleClient
+from .api import Completion, CompletionClient
 
 
 JSON_SCHEMA_TYPE_ALIASES = {
@@ -361,7 +361,7 @@ class RunContext:
         self,
         profile: str,
         prompt: str,
-        client: OpenAICompatibleClient,
+        client: CompletionClient,
         environment: ToolEnvironment,
         trace: JsonlTrace,
         policy: dict[str, Any],

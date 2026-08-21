@@ -19,7 +19,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | Magentic-One | Dynamic | Ledger, speaker selection, stall and replan topology |
 | Multi-Persona | No external tools | Published single-model persona collaboration |
 | LLMCompiler | Dynamic | Dependency DAG and parallel ready-task scheduler |
-| ReWOO | Dynamic | Plan evidence before sequential execution |
+| ReWOO | Dynamic | Source Plan/#E protocol; plan all calls first, execute explicit sequential Evidence Workers (dynamic tools or LLM worker), then solve from the complete evidence log |
 | SA | Dynamic read-only speculation | Only declared parallel read-only calls may be pre-executed |
 
 All source-backed revisions are stored as full 40-character commits in the

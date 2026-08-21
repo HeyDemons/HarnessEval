@@ -68,7 +68,11 @@ RESPONSES = {
     ],
     "multi-persona": ["Final answer: ok"],
     "llmcompiler": ['{"tasks":[]}', "ok"],
-    "rewoo": ['{"steps":[]}', "ok"],
+    "rewoo": [
+        "Plan: obtain direct evidence\n#E1 = LLM[Return ok]",
+        "ok",
+        "ok",
+    ],
     "sa": ['{"final":"ok"}'],
 }
 
@@ -185,7 +189,7 @@ class BridgeMatrixTests(unittest.TestCase):
             finally:
                 bridge.close()
 
-    def test_trajectory_tool_joins_public_execution_metadata_without_output(self) -> None:
+    def test_trajectory_tool_keeps_replay_data_separate_from_public_schema(self) -> None:
         visible = {
             "tool name": "Weather lookup",
             "tool description": "Get weather",
@@ -207,6 +211,41 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(merged["domain name"], "Weather")
         self.assertEqual(merged["required parameters"][0]["value"], "Nanjing")
         self.assertNotIn("executed_output", merged)
+        self.assertEqual(merged["replay arguments"], {"city": "Nanjing"})
+        self.assertEqual(merged["replay output"], "hidden answer")
+
+    def test_trajectory_replay_requires_exact_recorded_arguments(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write_json(
+                root / "case.json",
+                {
+                    "prompt": "Call the declared API",
+                    "tools": [
+                        {
+                            "tool name": "lookup item",
+                            "tool description": "look up an item",
+                            "required_parameters": [{"name": "id", "type": "STRING"}],
+                            "replay arguments": {"id": "42"},
+                            "replay output": "complete recorded result",
+                        }
+                    ],
+                },
+            )
+            previous = os.environ.get("TRAJECT_TOOL_MODE")
+            os.environ["TRAJECT_TOOL_MODE"] = "replay"
+            try:
+                bridge = load_case("trajectory-bench", "case", root)
+                accepted = asyncio.run(bridge.handlers[bridge.tools[0].name]({"id": "42"}))
+                rejected = asyncio.run(bridge.handlers[bridge.tools[0].name]({"id": "43"}))
+            finally:
+                if previous is None:
+                    os.environ.pop("TRAJECT_TOOL_MODE", None)
+                else:
+                    os.environ["TRAJECT_TOOL_MODE"] = previous
+            self.assertEqual(accepted["response"], "complete recorded result")
+            self.assertEqual(accepted["transport"], "dataset_recorded_replay")
+            self.assertEqual(rejected["error"], "trajectory_replay_arguments_mismatch")
 
     def test_trajectory_accepts_both_official_tool_list_keys(self) -> None:
         spaced = [{"tool name": "one"}]

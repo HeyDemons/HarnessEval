@@ -68,6 +68,21 @@ def load_trajectory(case_id: str, root: Path) -> BridgeCase:
         specs.append(native_spec(name, f"{original_name}: {original.get('tool description', '')}", _parameter_schema(original), parallel=True, read_only=True))
 
         async def invoke(arguments: dict[str, Any], *, tool: dict[str, Any] = original) -> Any:
+            if os.environ.get("TRAJECT_TOOL_MODE", "").strip() == "replay":
+                expected = tool.get("replay arguments")
+                if not isinstance(expected, dict) or tool.get("replay output") is None:
+                    raise RuntimeError("TRAJECT replay data is unavailable for this tool")
+                if arguments != expected:
+                    return {
+                        "ok": False,
+                        "error": "trajectory_replay_arguments_mismatch",
+                        "expected_arguments": expected,
+                        "received_arguments": arguments,
+                    }
+                return {
+                    "response": tool["replay output"],
+                    "transport": "dataset_recorded_replay",
+                }
             service_url = os.environ.get("API_URL", "")
             key = os.environ.get("TOOLBENCH_KEY", "")
             if not service_url or not key:

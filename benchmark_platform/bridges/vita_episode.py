@@ -7,7 +7,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import ApiConfig, OpenAICompatibleClient
+from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
 
 from .episode import ActionRequest, EpisodeBroker, FinalResponse, NativeTool
 
@@ -133,7 +133,7 @@ def _render_domain_policy(environment: Any, language: str) -> tuple[str, str]:
     return environment.get_policy().format(time=policy_time), system_time
 
 
-def _patch_vita_generation(client: OpenAICompatibleClient) -> None:
+def _patch_vita_generation(client: CompletionClient) -> None:
     from vita.data_model.message import AssistantMessage
     from vita.utils.llm_utils import format_messages
 
@@ -218,7 +218,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
     language = str(policy.get("language", "english"))
     seed = int(policy.get("seed", 42))
     random.seed(seed)
-    client = OpenAICompatibleClient(ApiConfig.from_env())
+    client = completion_client_from_env()
     _patch_vita_generation(client)
     task = _find_task(case_id, language)
     environment = _build_environment(task, language)

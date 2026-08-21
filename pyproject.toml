@@ -15,5 +15,8 @@ harnesseval = "benchmark_platform.cli:main"
 [tool.setuptools.packages.find]
 include = ["benchmark_platform*"]
 
+[tool.setuptools.package-data]
+"benchmark_platform.products" = ["*.ts"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

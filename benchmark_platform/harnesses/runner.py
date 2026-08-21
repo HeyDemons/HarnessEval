@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .api import ApiConfig, OpenAICompatibleClient
+from .api import completion_client_from_env
 from .core import JsonlTrace, RunContext, ToolEnvironment, ToolSpec
 from .methods import run_profile
 from .profiles import get_profile
@@ -70,7 +70,7 @@ async def execute(profile_id: str, request_path: Path, output_path: Path, trace_
     context = RunContext(
         profile_id,
         request["task"]["prompt"],
-        OpenAICompatibleClient(ApiConfig.from_env()),
+        completion_client_from_env(),
         environment,
         trace,
         request.get("policy") or {},

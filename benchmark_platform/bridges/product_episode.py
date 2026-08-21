@@ -92,6 +92,20 @@ class ProductEpisodeBridge:
             raise RuntimeError("native_episode_not_ready")
         return self._manifest
 
+    def status(self) -> dict[str, Any]:
+        with self._result_lock:
+            if self._failure is not None:
+                return {
+                    "ok": False,
+                    "state": "failed",
+                    "error": f"{type(self._failure).__name__}: {self._failure}",
+                }
+            if self._result is not None:
+                return {"ok": True, "state": "completed"}
+            if self._manifest_ready.is_set():
+                return {"ok": True, "state": "ready"}
+            return {"ok": True, "state": "starting"}
+
     def next_action(self) -> PendingProductAction:
         while True:
             pending = self._actions.get()
@@ -309,6 +323,8 @@ def handler_for(bridge: ProductEpisodeBridge):
             try:
                 if self.path == "/manifest":
                     self._send(200, bridge.manifest())
+                elif self.path == "/status":
+                    self._send(200, bridge.status())
                 elif self.path == "/health":
                     self._send(200, {"ok": True})
                 else:

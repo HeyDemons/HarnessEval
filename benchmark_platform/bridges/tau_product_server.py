@@ -8,7 +8,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import ApiConfig, OpenAICompatibleClient
+from benchmark_platform.harnesses.api import completion_client_from_env
 
 from .episode import SEND_MESSAGE_TOOL
 from .product_episode import PendingProductAction, ProductEpisodeBridge, serve
@@ -46,7 +46,7 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
 
     seed = int(policy.get("seed", 42))
     random.seed(seed)
-    client = OpenAICompatibleClient(ApiConfig.from_env())
+    client = completion_client_from_env()
     _patch_tau_generation(client)
     task_set, task = _load_task(case_id)
     domain = TASK_SET_DOMAINS.get(task_set, task_set)

@@ -248,35 +248,6 @@ async def run_llmcompiler(ctx: RunContext) -> str:
     )
 
 
-async def run_rewoo(ctx: RunContext) -> str:
-    plan = await ctx.complete_json(
-        "rewoo_planner",
-        [
-            {
-                "role": "user",
-                "content": (
-                    "Plan all evidence calls before execution.\n"
-                    f"Available tools: {ctx.environment.schema}\n"
-                    'Return JSON: {"steps":[{"id":"E1","tool":"name","arguments":{}}]}. '
-                    "References may use $E1.result.field.\n"
-                    f"Task: {ctx.prompt}"
-                ),
-            }
-        ],
-    )
-    steps = plan.get("steps")
-    if not isinstance(steps, list):
-        raise ValueError("ReWOO planner omitted evidence steps")
-    evidence: dict[str, Any] = {}
-    for step in steps:
-        arguments = _resolve_reference(step.get("arguments") or {}, evidence)
-        evidence[str(step["id"])] = await ctx.environment.call(str(step["tool"]), arguments)
-    return await ctx.complete(
-        "rewoo_solver",
-        [{"role": "user", "content": f"Solve from complete evidence.\nTask: {ctx.prompt}\nPlan: {json.dumps(plan, ensure_ascii=False)}\nEvidence: {json.dumps(evidence, ensure_ascii=False)}"}],
-    )
-
-
 def _action_key(name: str, arguments: dict[str, Any]) -> str:
     return f"{name}:{json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
 
