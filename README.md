@@ -14,7 +14,7 @@ envelopes while leaving task semantics, tools, and scoring with each benchmark.
   environments.
 - A portable harness request contract for user-supplied tools and
   OpenAI-compatible APIs.
-- Thirteen theory profiles, including LATS, MemGPT, AFlow, DyLAN,
+- Fourteen theory/control profiles, including LATS, MemGPT, the explicit AFlow Custom initialization control, DyLAN,
   Magentic-One, Multi-Persona, LLMCompiler, ReWOO, and Speculative Actions.
 - Atomic per-case results, append-only attempts, process locks, resume, and
   complete terminal/JSONL logs.
@@ -215,8 +215,9 @@ and tau keep the hidden user and mutable official environment outside the
 baseline. Terminal-Bench and SWE-bench give the baseline only the task
 workspace; verifier tests and reference solutions never enter its container.
 
-AFlow additionally requires a frozen operator list produced on a disjoint
-optimization split, for example `--policy '{"aflow_workflow":["Custom"]}'`.
+`aflow-custom-init` is explicitly an unoptimized control that executes AFlow's
+round-1 `Custom` starting operator. It must not be reported as AFlow; a canonical
+AFlow arm requires a frozen optimized graph produced on a disjoint split.
 DyLAN and Multi-Persona intentionally receive no external tools because their
 published protocols do not define a tool loop.
 

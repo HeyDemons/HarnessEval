@@ -38,7 +38,7 @@ class TaskProfileMatrixTests(unittest.TestCase):
             environment = ToolEnvironment(_tool_specs(), trace, handlers())
             client = RecordingClient(list(PROFILE_RESPONSES[profile_id]))
             policy = {"max_turns": 4}
-            if profile_id == "aflow":
+            if profile_id == "aflow-custom-init":
                 policy["aflow_workflow"] = ["Custom"]
             context = RunContext(
                 profile_id,

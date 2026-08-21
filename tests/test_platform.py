@@ -90,6 +90,14 @@ class PlatformTests(unittest.TestCase):
             else:
                 os.environ["OPENAI_API_KEY"] = previous
 
+    def test_implementation_identity_records_git_and_content_state(self) -> None:
+        platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
+        identity = platform.implementation_identity()
+        self.assertRegex(identity["harnesseval_worktree_sha256"], r"^[0-9a-f]{64}$")
+        self.assertRegex(identity["harnesseval_git_sha"], r"^[0-9a-f]{40}$")
+        self.assertIsInstance(identity["harnesseval_git_dirty"], bool)
+        self.assertEqual(identity, platform.implementation_identity())
+
     def test_runtime_proxy_has_explicit_inherit_direct_and_url_modes(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
 

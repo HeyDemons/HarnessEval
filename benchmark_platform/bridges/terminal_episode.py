@@ -7,7 +7,7 @@ import uuid
 from pathlib import PurePosixPath
 from typing import Any
 
-from benchmark_platform.harnesses.api import completion_client_from_env
+from benchmark_platform.harnesses.api import ProviderError, completion_client_from_env
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import get_profile
@@ -482,6 +482,26 @@ async def execute(
             "error": timeout_error,
         }
         await trace.emit("harness_error", error=result["error"])
+        return result
+    except ProviderError as exc:
+        result = {
+            "schema_version": 1,
+            "status": "failed",
+            "failure_kind": "provider_error",
+            "provider_error_kind": exc.kind,
+            "provider_status_code": exc.status_code,
+            "profile": profile.id,
+            "provenance": profile.provenance,
+            "topology": profile.topology,
+            "execution_seconds": time.perf_counter() - started,
+            "llm_calls": context.llm_calls,
+            "tool_calls": len(environment.calls),
+            "prompt_tokens": context.prompt_tokens,
+            "completion_tokens": context.completion_tokens,
+            "returncode": 1,
+            "error": str(exc),
+        }
+        await trace.emit("harness_error", error=result["error"], failure_kind="provider_error")
         return result
     except Exception as exc:
         result = {

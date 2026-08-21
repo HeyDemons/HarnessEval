@@ -382,6 +382,17 @@ async def run_memgpt(ctx: RunContext) -> str:
         elif request_heartbeat:
             active.append({"role": "user", "content": '{"type":"heartbeat","reason":"AI requested"}'})
         else:
-            raise RuntimeError("MemGPT yielded without send_message or requesting a heartbeat")
+            # In the upstream event loop, omitting request_heartbeat after a successful
+            # function call yields control to the caller; it is not an agent crash.  A
+            # one-shot benchmark has no further external event to deliver, so finish this
+            # harness invocation with no user-facing answer and let the benchmark's native
+            # scorer/verifier judge the state the function calls produced.
+            await ctx.trace.emit(
+                "memgpt_yield",
+                turn=turn + 1,
+                function=function,
+                reason="function completed without heartbeat request",
+            )
+            return ""
 
     raise RuntimeError("MemGPT turn budget exhausted without send_message")

@@ -54,7 +54,7 @@ PROFILE_RESPONSES = {
         '{"score":1.0,"success":true,"feedback":"complete"}',
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
-    "aflow": ['{"final":"ok"}'],
+    "aflow-custom-init": ['{"final":"ok"}'],
     "dylan": ["ok", "ok", "ok"],
     "magentic-one": [
         "facts",
@@ -65,7 +65,7 @@ PROFILE_RESPONSES = {
         "ok",
     ],
     "multi-persona": ["Final answer: ok"],
-    "llmcompiler": ['{"tasks":[]}', "ok"],
+    "llmcompiler": ['{"tasks":[]}', '{"action":"finish","answer":"ok"}'],
     "rewoo": [
         "Plan: obtain direct evidence\n#E1 = LLM[Return ok]",
         "ok",
@@ -103,7 +103,7 @@ class EpisodeBrokerTests(unittest.TestCase):
                     with self.subTest(benchmark=benchmark, profile=profile.id):
                         client = ScriptedClient(list(PROFILE_RESPONSES[profile.id]))
                         policy = {"max_turns": 4}
-                        if profile.id == "aflow":
+                        if profile.id == "aflow-custom-init":
                             policy["aflow_workflow"] = ["Custom"]
                         broker = EpisodeBroker(
                             profile=profile.id,

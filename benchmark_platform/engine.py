@@ -194,6 +194,107 @@ class Platform:
         self.root = root.resolve()
         self.orch_root = orch_root.resolve()
         self.catalog = Catalog(catalog_path, self.root, self.orch_root)
+        self._implementation_identity_cache: dict[str, Any] | None = None
+        self._image_identity_cache: dict[str, dict[str, Any] | None] = {}
+
+    def implementation_identity(self) -> dict[str, Any]:
+        """Identify the code that actually executes a benchmark attempt.
+
+        A profile's published-repository revision identifies the algorithm being
+        reproduced, not this implementation.  Resume used to key only on that paper
+        revision, which allowed attempts produced before and after a local checkout to be
+        merged.  Record both Git state and a content digest so even two different dirty
+        worktrees at the same commit cannot compare equal.
+        """
+
+        if self._implementation_identity_cache is not None:
+            return dict(self._implementation_identity_cache)
+
+        revision = subprocess.run(
+            ["git", "-C", str(self.root), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        status = subprocess.run(
+            ["git", "-C", str(self.root), "status", "--porcelain", "--untracked-files=all"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        listed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.root),
+                "ls-files",
+                "-co",
+                "--exclude-standard",
+                "-z",
+            ],
+            capture_output=True,
+            check=False,
+        )
+        digest = hashlib.sha256()
+        if listed.returncode == 0:
+            for raw_relative in sorted(item for item in listed.stdout.split(b"\0") if item):
+                relative = raw_relative.decode("utf-8", errors="surrogateescape")
+                path = self.root / relative
+                if not path.is_file():
+                    continue
+                digest.update(raw_relative)
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+        else:
+            # Installed source trees need not retain .git.  Hash executable Python and
+            # configuration files rather than silently returning an empty identity.
+            for path in sorted(
+                item
+                for item in self.root.rglob("*")
+                if item.is_file()
+                and item.suffix in {".py", ".json", ".toml", ".yaml", ".yml"}
+                and not {".git", ".venv", "__pycache__"}.intersection(item.parts)
+            ):
+                relative = path.relative_to(self.root).as_posix().encode("utf-8")
+                digest.update(relative)
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+
+        identity = {
+            "harnesseval_git_sha": revision.stdout.strip() if revision.returncode == 0 else None,
+            "harnesseval_git_dirty": bool(status.stdout.strip()) if status.returncode == 0 else None,
+            "harnesseval_worktree_sha256": digest.hexdigest(),
+        }
+        self._implementation_identity_cache = identity
+        return dict(identity)
+
+    def image_identity(self, image: str) -> dict[str, Any] | None:
+        """Return the immutable local image ID and any registry digests for provenance."""
+
+        if image in self._image_identity_cache:
+            cached = self._image_identity_cache[image]
+            return dict(cached) if cached is not None else None
+        try:
+            inspected = subprocess.run(
+                self._docker("image", "inspect", image),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError:
+            inspected = subprocess.CompletedProcess([], 1, "", "docker unavailable")
+        identity = None
+        if inspected.returncode == 0:
+            value = json.loads(inspected.stdout)[0]
+            identity = {
+                "name": image,
+                "id": value.get("Id"),
+                "repo_digests": sorted(value.get("RepoDigests") or []),
+            }
+        self._image_identity_cache[image] = identity
+        return dict(identity) if identity is not None else None
 
     def _docker(self, *args: str) -> list[str]:
         return ["docker", *args]
@@ -794,6 +895,8 @@ class Platform:
             "network": network,
             "model": os.environ.get("HARNESS_MODEL") or None,
             "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            "implementation": self.implementation_identity(),
+            "runtime_image": self.image_identity(image),
         }
         benchmark = Benchmark(
             id=f"harness-{profile['id']}",
@@ -940,6 +1043,8 @@ class Platform:
                 if prepared is not None
                 else None
             ),
+            "implementation": self.implementation_identity(),
+            "runtime_image": self.image_identity(adapter["image"]),
         }
         if native_episode:
             episode_module = (
@@ -1057,6 +1162,8 @@ class Platform:
             "image": image,
             "model": os.environ.get("HARNESS_MODEL") or None,
             "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            "implementation": self.implementation_identity(),
+            "runtime_image": self.image_identity(image),
         }
         synthetic = Benchmark(
             id=f"{benchmark.id}-{profile['id']}",
@@ -1122,6 +1229,8 @@ class Platform:
             "controller_image": benchmark.adapter["image"],
             "model": os.environ.get("HARNESS_MODEL") or None,
             "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            "implementation": self.implementation_identity(),
+            "runtime_image": self.image_identity(benchmark.adapter["image"]),
         }
         synthetic = Benchmark(
             id=f"{benchmark.id}-{profile['id']}",

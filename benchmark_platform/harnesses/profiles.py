@@ -100,14 +100,18 @@ PROFILES = (
         notes="Preserves core, recall, and archival memory functions plus chained heartbeat execution.",
     ),
     HarnessProfile(
-        id="aflow",
-        name="AFlow frozen workflow",
-        topology="frozen optimized operator graph -> execution",
-        provenance="protocol-reproduction",
+        id="aflow-custom-init",
+        name="AFlow Custom initialization control",
+        topology="unoptimized AFlow round-1 Custom operator -> execution",
+        provenance="local-control",
         source="https://github.com/FoundationAgents/AFlow",
         revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
         tool_contract="dynamic-frozen-workflow",
-        notes="Evaluation executes a frozen operator graph; workflow optimization must use a separate training split.",
+        notes=(
+            "Executes AFlow's documented round-1 Custom initialization only. It is not an "
+            "optimized AFlow workflow; a canonical AFlow arm requires a frozen graph produced "
+            "on a disjoint optimization split."
+        ),
     ),
     HarnessProfile(
         id="dylan",

@@ -13,6 +13,9 @@ from typing import Any, Protocol
 from .content import ToolImage
 
 
+RETRYABLE_HTTP_STATUS = {408, 409, 424, 425, 429}
+
+
 @dataclass(frozen=True)
 class ApiConfig:
     base_url: str
@@ -69,6 +72,15 @@ class StreamInterrupted(Exception):
     so without this the caller silently records an empty completion as the model's answer.
     It joins the transport-retry budget because that is exactly the transient it is.
     """
+
+
+class ProviderError(RuntimeError):
+    """A retryable provider-side failure that did not produce a model outcome."""
+
+    def __init__(self, message: str, *, kind: str, status_code: int | None = None):
+        super().__init__(message)
+        self.kind = kind
+        self.status_code = status_code
 
 
 def _chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -325,11 +337,24 @@ class OpenAICompatibleClient:
                     )
                 break
             except urllib.error.HTTPError as exc:
-                body = exc.read()
-                if exc.code != 429 and exc.code < 500:
+                try:
+                    body = exc.read()
+                finally:
+                    exc.close()
+                if exc.code in {401, 403}:
+                    raise ProviderError(
+                        f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}",
+                        kind="http",
+                        status_code=exc.code,
+                    ) from exc
+                if exc.code not in RETRYABLE_HTTP_STATUS and exc.code < 500:
                     raise RuntimeError(f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}") from exc
                 if retries >= self.config.transport_retries:
-                    raise RuntimeError(f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}") from exc
+                    raise ProviderError(
+                        f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}",
+                        kind="http",
+                        status_code=exc.code,
+                    ) from exc
             # http.client.RemoteDisconnected subclasses ConnectionResetError and
             # BadStatusLine, neither of which is a urllib.error.URLError, so it escaped
             # this handler and killed the episode outright. Large tool-schema payloads
@@ -343,8 +368,9 @@ class OpenAICompatibleClient:
                 StreamInterrupted,
             ) as exc:
                 if retries >= self.config.transport_retries:
-                    raise RuntimeError(
-                        f"API transport failed after {retries} retries: {type(exc).__name__}: {exc}"
+                    raise ProviderError(
+                        f"API transport failed after {retries} retries: {type(exc).__name__}: {exc}",
+                        kind="transport",
                     ) from exc
             retries += 1
             time.sleep(2 ** (retries - 1))
@@ -562,15 +588,29 @@ class AnthropicMessagesClient:
                     body = response.read()
                 break
             except urllib.error.HTTPError as exc:
-                body = exc.read()
-                if exc.code != 429 and exc.code < 500:
+                try:
+                    body = exc.read()
+                finally:
+                    exc.close()
+                if exc.code in {401, 403}:
+                    raise ProviderError(
+                        f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}",
+                        kind="http",
+                        status_code=exc.code,
+                    ) from exc
+                if exc.code not in RETRYABLE_HTTP_STATUS and exc.code < 500:
                     raise RuntimeError(f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}") from exc
                 if retries >= self.config.transport_retries:
-                    raise RuntimeError(f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}") from exc
+                    raise ProviderError(
+                        f"API HTTP {exc.code}: {body.decode('utf-8', errors='replace')}",
+                        kind="http",
+                        status_code=exc.code,
+                    ) from exc
             except (TimeoutError, urllib.error.URLError, http.client.HTTPException, ConnectionError) as exc:
                 if retries >= self.config.transport_retries:
-                    raise RuntimeError(
-                        f"API transport failed after {retries} retries: {type(exc).__name__}: {exc}"
+                    raise ProviderError(
+                        f"API transport failed after {retries} retries: {type(exc).__name__}: {exc}",
+                        kind="transport",
                     ) from exc
             retries += 1
             time.sleep(2 ** (retries - 1))

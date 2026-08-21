@@ -72,11 +72,16 @@ def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None
     """Decode one complete JSON value without slicing through quoted content."""
     decoder = json.JSONDecoder()
     stripped = text.strip()
-    fenced = [
-        match.group(1).strip()
-        for match in re.finditer(r"```(?:json)?\s*(.*?)```", stripped, re.DOTALL | re.IGNORECASE)
-    ]
-    for source in [*fenced, stripped]:
+    fence_matches = list(
+        re.finditer(r"```(?:json)?\s*(.*?)```", stripped, re.DOTALL | re.IGNORECASE)
+    )
+    fenced = [match.group(1).strip() for match in fence_matches]
+    # Preserve generation order.  A fenced block may occur after an earlier action in the
+    # raw response, so prioritising fences lets a later ``{"final": ...}`` override the
+    # tool call the model generated first.  Scan the complete response before falling back
+    # to individual fences (the fallback only matters when unmatched prose quotes hide the
+    # fence contents from the lightweight string scanner below).
+    for source_index, source in enumerate([stripped, *fenced]):
         starts: list[int] = []
         in_string = False
         escaped = False
@@ -93,10 +98,20 @@ def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None
                 in_string = True
             elif character in "[{":
                 starts.append(index)
+        decoded_through = 0
         for start in starts:
+            # Once a complete outer value has decoded, braces inside that value are not
+            # independent candidates.  This matters when the outer value has the wrong
+            # expected type: without the boundary a nested object could be accepted as if
+            # it were the model's top-level response.
+            if start < decoded_through:
+                continue
             try:
                 value, end = decoder.raw_decode(source[start:])
             except json.JSONDecodeError:
+                continue
+            decoded_through = max(decoded_through, start + end)
+            if expected_type is not None and not isinstance(value, expected_type):
                 continue
             remainder = source[start + end :].strip()
             if remainder:
@@ -107,9 +122,21 @@ def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None
                 # them would let a fabricated {"final": ...} end the episode with zero
                 # tool calls. Anything else is still a protocol violation.
                 if not _tiles_json_sequence(decoder, remainder):
-                    continue
-            if expected_type is not None and not isinstance(value, expected_type):
-                continue
+                    if source_index == 0 and any(
+                        match.start(1) <= start < match.end(1) for match in fence_matches
+                    ):
+                        # Backticks are non-JSON trailing content in the raw response. Let
+                        # the corresponding isolated fence source below validate its own
+                        # complete contents before treating this as a mixed response.
+                        continue
+                    # Do not continue scanning for a later object.  In real provider output
+                    # this shape is commonly ``tool JSON + <think> + final JSON``.  Accepting
+                    # the later final fabricates completion without ever executing the tool
+                    # or observing its result.  Surface one protocol error so the caller's
+                    # normal repair turn can obtain an authoritative single action.
+                    raise ValueError(
+                        "Response contained a complete JSON value followed by non-JSON content"
+                    )
             return value
     raise ValueError("Response did not contain one complete JSON value")
 
@@ -429,7 +456,11 @@ class ToolEnvironment:
         return result
 
     async def call_isolated(
-        self, name: str, arguments: dict[str, Any]
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        event_prefix: str = "lats",
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Execute one read-only search-branch call without publishing it as an answer.
 
@@ -446,9 +477,9 @@ class ToolEnvironment:
             raise ValueError(f"Cannot isolate unknown tool {name!r}")
         if not tool.read_only:
             raise ValueError(f"Cannot isolate mutating tool {name!r}")
-        await self.trace.emit("lats_tool_request", name=name, arguments=arguments)
+        await self.trace.emit(f"{event_prefix}_tool_request", name=name, arguments=arguments)
         record = await self._execute_isolated_read_only_call(tool, arguments)
-        await self.trace.emit("lats_tool_result", **record)
+        await self.trace.emit(f"{event_prefix}_tool_result", **record)
         return record["result"], record
 
     async def commit_isolated_calls(self, records: list[dict[str, Any]]) -> None:

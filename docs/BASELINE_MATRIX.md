@@ -14,7 +14,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
 | LATS | Dynamic branch-isolated | Published MCTS proposal, value, rollout, reflection, and backpropagation; requires read-only tools or environment snapshots |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
-| AFlow | Dynamic frozen workflow | Evaluation requires a workflow optimized on a disjoint split |
+| AFlow Custom initialization | Dynamic single operator | Explicit unoptimized round-1 control; not reported as canonical AFlow |
 | DyLAN | No external tools | Published text-agent network is not silently converted to ReAct |
 | Magentic-One | Dynamic | Ledger, speaker selection, stall and replan topology |
 | Multi-Persona | No external tools | Published single-model persona collaboration |

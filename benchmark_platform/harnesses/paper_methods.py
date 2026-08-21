@@ -14,41 +14,17 @@ from .lats import run_lats
 from .memgpt import run_memgpt
 
 
-async def run_aflow(ctx: RunContext) -> str:
-    """Execute a frozen AFlow operator graph supplied as an evaluation artifact."""
+async def run_aflow_custom_init(ctx: RunContext) -> str:
+    """Execute only AFlow's disclosed, unoptimized round-1 Custom control."""
     workflow = ctx.policy.get("aflow_workflow")
-    if workflow is None:
+    if workflow != ["Custom"]:
         raise ValueError(
-            "AFlow evaluation requires policy.aflow_workflow from a disjoint optimization split"
+            "aflow-custom-init requires policy.aflow_workflow == ['Custom']; "
+            "optimized AFlow graphs need a separate canonical profile"
         )
-    if not isinstance(workflow, list) or not workflow:
-        raise ValueError("policy.aflow_workflow must be a non-empty operator list")
-    candidates: list[str] = []
-    for index, operator in enumerate(workflow):
-        if operator in {"Custom", "AnswerGenerate"}:
-            from .methods import _json_tool_loop
+    from .methods import _json_tool_loop
 
-            candidates.append(await _json_tool_loop(ctx, f"aflow_{operator}_{index + 1}"))
-        elif operator == "ScEnsemble" and candidates:
-            candidates = [
-                await ctx.complete(
-                    "aflow_ensemble",
-                    [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Select the most reliable complete answer for the task. Return the answer directly.\n"
-                                f"Task: {ctx.prompt}\nCandidates: {json.dumps(candidates, ensure_ascii=False)}"
-                            ),
-                        }
-                    ],
-                )
-            ]
-        else:
-            raise ValueError(f"Unsupported frozen AFlow operator: {operator}")
-    if not candidates:
-        raise RuntimeError("Frozen AFlow workflow produced no answer")
-    return candidates[-1]
+    return await _json_tool_loop(ctx, "aflow_custom_initialization")
 
 
 async def run_dylan(ctx: RunContext) -> str:
@@ -56,22 +32,35 @@ async def run_dylan(ctx: RunContext) -> str:
     random.seed(0)
     population = int(ctx.policy.get("dylan_agents", 4))
     rounds = int(ctx.policy.get("dylan_rounds", 3))
+    base_roles = (
+        "Logical Solver: construct a complete solution from first principles",
+        "Critical Reviewer: find unsupported steps and counterexamples",
+        "Alternative Solver: explore a genuinely different approach",
+        "Verification Specialist: check constraints, calculations, and final format",
+    )
+    roles = [
+        base_roles[index] if index < len(base_roles) else f"Independent Solver {index + 1}"
+        for index in range(population)
+    ]
     active = list(range(population))
-    previous: list[str] = []
+    previous: list[tuple[int, str]] = []
     replies: dict[int, str] = {}
     for round_id in range(rounds):
         order = active[:]
         random.shuffle(order)
         replies = {}
         for agent_id in order:
-            context = "\n\n".join(f"Prior agent response: {item}" for item in previous)
+            context = "\n\n".join(
+                f"Prior {roles[prior_id]} response: {item}"
+                for prior_id, item in previous
+            )
             replies[agent_id] = await ctx.complete(
                 f"dylan_r{round_id + 1}_a{agent_id + 1}",
                 [
                     {
                         "role": "user",
                         "content": (
-                            "You are an Assistant neuron in a dynamic LLM-agent network. Solve the task, use prior "
+                            f"You are {roles[agent_id]} in a dynamic LLM-agent network. Solve the task, use prior "
                             f"responses critically, and end with a clear answer.\nTask: {ctx.prompt}\n{context}"
                         ),
                     }
@@ -86,8 +75,13 @@ async def run_dylan(ctx: RunContext) -> str:
             if count > (2 * len(active)) // 3:
                 await ctx.trace.emit("dylan_early_stop", round=round_id + 1, answer=answer)
                 return answer
-        previous = list(replies.values())
+        previous = list(replies.items())
         if round_id == 1 and len(active) > 2:
+            candidate_agents = list(replies)
+            candidates = [
+                {"agent": index + 1, "role": roles[agent_id], "response": replies[agent_id]}
+                for index, agent_id in enumerate(candidate_agents)
+            ]
             ranked = await ctx.complete_json(
                 "dylan_listwise_activation",
                 [
@@ -95,13 +89,22 @@ async def run_dylan(ctx: RunContext) -> str:
                         "role": "user",
                         "content": (
                             'Rank the candidates and return JSON only: {"top":[1,2]}.\n'
-                            f"Task: {ctx.prompt}\nCandidates: {json.dumps(previous, ensure_ascii=False)}"
+                            f"Task: {ctx.prompt}\nCandidates: {json.dumps(candidates, ensure_ascii=False)}"
                         ),
                     }
                 ],
             )
-            selected = [max(0, min(len(active) - 1, int(item) - 1)) for item in ranked.get("top", [])[:2]]
-            active = [active[index] for index in selected] or active[:2]
+            selected = [
+                max(0, min(len(candidate_agents) - 1, int(item) - 1))
+                for item in ranked.get("top", [])[:2]
+            ]
+            active = [candidate_agents[index] for index in selected] or candidate_agents[:2]
+            await ctx.trace.emit(
+                "dylan_activation",
+                round=round_id + 1,
+                active_agents=active,
+                active_roles=[roles[index] for index in active],
+            )
     votes = Counter(item.strip() for item in replies.values())
     return votes.most_common(1)[0][0]
 
@@ -113,9 +116,19 @@ async def run_multi_persona(ctx: RunContext) -> str:
             {
                 "role": "user",
                 "content": (
-                    "Identify relevant participants, conduct a multi-round collaboration among their perspectives, "
-                    "critique when needed, and let the AI Assistant integrate the discussion. End with `Final answer: "
-                    f"<answer>`.\nTask: {ctx.prompt}"
+                    "Use Solo Performance Prompting. First identify task-specific participants and state each "
+                    "participant's expertise or evaluation need. Then simulate a multi-round collaboration: an "
+                    "initial proposal, critical checks from the participants, explicit correction of every discovered "
+                    "error, and a final verification by the AI Assistant.\n\n"
+                    "Structural example (do not solve the real task from this example):\n"
+                    "Participants: AI Assistant; Domain Expert; Skeptical Verifier\n"
+                    "Domain Expert: proposes a constraint-aware approach.\n"
+                    "AI Assistant: produces a draft.\n"
+                    "Skeptical Verifier: identifies a concrete violated constraint.\n"
+                    "AI Assistant: revises the draft and rechecks the constraint.\n"
+                    "Finish collaboration!\nFinal answer: <verified answer>\n\n"
+                    "For the real task, continue collaboration until objections are resolved and end exactly with "
+                    f"`Final answer: <answer>`.\nTask: {ctx.prompt}"
                 ),
             }
         ],
@@ -151,6 +164,21 @@ def _magentic_team(names: set[str]) -> dict[str, str]:
     }
 
 
+def _magentic_worker_tools(role: str, names: set[str]) -> list[str]:
+    """Approximate the official specialist capability boundaries with dynamic tools."""
+
+    if role == "web_surfer":
+        preferred = {"web_search"}
+    elif role == "file_surfer":
+        preferred = {"read_file", "list_files"}
+    elif role == "coder":
+        preferred = {"read_file", "list_files", "write_file", "run_command"}
+    else:
+        preferred = names
+    selected = sorted(names.intersection(preferred))
+    return selected or sorted(names)
+
+
 async def run_magentic_one(ctx: RunContext) -> str:
     workers = _magentic_team(set(ctx.environment.names))
     facts = await ctx.complete("orchestrator_facts", [{"role": "user", "content": f"Create a facts ledger.\n{ctx.prompt}"}])
@@ -159,6 +187,9 @@ async def run_magentic_one(ctx: RunContext) -> str:
         [{"role": "user", "content": f"Create a team plan.\nTask: {ctx.prompt}\nTeam: {workers}\nFacts: {facts}"}],
     )
     history: list[dict[str, Any]] = []
+    worker_histories: dict[str, list[dict[str, Any]]] = {
+        worker: [] for worker in workers
+    }
     stalls = 0
     replans = 0
     for _ in range(int(ctx.policy.get("magentic_max_rounds", 20))):
@@ -191,7 +222,7 @@ async def run_magentic_one(ctx: RunContext) -> str:
                     "orchestrator_replan",
                     [{"role": "user", "content": f"Replan after stalled progress.\nTask: {ctx.prompt}\nHistory: {json.dumps(json_safe(history), ensure_ascii=False)}"}],
                 )
-                history = []
+                history.append({"speaker": "orchestrator", "replan": plan})
                 stalls = 0
                 continue
         speaker = str(ledger.get("next_speaker", "executor"))
@@ -202,24 +233,62 @@ async def run_magentic_one(ctx: RunContext) -> str:
             # still be carried out; the substitution is traced rather than silently applied.
             await ctx.trace.emit("magentic_unknown_worker", requested=speaker, substituted="executor")
             speaker = "executor"
-        action = await ctx.complete_json(
-            speaker,
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        f"You are the {speaker}; {workers[speaker]}.\nAvailable tools: {ctx.environment.schema}\n"
-                        'Return JSON: {"tool":"name","arguments":{}} or {"report":"..."}.\n'
-                        f"Instruction: {ledger.get('instruction', '')}\nTask: {ctx.prompt}"
-                    ),
-                }
-            ],
+        allowed_names = _magentic_worker_tools(speaker, set(ctx.environment.names))
+        allowed_schema = json.dumps(
+            [ctx.environment.tools[name].prompt_schema() for name in allowed_names],
+            ensure_ascii=False,
         )
-        if "tool" in action:
-            result = await ctx.environment.call(str(action["tool"]), action.get("arguments") or {})
-            history.append({"speaker": speaker, "action": action, "result": result})
+        instruction = str(ledger.get("instruction", ""))
+        private = worker_histories.setdefault(speaker, [])
+        for worker_turn in range(int(ctx.policy.get("magentic_worker_max_turns", 8))):
+            action = await ctx.complete_json(
+                speaker,
+                [
+                    {
+                        "role": "user",
+                        "content": (
+                            f"You are the persistent {speaker}; {workers[speaker]}.\n"
+                            f"Your available tools: {allowed_schema}\n"
+                            'Return one JSON object: {"tool":"name","arguments":{}} to act, '
+                            'or {"report":"complete result for the team"} when your assignment is done.\n'
+                            f"Task: {ctx.prompt}\nInstruction: {instruction}\n"
+                            f"Group message thread: {json.dumps(json_safe(history), ensure_ascii=False)}\n"
+                            f"Your private history: {json.dumps(json_safe(private), ensure_ascii=False)}"
+                        ),
+                    }
+                ],
+            )
+            if "tool" in action:
+                name = str(action["tool"])
+                arguments = action.get("arguments") or {}
+                if name not in allowed_names:
+                    result = {
+                        "ok": False,
+                        "error": "specialist_tool_not_available",
+                        "available_tools": allowed_names,
+                    }
+                else:
+                    result = await ctx.environment.call(name, arguments)
+                item = {
+                    "speaker": speaker,
+                    "worker_turn": worker_turn + 1,
+                    "action": action,
+                    "result": result,
+                }
+                private.append(item)
+                history.append(item)
+                continue
+            if "report" not in action:
+                raise ValueError("Magentic-One specialist omitted tool or report")
+            report = str(action["report"])
+            item = {"speaker": speaker, "report": report}
+            private.append(item)
+            history.append(item)
+            break
         else:
-            history.append({"speaker": speaker, "report": action.get("report", "")})
+            raise RuntimeError(
+                f"Magentic-One specialist {speaker} exhausted its worker turn budget"
+            )
     raise RuntimeError("Magentic-One round budget exhausted")
 
 
@@ -307,68 +376,120 @@ def _resolve_reference(
 
 
 async def run_llmcompiler(ctx: RunContext) -> str:
-    plan = await ctx.complete_json(
-        "compiler_planner",
-        [
-            {
-                "role": "user",
-                "content": (
-                    "Compile a dependency DAG maximizing parallel execution.\n"
-                    f"Available tools: {ctx.environment.schema}\n"
-                    'Return JSON: {"tasks":[{"id":"1","tool":"name","arguments":{},"dependencies":[]}]}.\n'
-                    f"Task: {ctx.prompt}"
-                ),
-            }
-        ],
-        required_root_key="tasks",
-    )
-    tasks = plan.get("tasks")
-    if not isinstance(tasks, list):
-        raise ValueError("LLMCompiler planner omitted tasks")
-    # A task that is not an object, or that omits its id, would previously raise out of the
-    # arm from the dict comprehension itself. Index-derived ids keep the DAG addressable.
-    pending = {
-        str(item.get("id", index)): item
-        for index, item in enumerate(tasks, start=1)
-        if isinstance(item, dict)
-    }
-    results: dict[str, Any] = {}
-    while pending:
-        ready = [
-            (task_id, item)
-            for task_id, item in pending.items()
-            if all(str(dep) in results for dep in item.get("dependencies", []))
-        ]
-        if not ready:
-            raise RuntimeError("LLMCompiler dependency deadlock")
+    """LLMCompiler planner/scheduler/joiner loop with bounded replanning."""
 
-        async def execute(task_id: str, item: dict[str, Any]) -> tuple[str, Any]:
-            name = item.get("tool")
-            if not isinstance(name, str) or not name:
-                # The same shape environment.call returns for an unusable request, so the
-                # joiner sees a failed step instead of the arm dying on a KeyError.
-                return task_id, {
-                    "ok": False,
-                    "error": "malformed_task",
-                    "detail": "task omitted a tool name",
+    max_replans = int(ctx.policy.get("llmcompiler_max_replans", 2))
+    if max_replans < 0:
+        raise ValueError("llmcompiler_max_replans must be non-negative")
+    prior_runs: list[dict[str, Any]] = []
+    feedback = ""
+
+    for cycle in range(max_replans + 1):
+        planner_context = ""
+        if prior_runs:
+            planner_context = (
+                "\nThis is a replan. Correct the prior DAG using the joiner's feedback "
+                "and observations.\n"
+                f"Prior runs: {json.dumps(json_safe(prior_runs), ensure_ascii=False)}\n"
+                f"Joiner feedback: {feedback}\n"
+            )
+        plan = await ctx.complete_json(
+            "compiler_planner" if cycle == 0 else "compiler_replanner",
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "Compile a dependency DAG maximizing dependency-ready execution.\n"
+                        f"Available tools: {ctx.environment.schema}\n"
+                        'Return JSON: {"tasks":[{"id":"1","tool":"name","arguments":{},'
+                        '"dependencies":[]}]}.\n'
+                        f"Task: {ctx.prompt}{planner_context}"
+                    ),
                 }
-            arguments = _resolve_reference(item.get("arguments") or {}, results)
-            return task_id, await ctx.environment.call(name, arguments)
+            ],
+            required_root_key="tasks",
+        )
+        tasks = plan.get("tasks")
+        if not isinstance(tasks, list):
+            raise ValueError("LLMCompiler planner omitted tasks")
+        pending = {
+            str(item.get("id", index)): item
+            for index, item in enumerate(tasks, start=1)
+            if isinstance(item, dict)
+        }
+        results: dict[str, Any] = {}
+        while pending:
+            ready = [
+                (task_id, item)
+                for task_id, item in pending.items()
+                if all(str(dep) in results for dep in item.get("dependencies", []))
+            ]
+            if not ready:
+                results["_scheduler"] = {
+                    "ok": False,
+                    "error": "dependency_deadlock",
+                    "pending": sorted(pending),
+                }
+                break
 
-        for task_id, result in await asyncio.gather(
-            *(execute(tid, item) for tid, item in ready)
-        ):
-            results[task_id] = result
-            pending.pop(task_id)
-    return await ctx.complete(
-        "compiler_joiner",
-        [
-            {
-                "role": "user",
-                "content": f"Return the final answer.\nTask: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\nResults: {json.dumps(json_safe(results), ensure_ascii=False)}",
-            }
-        ],
-    )
+            async def execute(task_id: str, item: dict[str, Any]) -> tuple[str, Any]:
+                name = item.get("tool")
+                if not isinstance(name, str) or not name:
+                    return task_id, {
+                        "ok": False,
+                        "error": "malformed_task",
+                        "detail": "task omitted a tool name",
+                    }
+                arguments = _resolve_reference(item.get("arguments") or {}, results)
+                return task_id, await ctx.environment.call(name, arguments)
+
+            for task_id, result in await asyncio.gather(
+                *(execute(tid, item) for tid, item in ready)
+            ):
+                results[task_id] = result
+                pending.pop(task_id)
+
+        await ctx.trace.emit(
+            "llmcompiler_dag_complete",
+            cycle=cycle,
+            plan=plan,
+            results=json_safe(results),
+        )
+        decision = await ctx.complete_json(
+            "compiler_joiner",
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        "Judge whether the DAG results fully solve the task. Finish only when "
+                        "the answer is supported by observations; otherwise request a replan.\n"
+                        'Return exactly {"action":"finish","answer":"..."} or '
+                        '{"action":"replan","feedback":"specific correction"}.\n'
+                        f"Task: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\n"
+                        f"Results: {json.dumps(json_safe(results), ensure_ascii=False)}"
+                    ),
+                }
+            ],
+            required_root_key="action",
+            strict_single_object=True,
+        )
+        action = str(decision.get("action", "")).strip().casefold()
+        await ctx.trace.emit("llmcompiler_join", cycle=cycle, decision=decision)
+        if action == "finish":
+            if "answer" not in decision:
+                raise ValueError("LLMCompiler Finish omitted answer")
+            return str(decision["answer"])
+        if action != "replan":
+            raise ValueError("LLMCompiler joiner action must be finish or replan")
+        prior_runs.append({"plan": plan, "results": json_safe(results)})
+        feedback = str(decision.get("feedback", "")).strip()
+        if cycle >= max_replans:
+            raise RuntimeError(
+                f"LLMCompiler replan budget exhausted after {max_replans} replans"
+            )
+
+    raise AssertionError("unreachable")
+
 
 def _action_key(name: str, arguments: dict[str, Any]) -> str:
     return f"{name}:{json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
@@ -408,8 +529,12 @@ async def run_sa(ctx: RunContext) -> str:
         async def execute(item: dict[str, Any]) -> None:
             name = str(item["tool"])
             arguments = item["arguments"]
-            result = await ctx.environment.call(name, arguments)
-            cache[_action_key(name, arguments)] = (speculation_epoch, result)
+            _result, record = await ctx.environment.call_isolated(
+                name,
+                arguments,
+                event_prefix="sa_speculative",
+            )
+            cache[_action_key(name, arguments)] = (speculation_epoch, record)
 
         await asyncio.gather(*(execute(item) for item in valid))
         if ctx.environment.state_version != speculation_epoch:
@@ -429,8 +554,10 @@ async def run_sa(ctx: RunContext) -> str:
         return cache
 
     draft_task = asyncio.create_task(predict_and_execute())
+    from .methods import ACTION_SYSTEM, _normalize_action  # methods imports this module
+
     messages = [
-        {"role": "system", "content": "Use complete observations only. Available tools: " + ctx.environment.schema + '\nReturn JSON {"tool":"name","arguments":{}} or {"final":"answer"}.'},
+        {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
         {"role": "user", "content": ctx.prompt},
     ]
     cache: dict[str, tuple[int, dict[str, Any]]] | None = None
@@ -441,8 +568,6 @@ async def run_sa(ctx: RunContext) -> str:
     # while actor-only recovered from the identical slip. That biases every sa-vs-
     # actor-only comparison by the probability of a slip — observed on GAIA L2, where the
     # model returned the correct answer under {"answer": ...} instead of {"final": ...}.
-    from .methods import _normalize_action  # imported here: methods imports this module
-
     for _ in range(ctx.max_turns):
         raw = await ctx.complete("sa_actor", messages, json_mode=True)
         try:
@@ -476,7 +601,12 @@ async def run_sa(ctx: RunContext) -> str:
         key = _action_key(name, arguments)
         cached = cache.pop(key, None)
         if cached is not None and cached[0] == ctx.environment.state_version:
-            result = cached[1]
+            record = cached[1]
+            result = record["result"]
+            # Speculative reads stay out of authoritative traces and counters until the
+            # Actor selects the exact action. Publish the cached result now in the same
+            # position actor-only would have produced, without executing it twice.
+            await ctx.environment.commit_isolated_calls([record])
             await ctx.trace.emit(
                 "sa_cache_hit",
                 name=name,

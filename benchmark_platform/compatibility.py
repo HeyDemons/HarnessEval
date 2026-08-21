@@ -28,8 +28,8 @@ def compatibility_rows(
             lifecycle, bridge_status = BRIDGE_CAPABILITIES.get(
                 benchmark.id, (benchmark.adapter["kind"], "blocked_no_baseline_bridge")
             )
-            if profile.id == "aflow":
-                baseline_requirement = "frozen_workflow_from_disjoint_optimization_split"
+            if profile.id == "aflow-custom-init":
+                baseline_requirement = "disclosed_unoptimized_custom_initialization_control"
             elif profile.id == "dmas":
                 baseline_requirement = "agentnet_aligned_cold_start_without_cross_case_memory"
             elif profile.id == "lats":

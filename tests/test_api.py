@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import http.client
+import io
 import json
 import re
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 from benchmark_platform.harnesses.api import (
     AnthropicMessagesClient,
     ApiConfig,
     OpenAICompatibleClient,
+    ProviderError,
     completion_client_from_env,
 )
 from benchmark_platform.harnesses.content import ToolImage, tool_result_content
@@ -467,6 +470,55 @@ class StreamingTests(unittest.TestCase):
 
 
 class UserAgentTests(unittest.TestCase):
+    def test_exhausted_retryable_http_error_is_structured_provider_error(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://e.invalid/v1/chat/completions",
+            503,
+            "unavailable",
+            {},
+            io.BytesIO(b'{"error":"no capacity"}'),
+        )
+        client = OpenAICompatibleClient(
+            ApiConfig("https://e.invalid/v1", "k", "m", transport_retries=0)
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(ProviderError) as caught:
+                asyncio.run(client.complete([{"role": "user", "content": "hi"}]))
+        self.assertEqual(caught.exception.kind, "http")
+        self.assertEqual(caught.exception.status_code, 503)
+
+    def test_nonretryable_client_error_remains_deterministic_runtime_error(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://e.invalid/v1/chat/completions",
+            400,
+            "bad request",
+            {},
+            io.BytesIO(b'{"error":"invalid schema"}'),
+        )
+        client = OpenAICompatibleClient(
+            ApiConfig("https://e.invalid/v1", "k", "m", transport_retries=0)
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(RuntimeError) as caught:
+                asyncio.run(client.complete([{"role": "user", "content": "hi"}]))
+        self.assertNotIsInstance(caught.exception, ProviderError)
+
+    def test_auth_or_relay_forbidden_error_is_structured_provider_error(self) -> None:
+        error = urllib.error.HTTPError(
+            "https://e.invalid/v1/chat/completions",
+            403,
+            "forbidden",
+            {},
+            io.BytesIO(b'{"error":"relay bot rule"}'),
+        )
+        client = OpenAICompatibleClient(
+            ApiConfig("https://e.invalid/v1", "k", "m", transport_retries=0)
+        )
+        with patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaises(ProviderError) as caught:
+                asyncio.run(client.complete([{"role": "user", "content": "hi"}]))
+        self.assertEqual(caught.exception.status_code, 403)
+
     def test_a_non_default_user_agent_is_sent(self) -> None:
         """urllib's default UA is 403'd by a relay's bot rule; the header must be explicit."""
         captured: dict = {}

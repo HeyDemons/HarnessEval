@@ -256,7 +256,7 @@ class HarnessTests(unittest.TestCase):
                 '{"tasks":[{"id":"1","arguments":{"key":"alpha"}},'
                 '{"id":"2","tool":"lookup","arguments":{"key":"$9.nothing"}},'
                 '{"id":"3","tool":"lookup","arguments":{"key":"$1.result[0]"}}]}',
-                "42",
+                '{"action":"finish","answer":"42"}',
             ],
         )
         self.assertEqual(answer, "42")
@@ -829,13 +829,15 @@ class HarnessTests(unittest.TestCase):
                 trace,
                 {"max_turns": 1},
             )
-            with self.assertRaisesRegex(RuntimeError, "yielded without send_message"):
-                asyncio.run(run_profile(context))
+            answer = asyncio.run(run_profile(context))
             events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
 
+        self.assertEqual(answer, "")
         function_event = next(event for event in events if event["event"] == "memgpt_function")
         self.assertEqual(function_event["function"], "pause_heartbeats")
         self.assertIsNone(function_event["request_heartbeat"])
+        yield_event = next(event for event in events if event["event"] == "memgpt_yield")
+        self.assertEqual(yield_event["function"], "pause_heartbeats")
 
     def test_memgpt_summarizes_only_after_provider_context_error(self) -> None:
         class ContextLimitClient(ScriptedClient):
@@ -864,9 +866,9 @@ class HarnessTests(unittest.TestCase):
             events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(sum(event["event"] == "memgpt_active_memory_summarized" for event in events), 1)
 
-    def test_aflow_frozen_custom_operator(self) -> None:
+    def test_aflow_custom_initialization_control(self) -> None:
         answer, environment = self.run_profile(
-            "aflow",
+            "aflow-custom-init",
             [
                 '{"tool":"lookup","arguments":{"key":"alpha"}}',
                 '{"final":"6"}',
@@ -880,6 +882,11 @@ class HarnessTests(unittest.TestCase):
         answer, environment = self.run_profile("dylan", ["42", "42", "42"])
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls, [])
+        prompts = [messages[0]["content"] for messages in self.last_client.messages]
+        self.assertEqual(len(set(prompts)), 3)
+        self.assertTrue(any("Logical Solver" in prompt for prompt in prompts))
+        self.assertTrue(any("Critical Reviewer" in prompt for prompt in prompts))
+        self.assertTrue(any("Alternative Solver" in prompt for prompt in prompts))
 
     def test_dylan_preserves_complete_open_ended_candidate(self) -> None:
         answer, _ = self.run_profile("dylan", ["7, 9", "7, 9", "7, 9"])
@@ -889,6 +896,10 @@ class HarnessTests(unittest.TestCase):
         answer, environment = self.run_profile("multi-persona", ["Final answer: 42"])
         self.assertEqual(answer, "Final answer: 42")
         self.assertEqual(environment.calls, [])
+        prompt = self.last_client.messages[0][0]["content"]
+        self.assertIn("Structural example", prompt)
+        self.assertIn("Skeptical Verifier", prompt)
+        self.assertIn("Finish collaboration!", prompt)
 
     def test_magentic_one_ledger_worker_and_delivery(self) -> None:
         answer, environment = self.run_profile(
@@ -898,12 +909,45 @@ class HarnessTests(unittest.TestCase):
                 "Use the executor",
                 '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"look up alpha"}',
                 '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"report":"alpha is 6"}',
                 '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"deliver"}',
                 "6",
             ],
         )
         self.assertEqual(answer, "6")
         self.assertEqual(len(environment.calls), 1)
+
+    def test_magentic_one_worker_keeps_private_and_group_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    "Known facts",
+                    "Use the executor",
+                    '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"retrieve alpha"}',
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"report":"alpha is 6"}',
+                    '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"verify prior work"}',
+                    '{"report":"verified alpha is 6"}',
+                    '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"finish"}',
+                    "6",
+                ]
+            )
+            context = RunContext(
+                "magentic-one",
+                "retrieve alpha",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"max_turns": 8},
+            )
+            answer = asyncio.run(run_profile(context))
+
+        self.assertEqual(answer, "6")
+        second_dispatch = client.messages[6][0]["content"]
+        self.assertIn("alpha is 6", second_dispatch)
+        self.assertIn("Your private history", second_dispatch)
+        self.assertIn("Group message thread", second_dispatch)
 
     def test_llmcompiler_dependency_ready_wave(self) -> None:
         answer, environment = self.run_profile(
@@ -923,7 +967,7 @@ class HarnessTests(unittest.TestCase):
                         ]
                     }
                 ),
-                "42",
+                '{"action":"finish","answer":"42"}',
             ],
         )
         self.assertEqual(answer, "42")
@@ -935,11 +979,42 @@ class HarnessTests(unittest.TestCase):
             [
                 '{"query":"retrieve alpha"}\n'
                 '{"tasks":[{"id":"1","tool":"lookup","arguments":{"key":"alpha"},"dependencies":[]}]}',
-                "6",
+                '{"action":"finish","answer":"6"}',
             ],
         )
         self.assertEqual(answer, "6")
         self.assertEqual([call["name"] for call in environment.calls], ["lookup"])
+
+    def test_llmcompiler_joiner_can_replan_from_failed_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = ScriptedClient(
+                [
+                    '{"tasks":[{"id":"1","tool":"missing","arguments":{},"dependencies":[]}]}',
+                    '{"action":"replan","feedback":"use the declared lookup tool"}',
+                    '{"tasks":[{"id":"1","tool":"lookup","arguments":{"key":"alpha"},"dependencies":[]}]}',
+                    '{"action":"finish","answer":"6"}',
+                ]
+            )
+            context = RunContext(
+                "llmcompiler",
+                "retrieve alpha",
+                client,
+                environment,
+                trace,
+                {"max_turns": 8, "llmcompiler_max_replans": 1},
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [json.loads(line) for line in trace.path.read_text().splitlines()]
+
+        self.assertEqual(answer, "6")
+        self.assertEqual([call["name"] for call in environment.calls], ["missing", "lookup"])
+        self.assertIn("use the declared lookup tool", client.messages[2][0]["content"])
+        self.assertEqual(
+            [event["cycle"] for event in events if event["event"] == "llmcompiler_join"],
+            [0, 1],
+        )
 
     def test_rewoo_plan_evidence_solver(self) -> None:
         answer, environment = self.run_profile(
@@ -1122,9 +1197,39 @@ class HarnessTests(unittest.TestCase):
 
         self.assertEqual(answer, "2")
         self.assertEqual(state["balance"], 2)
-        self.assertEqual([call["name"] for call in environment.calls], ["read_balance", "set_balance", "read_balance"])
+        self.assertEqual([call["name"] for call in environment.calls], ["set_balance", "read_balance"])
         self.assertEqual(environment.calls[-1]["result"]["result"]["balance"], 2)
-        self.assertTrue(any(event["event"] == "sa_cache_invalidated" for event in events))
+        self.assertTrue(
+            any(event["event"] in {"sa_cache_invalidated", "sa_cache_stale"} for event in events)
+        )
+
+    def test_sa_speculative_miss_is_not_an_authoritative_tool_call(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = ScriptedClient(
+                [
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"actions":[{"tool":"lookup","arguments":{"key":"beta"}}]}',
+                    '{"final":"6"}',
+                ]
+            )
+            context = RunContext(
+                "sa", "retrieve alpha", client, environment, trace, {"max_turns": 4}
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [json.loads(line) for line in trace.path.read_text().splitlines()]
+
+        self.assertEqual(answer, "6")
+        self.assertEqual([call["arguments"] for call in environment.calls], [{"key": "alpha"}])
+        self.assertTrue(any(event["event"] == "sa_speculative_tool_request" for event in events))
+        self.assertFalse(
+            any(
+                event["event"] == "tool_request"
+                and event.get("arguments") == {"key": "beta"}
+                for event in events
+            )
+        )
 
     def test_concatenated_actions_record_only_the_executed_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1163,9 +1268,84 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             extract_json('{"tool":"lookup","arguments":{}} and then continue')
 
+    def test_json_parser_never_skips_a_tool_for_a_later_final(self) -> None:
+        response = (
+            '<think>use the lookup first</think>\n'
+            '{"tool":"lookup","arguments":{"key":"alpha"}}\n'
+            '<think>the task should then be complete</think>\n'
+            '{"final":"fabricated without an observation"}'
+        )
+        with self.assertRaisesRegex(ValueError, "followed by non-JSON content"):
+            extract_json(response, expected_type=dict)
+
+    def test_tool_loop_repairs_mixed_tool_and_final_instead_of_accepting_final(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = ScriptedClient(
+                [
+                    (
+                        '<think>use the lookup first</think>\n'
+                        '{"tool":"lookup","arguments":{"key":"alpha"}}\n'
+                        '<think>then answer</think>\n'
+                        '{"final":"fabricated"}'
+                    ),
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"final":"6"}',
+                ]
+            )
+            context = RunContext(
+                "actor-only",
+                "retrieve alpha",
+                client,
+                environment,
+                trace,
+                {"max_turns": 4},
+            )
+            answer = asyncio.run(run_profile(context))
+
+        self.assertEqual(answer, "6")
+        self.assertEqual([call["arguments"] for call in environment.calls], [{"key": "alpha"}])
+        self.assertTrue(
+            any(
+                message["role"] == "user" and "Protocol error" in message["content"]
+                for messages in client.messages
+                for message in messages
+            )
+        )
+
+    def test_structured_manager_repairs_mixed_plan_and_report(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    '{"assignments":[{"id":"w1","instruction":"inspect"}]}\n'
+                    '<think>skip execution</think>\n'
+                    '{"final":"fabricated"}',
+                    '{"assignments":[{"id":"w1","instruction":"inspect"}]}',
+                ]
+            )
+            context = RunContext(
+                "cmas",
+                "inspect",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"protocol_repairs": 1},
+            )
+            plan = asyncio.run(context.complete_json("manager", [{"role": "user", "content": "plan"}]))
+
+        self.assertEqual(plan["assignments"][0]["id"], "w1")
+        self.assertEqual(len(client.messages), 2)
+        self.assertIn("Return one complete JSON object", client.messages[1][-1]["content"])
+
     def test_json_parser_preserves_large_complete_value(self) -> None:
         value = {"text": "x" * 200_000, "tail": [1, 2, 3]}
         self.assertEqual(extract_json(json.dumps(value)), value)
+
+    def test_json_parser_accepts_one_complete_fenced_object(self) -> None:
+        value = {"tool": "lookup", "arguments": {"key": "alpha"}}
+        self.assertEqual(extract_json(f"```json\n{json.dumps(value)}\n```"), value)
 
     def test_tool_does_not_inherit_api_secret(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

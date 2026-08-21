@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .api import completion_client_from_env
+from .api import ProviderError, completion_client_from_env
 from .core import JsonlTrace, RunContext, ToolEnvironment, ToolSpec
 from .methods import run_profile
 from .profiles import get_profile
@@ -101,6 +101,25 @@ async def execute(profile_id: str, request_path: Path, output_path: Path, trace_
             if finalizer_result["returncode"] != 0:
                 result["status"] = "failed"
                 result["error"] = "Finalizer command failed"
+    except ProviderError as exc:
+        result = {
+            "schema_version": 1,
+            "status": "failed",
+            "failure_kind": "provider_error",
+            "provider_error_kind": exc.kind,
+            "provider_status_code": exc.status_code,
+            "profile": profile.id,
+            "provenance": profile.provenance,
+            "topology": profile.topology,
+            "task_id": request.get("task", {}).get("id"),
+            "execution_seconds": time.perf_counter() - started,
+            "llm_calls": context.llm_calls,
+            "tool_calls": len(environment.calls),
+            "prompt_tokens": context.prompt_tokens,
+            "completion_tokens": context.completion_tokens,
+            "error": str(exc),
+        }
+        await trace.emit("harness_error", error=result["error"], failure_kind="provider_error")
     except Exception as exc:
         result = {
             "schema_version": 1,
