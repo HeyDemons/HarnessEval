@@ -1264,9 +1264,12 @@ class HarnessTests(unittest.TestCase):
             ['{"tool":"lookup","arguments":{"key":"alpha"}}'],
         )
 
-    def test_json_parser_rejects_non_json_trailing_text(self) -> None:
-        with self.assertRaises(ValueError):
-            extract_json('{"tool":"lookup","arguments":{}} and then continue')
+    def test_json_parser_uses_first_action_before_non_json_trailing_text(self) -> None:
+        action = {"tool": "lookup", "arguments": {}}
+        self.assertEqual(
+            extract_json('{"tool":"lookup","arguments":{}} and then continue'),
+            action,
+        )
 
     def test_json_parser_never_skips_a_tool_for_a_later_final(self) -> None:
         response = (
@@ -1275,10 +1278,12 @@ class HarnessTests(unittest.TestCase):
             '<think>the task should then be complete</think>\n'
             '{"final":"fabricated without an observation"}'
         )
-        with self.assertRaisesRegex(ValueError, "followed by non-JSON content"):
-            extract_json(response, expected_type=dict)
+        self.assertEqual(
+            extract_json(response, expected_type=dict),
+            {"tool": "lookup", "arguments": {"key": "alpha"}},
+        )
 
-    def test_tool_loop_repairs_mixed_tool_and_final_instead_of_accepting_final(self) -> None:
+    def test_tool_loop_executes_first_mixed_tool_before_accepting_a_later_turn_final(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
             environment = ToolEnvironment(tool_specs(), trace)
@@ -1290,7 +1295,6 @@ class HarnessTests(unittest.TestCase):
                         '<think>then answer</think>\n'
                         '{"final":"fabricated"}'
                     ),
-                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
                     '{"final":"6"}',
                 ]
             )
@@ -1306,12 +1310,8 @@ class HarnessTests(unittest.TestCase):
 
         self.assertEqual(answer, "6")
         self.assertEqual([call["arguments"] for call in environment.calls], [{"key": "alpha"}])
-        self.assertTrue(
-            any(
-                message["role"] == "user" and "Protocol error" in message["content"]
-                for messages in client.messages
-                for message in messages
-            )
+        self.assertFalse(
+            any("Protocol error" in str(message.get("content")) for messages in client.messages for message in messages)
         )
 
     def test_structured_manager_repairs_mixed_plan_and_report(self) -> None:
@@ -1322,7 +1322,6 @@ class HarnessTests(unittest.TestCase):
                     '{"assignments":[{"id":"w1","instruction":"inspect"}]}\n'
                     '<think>skip execution</think>\n'
                     '{"final":"fabricated"}',
-                    '{"assignments":[{"id":"w1","instruction":"inspect"}]}',
                 ]
             )
             context = RunContext(
@@ -1336,8 +1335,7 @@ class HarnessTests(unittest.TestCase):
             plan = asyncio.run(context.complete_json("manager", [{"role": "user", "content": "plan"}]))
 
         self.assertEqual(plan["assignments"][0]["id"], "w1")
-        self.assertEqual(len(client.messages), 2)
-        self.assertIn("Return one complete JSON object", client.messages[1][-1]["content"])
+        self.assertEqual(len(client.messages), 1)
 
     def test_json_parser_preserves_large_complete_value(self) -> None:
         value = {"text": "x" * 200_000, "tail": [1, 2, 3]}

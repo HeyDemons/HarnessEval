@@ -81,7 +81,7 @@ def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None
     # tool call the model generated first.  Scan the complete response before falling back
     # to individual fences (the fallback only matters when unmatched prose quotes hide the
     # fence contents from the lightweight string scanner below).
-    for source_index, source in enumerate([stripped, *fenced]):
+    for source in [stripped, *fenced]:
         starts: list[int] = []
         in_string = False
         escaped = False
@@ -113,30 +113,12 @@ def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None
             decoded_through = max(decoded_through, start + end)
             if expected_type is not None and not isinstance(value, expected_type):
                 continue
-            remainder = source[start + end :].strip()
-            if remainder:
-                # A model may emit a whitespace-separated sequence of complete values,
-                # narrating a whole trajectory in one turn. Accept the sequence only if
-                # it tiles the remainder exactly, and take the FIRST value: the later
-                # ones were produced without ever observing a tool result, so honouring
-                # them would let a fabricated {"final": ...} end the episode with zero
-                # tool calls. Anything else is still a protocol violation.
-                if not _tiles_json_sequence(decoder, remainder):
-                    if source_index == 0 and any(
-                        match.start(1) <= start < match.end(1) for match in fence_matches
-                    ):
-                        # Backticks are non-JSON trailing content in the raw response. Let
-                        # the corresponding isolated fence source below validate its own
-                        # complete contents before treating this as a mixed response.
-                        continue
-                    # Do not continue scanning for a later object.  In real provider output
-                    # this shape is commonly ``tool JSON + <think> + final JSON``.  Accepting
-                    # the later final fabricates completion without ever executing the tool
-                    # or observing its result.  Surface one protocol error so the caller's
-                    # normal repair turn can obtain an authoritative single action.
-                    raise ValueError(
-                        "Response contained a complete JSON value followed by non-JSON content"
-                    )
+            # The first complete value is the only action generated before an environment
+            # observation.  Ignore every later value or prose fragment in this turn: models
+            # sometimes narrate an entire hypothetical trajectory as
+            # ``tool + <think> + tool + final``. Executing or accepting anything after the
+            # first value would fabricate observations and was responsible for zero-tool
+            # false completions across several multi-agent profiles.
             return value
     raise ValueError("Response did not contain one complete JSON value")
 
@@ -223,22 +205,6 @@ def _extract_single_json_object(
             f"Response did not contain exactly one JSON object with root field {root_key!r}"
         )
     raise ValueError("Response did not contain exactly one complete JSON object")
-
-
-def _tiles_json_sequence(decoder: json.JSONDecoder, text: str) -> bool:
-    """True when text is exactly a whitespace-separated run of complete JSON values."""
-    cursor = 0
-    while cursor < len(text):
-        while cursor < len(text) and text[cursor].isspace():
-            cursor += 1
-        if cursor >= len(text):
-            break
-        try:
-            _, end = decoder.raw_decode(text[cursor:])
-        except json.JSONDecodeError:
-            return False
-        cursor += end
-    return True
 
 
 class JsonlTrace:
