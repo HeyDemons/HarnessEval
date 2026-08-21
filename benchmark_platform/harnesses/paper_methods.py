@@ -463,7 +463,7 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                     "content": (
                         "Judge whether the DAG results fully solve the task. Finish only when "
                         "the answer is supported by observations; otherwise request a replan.\n"
-                        'Return exactly {"action":"finish","answer":"..."} or '
+                        'Return JSON only, exactly {"action":"finish","answer":"..."} or '
                         '{"action":"replan","feedback":"specific correction"}.\n'
                         f"Task: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\n"
                         f"Results: {json.dumps(json_safe(results), ensure_ascii=False)}"

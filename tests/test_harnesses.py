@@ -28,9 +28,11 @@ class ScriptedClient:
     def __init__(self, responses: list[str]):
         self.responses = iter(responses)
         self.messages = []
+        self.json_modes = []
 
     async def complete(self, messages, *, temperature=None, json_mode=False):
         self.messages.append(messages)
+        self.json_modes.append(json_mode)
         content = next(self.responses)
         return Completion(content, 1, 1, 0.0, 0, {"choices": [{"message": {"content": content}}]})
 
@@ -972,6 +974,13 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls[-1]["result"]["result"]["product"], 42)
+        self.assertEqual(self.last_client.json_modes, [True, True])
+        for messages, json_mode in zip(
+            self.last_client.messages, self.last_client.json_modes, strict=True
+        ):
+            if json_mode:
+                prompt = "\n".join(str(message.get("content", "")) for message in messages)
+                self.assertIn("json", prompt.casefold())
 
     def test_llmcompiler_scans_past_incidental_json_for_the_plan(self) -> None:
         answer, environment = self.run_profile(
@@ -1127,6 +1136,29 @@ class HarnessTests(unittest.TestCase):
                 "Plan: retrieve beta\n"
                 '#E1 = lookup[{"key":"beta"}]'
             )
+
+    def test_rewoo_repairs_concatenated_planner_drafts_before_execution(self) -> None:
+        malformed = (
+            "Plan: retrieve alpha\n"
+            '#E1 = lookup[{"key":"alpha"}]'
+            "Plan: retrieve alpha again\n"
+            '#E1 = lookup[{"key":"alpha"}]'
+        )
+        answer, environment = self.run_profile(
+            "rewoo",
+            [
+                malformed,
+                'Plan: retrieve alpha\n#E1 = lookup[{"key":"alpha"}]',
+                "6",
+            ],
+        )
+
+        self.assertEqual(answer, "6")
+        self.assertEqual([call["name"] for call in environment.calls], ["lookup"])
+        self.assertEqual(len(self.last_client.messages), 3)
+        repair_prompt = self.last_client.messages[1][-1]["content"]
+        self.assertIn("Protocol error:", repair_prompt)
+        self.assertIn("Do not include commentary", repair_prompt)
 
     def test_sa_exact_action_cache_hit(self) -> None:
         answer, environment = self.run_profile(
