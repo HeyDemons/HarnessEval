@@ -11,9 +11,33 @@ from pathlib import Path
 from typing import Any
 
 from benchmark_platform.harnesses.core import JsonlTrace, ToolEnvironment
+from benchmark_platform.harnesses.content import wire_tool_result
 from benchmark_platform.util import atomic_json
 
 from .adapters import load_case
+
+
+PRODUCT_WORKSPACE_ROOT = "/job/benchmark_server/case_workspace/workspace"
+_WORKSPACE_PATH_FIELDS = {
+    "list_files": ("path",),
+    "read_file": ("path",),
+    "run_command": ("cwd",),
+    "write_file": ("path",),
+    "edit_file": ("path",),
+}
+
+
+def translate_product_workspace_arguments(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Translate the product container's bind-mount path into bridge-relative paths."""
+    translated = dict(arguments)
+    prefix = PRODUCT_WORKSPACE_ROOT + "/"
+    for field in _WORKSPACE_PATH_FIELDS.get(name, ()):
+        raw = translated.get(field)
+        if raw == PRODUCT_WORKSPACE_ROOT:
+            translated[field] = "."
+        elif isinstance(raw, str) and raw.startswith(prefix):
+            translated[field] = raw[len(prefix) :]
+    return translated
 
 
 class ProductBridge:
@@ -31,6 +55,10 @@ class ProductBridge:
         if workspace.exists():
             shutil.rmtree(workspace)
         shutil.copytree(source, workspace)
+        # The matched product container starts in this shared directory for every static
+        # benchmark. Workspace benchmarks already contain it; declaration-only benchmarks
+        # get an empty cwd so Docker never falls back to /tmp or fails on a missing -w path.
+        (workspace / "workspace").mkdir(exist_ok=True)
         bridge = load_case(benchmark, case_id, workspace)
         self.prompt = bridge.prompt
         self.metadata = bridge.metadata
@@ -44,6 +72,8 @@ class ProductBridge:
         ]
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self.benchmark in {"gaia", "gdpval"}:
+            arguments = translate_product_workspace_arguments(name, arguments)
         future = asyncio.run_coroutine_threadsafe(
             self.environment.call(name, arguments),
             self.loop,
@@ -124,9 +154,16 @@ def handler_for(bridge: ProductBridge):
                     arguments = payload.get("arguments")
                     if not isinstance(arguments, dict):
                         raise ValueError("arguments must be a JSON object")
-                    result = bridge.call(str(payload.get("tool") or ""), arguments)
+                    # Image bytes exist only on this response hop. Environment traces and
+                    # final artifacts retain ToolImage's small metadata dictionary.
+                    result = wire_tool_result(
+                        bridge.call(str(payload.get("tool") or ""), arguments)
+                    )
                 elif self.path == "/final":
                     result = bridge.finalize(payload)
+                elif self.path == "/cancel":
+                    cancel = getattr(bridge, "cancel_active", None)
+                    result = cancel() if callable(cancel) else {"cancelled": 0}
                 else:
                     self._send(404, {"ok": False, "error": "not_found"})
                     return

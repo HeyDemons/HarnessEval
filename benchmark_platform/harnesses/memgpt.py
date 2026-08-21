@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime, timezone
 from typing import Any
@@ -7,40 +8,112 @@ from typing import Any
 from .core import RunContext
 
 
-_MEMORY_FUNCTIONS = {
+_NATIVE_USER_TOOL = "send_message_to_user"
+
+
+_HEARTBEAT_PARAMETER = {
+    "type": "boolean",
+    "description": "Request an immediate heartbeat after function execution to chain another function.",
+}
+
+
+def _parameters(properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {"type": "object", "properties": properties, "required": required}
+
+
+_MEMORY_FUNCTIONS: dict[str, dict[str, Any]] = {
     "core_memory_append": {
         "description": "Append content to the persona or human section of core memory.",
-        "parameters": {"name": "persona or human", "content": "string"},
+        "parameters": _parameters(
+            {"name": {"type": "string"}, "content": {"type": "string"}},
+            ["name", "content"],
+        ),
     },
     "core_memory_replace": {
         "description": "Replace an exact string in the persona or human section of core memory.",
-        "parameters": {"name": "persona or human", "old_content": "string", "new_content": "string"},
+        "parameters": _parameters(
+            {
+                "name": {"type": "string"},
+                "old_content": {"type": "string"},
+                "new_content": {"type": "string"},
+            },
+            ["name", "old_content", "new_content"],
+        ),
     },
     "conversation_search": {
         "description": "Search recall memory using case-insensitive string matching.",
-        "parameters": {"query": "string", "page": "integer"},
+        "parameters": _parameters(
+            {"query": {"type": "string"}, "page": {"type": "integer"}},
+            ["query", "page"],
+        ),
     },
     "conversation_search_date": {
         "description": "Search recall memory over an ISO date range.",
-        "parameters": {"start_date": "YYYY-MM-DD", "end_date": "YYYY-MM-DD", "page": "integer"},
+        "parameters": _parameters(
+            {
+                "start_date": {"type": "string"},
+                "end_date": {"type": "string"},
+                "page": {"type": "integer"},
+            },
+            ["start_date", "end_date", "page"],
+        ),
     },
     "archival_memory_insert": {
         "description": "Add a durable entry to archival memory.",
-        "parameters": {"content": "string"},
+        "parameters": _parameters({"content": {"type": "string"}}, ["content"]),
     },
     "archival_memory_search": {
         "description": "Search archival memory using case-insensitive string matching.",
-        "parameters": {"query": "string", "page": "integer"},
+        "parameters": _parameters(
+            {"query": {"type": "string"}, "page": {"type": "integer"}},
+            ["query", "page"],
+        ),
     },
     "pause_heartbeats": {
         "description": "Pause timed heartbeats. Immediate requested heartbeats are unaffected.",
-        "parameters": {"minutes": "integer"},
+        "parameters": _parameters({"minutes": {"type": "integer"}}, ["minutes"]),
     },
     "send_message": {
-        "description": "Send the final response to the user.",
-        "parameters": {"message": "string"},
+        "description": "Send a message to the human user.",
+        "parameters": _parameters({"message": {"type": "string"}}, ["message"]),
     },
 }
+
+_NON_CHAINABLE_FUNCTIONS = {"pause_heartbeats", "send_message"}
+
+
+def _with_required_heartbeat(function_schema: dict[str, Any]) -> dict[str, Any]:
+    schema = copy.deepcopy(function_schema)
+    parameters = schema.setdefault("parameters", {"type": "object", "properties": {}})
+    properties = parameters.setdefault("properties", {})
+    properties["request_heartbeat"] = copy.deepcopy(_HEARTBEAT_PARAMETER)
+    required = list(parameters.get("required") or [])
+    if "request_heartbeat" not in required:
+        required.append("request_heartbeat")
+    parameters["required"] = required
+    return schema
+
+
+def _memory_function_schemas() -> dict[str, dict[str, Any]]:
+    return {
+        name: copy.deepcopy(schema) if name in _NON_CHAINABLE_FUNCTIONS else _with_required_heartbeat(schema)
+        for name, schema in _MEMORY_FUNCTIONS.items()
+    }
+
+
+def _benchmark_function_schemas(ctx: RunContext) -> list[dict[str, Any]]:
+    # Benchmark tools play the same chainable role as MemGPT's message_chatgpt function.
+    # A native episode exposes its user channel as a bridge tool. MemGPT already owns the
+    # equivalent published function (`send_message`), so advertising both would let the
+    # model bypass MemGPT's function history and memory lifecycle.
+    declaration_only = bool(ctx.policy.get("declaration_only_tools"))
+    return [
+        copy.deepcopy(tool.prompt_schema())
+        if declaration_only
+        else _with_required_heartbeat(tool.prompt_schema())
+        for tool in ctx.environment.tools.values()
+        if tool.name != _NATIVE_USER_TOOL
+    ]
 
 
 def _event(role: str, content: Any) -> dict[str, Any]:
@@ -64,18 +137,26 @@ def _system_message(
     recall: list[dict[str, Any]],
     archival: list[dict[str, Any]],
 ) -> str:
-    benchmark_functions = [tool.prompt_schema() for tool in ctx.environment.tools.values()]
+    benchmark_functions = _benchmark_function_schemas(ctx)
+    if ctx.policy.get("declaration_only_tools"):
+        benchmark_contract = (
+            "Benchmark functions are declaration-only answer calls: use each published argument schema exactly "
+            "and do not add request_heartbeat. A successful declaration-only call schedules an immediate "
+            "heartbeat automatically."
+        )
+    else:
+        benchmark_contract = "Every benchmark function requires boolean request_heartbeat inside arguments."
     return (
         "You are MemGPT, an LLM operating system with core, recall, and archival memory. Internal monologue stays "
         "inside the `thought` field; communicate with the user only through send_message. Execute exactly one "
         "function per turn. Function failure or request_heartbeat=true schedules an immediate heartbeat.\n"
         f"Core memory: {json.dumps(core, ensure_ascii=False)}\n"
         f"Recall memory contains {len(recall)} events. Archival memory contains {len(archival)} entries.\n"
-        f"Memory functions: {json.dumps(_MEMORY_FUNCTIONS, ensure_ascii=False)}\n"
+        f"Memory functions: {json.dumps(_memory_function_schemas(), ensure_ascii=False)}\n"
         f"Benchmark functions: {json.dumps(benchmark_functions, ensure_ascii=False)}\n"
         'Return JSON only: {"thought":"internal monologue","function":"name","arguments":'
-        '{"request_heartbeat":true}}. Every function except send_message requires boolean request_heartbeat '
-        "inside arguments."
+        '{"request_heartbeat":true}}. Every memory function except send_message and pause_heartbeats requires '
+        f"boolean request_heartbeat inside arguments. {benchmark_contract}"
     )
 
 
@@ -204,12 +285,59 @@ async def run_memgpt(ctx: RunContext) -> str:
         if function == "send_message":
             if "message" not in arguments:
                 raise ValueError("send_message omitted message")
-            return str(arguments["message"])
+            message = str(arguments["message"])
+            if _NATIVE_USER_TOOL not in ctx.environment.names:
+                return message
+
+            # The original MemGPT CLI keeps one Agent object alive: send_message returns
+            # control to the outer user loop, and the next user event is passed back into
+            # that same Agent.step call history. Native conversational benchmarks have the
+            # same boundary through send_message_to_user. Await it here instead of returning
+            # from run_memgpt, otherwise every user turn reconstructs core, recall, and
+            # archival memory from scratch.
+            delivery = await ctx.environment.call(_NATIVE_USER_TOOL, {"content": message})
+            if not delivery.get("ok"):
+                packaged = {"function": function, "result": delivery}
+                active.append({"role": "user", "content": json.dumps(packaged, ensure_ascii=False)})
+                recall.append(_event("function", packaged))
+                active.append({"role": "user", "content": '{"type":"heartbeat","reason":"Function call failed"}'})
+                await ctx.trace.emit(
+                    "memgpt_function",
+                    turn=turn + 1,
+                    function=function,
+                    arguments={"message": message},
+                    result=delivery,
+                    request_heartbeat=None,
+                )
+                continue
+            payload = delivery.get("result")
+            user_message = payload.get("user_message") if isinstance(payload, dict) else None
+            if not isinstance(user_message, str):
+                raise RuntimeError("MemGPT native send_message returned no user message")
+            packaged = {"function": function, "result": {"ok": True, "message": "message delivered"}}
+            active.append({"role": "user", "content": json.dumps(packaged, ensure_ascii=False)})
+            recall.append(_event("function", packaged))
+            active.append({"role": "user", "content": user_message})
+            recall.append(_event("user", user_message))
+            await ctx.trace.emit(
+                "memgpt_user_message",
+                turn=turn + 1,
+                message=user_message,
+            )
+            continue
 
         function_arguments = dict(arguments)
         request_heartbeat = function_arguments.pop("request_heartbeat", None)
-        if not isinstance(request_heartbeat, bool):
-            raise ValueError("MemGPT non-terminal functions require boolean request_heartbeat")
+        if not (isinstance(request_heartbeat, bool) or request_heartbeat is None):
+            # The original executor warns and treats an invalid heartbeat value as absent;
+            # schema validation should normally prevent this path.
+            await ctx.trace.emit(
+                "memgpt_invalid_heartbeat",
+                turn=turn + 1,
+                function=function,
+                value=request_heartbeat,
+            )
+            request_heartbeat = None
         try:
             result = await execute(function, function_arguments)
             function_failed = False
@@ -236,8 +364,21 @@ async def run_memgpt(ctx: RunContext) -> str:
             active.append({"role": "user", "content": warning})
             recall.append(_event("system", warning))
             warned = True
+        declaration_only = bool(
+            isinstance(result, dict)
+            and result.get("ok") is True
+            and isinstance(result.get("result"), dict)
+            and result["result"].get("declaration_only") is True
+        )
         if function_failed:
             active.append({"role": "user", "content": '{"type":"heartbeat","reason":"Function call failed"}'})
+        elif declaration_only:
+            active.append(
+                {
+                    "role": "user",
+                    "content": '{"type":"heartbeat","reason":"Declaration-only tool call recorded"}',
+                }
+            )
         elif request_heartbeat:
             active.append({"role": "user", "content": '{"type":"heartbeat","reason":"AI requested"}'})
         else:

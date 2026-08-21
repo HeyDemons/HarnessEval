@@ -345,9 +345,12 @@ def generate_bfcl(platform_root: Path) -> dict[str, Any]:
     cases: list[dict[str, Any]] = []
     source_hashes: dict[str, str] = {format_path.name: file_sha256(format_path)}
     summary: dict[str, int] = {}
+    stateful_categories = {"memory", "web_search"}
     for path in task_paths:
         category = path.stem.removeprefix("BFCL_v4_")
         source_hashes[path.name] = file_sha256(path)
+        if category in stateful_categories or category.startswith("multi_turn"):
+            continue
         rows = []
         for line in path.read_text(encoding="utf-8").splitlines():
             if line.strip():
@@ -368,7 +371,7 @@ def generate_bfcl(platform_root: Path) -> dict[str, Any]:
         {"revision": BFCL_REVISION, "category_file_sha256": source_hashes},
         cases,
         summary,
-        "Five cases per BFCL V4 task category, balancing membership in the auxiliary format-sensitivity map; report category-macro and pooled scores",
+        "Five cases per independently scoreable BFCL V4 single-turn category, balancing format sensitivity; stateful multi-turn, memory, and web-search categories remain full-suite only",
     )
 
 

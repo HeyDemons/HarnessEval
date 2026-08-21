@@ -177,131 +177,6 @@
       "id": "live_simple_178-103-1"
     },
     {
-      "category": "memory",
-      "format_sensitive": false,
-      "id": "memory_142-notetaker-12"
-    },
-    {
-      "category": "memory",
-      "format_sensitive": false,
-      "id": "memory_134-notetaker-4"
-    },
-    {
-      "category": "memory",
-      "format_sensitive": false,
-      "id": "memory_128-student-48"
-    },
-    {
-      "category": "memory",
-      "format_sensitive": false,
-      "id": "memory_108-student-28"
-    },
-    {
-      "category": "memory",
-      "format_sensitive": false,
-      "id": "memory_23-customer-23"
-    },
-    {
-      "category": "multi_turn_base",
-      "format_sensitive": false,
-      "id": "multi_turn_base_70"
-    },
-    {
-      "category": "multi_turn_base",
-      "format_sensitive": false,
-      "id": "multi_turn_base_75"
-    },
-    {
-      "category": "multi_turn_base",
-      "format_sensitive": false,
-      "id": "multi_turn_base_74"
-    },
-    {
-      "category": "multi_turn_base",
-      "format_sensitive": false,
-      "id": "multi_turn_base_10"
-    },
-    {
-      "category": "multi_turn_base",
-      "format_sensitive": false,
-      "id": "multi_turn_base_96"
-    },
-    {
-      "category": "multi_turn_long_context",
-      "format_sensitive": false,
-      "id": "multi_turn_long_context_196"
-    },
-    {
-      "category": "multi_turn_long_context",
-      "format_sensitive": false,
-      "id": "multi_turn_long_context_169"
-    },
-    {
-      "category": "multi_turn_long_context",
-      "format_sensitive": false,
-      "id": "multi_turn_long_context_27"
-    },
-    {
-      "category": "multi_turn_long_context",
-      "format_sensitive": false,
-      "id": "multi_turn_long_context_20"
-    },
-    {
-      "category": "multi_turn_long_context",
-      "format_sensitive": false,
-      "id": "multi_turn_long_context_18"
-    },
-    {
-      "category": "multi_turn_miss_func",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_func_14"
-    },
-    {
-      "category": "multi_turn_miss_func",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_func_32"
-    },
-    {
-      "category": "multi_turn_miss_func",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_func_91"
-    },
-    {
-      "category": "multi_turn_miss_func",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_func_177"
-    },
-    {
-      "category": "multi_turn_miss_func",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_func_126"
-    },
-    {
-      "category": "multi_turn_miss_param",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_param_100"
-    },
-    {
-      "category": "multi_turn_miss_param",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_param_57"
-    },
-    {
-      "category": "multi_turn_miss_param",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_param_193"
-    },
-    {
-      "category": "multi_turn_miss_param",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_param_65"
-    },
-    {
-      "category": "multi_turn_miss_param",
-      "format_sensitive": false,
-      "id": "multi_turn_miss_param_70"
-    },
-    {
       "category": "multiple",
       "format_sensitive": false,
       "id": "multiple_28"
@@ -450,40 +325,15 @@
       "category": "simple_python",
       "format_sensitive": false,
       "id": "simple_python_138"
-    },
-    {
-      "category": "web_search",
-      "format_sensitive": false,
-      "id": "web_search_10"
-    },
-    {
-      "category": "web_search",
-      "format_sensitive": false,
-      "id": "web_search_81"
-    },
-    {
-      "category": "web_search",
-      "format_sensitive": false,
-      "id": "web_search_95"
-    },
-    {
-      "category": "web_search",
-      "format_sensitive": false,
-      "id": "web_search_20"
-    },
-    {
-      "category": "web_search",
-      "format_sensitive": false,
-      "id": "web_search_87"
     }
   ],
-  "declared_count": 95,
+  "declared_count": 65,
   "mode": "light",
   "schema_version": 1,
   "selection_policy": {
     "frozen": true,
     "historical_runs_used": false,
-    "method": "Five cases per BFCL V4 task category, balancing membership in the auxiliary format-sensitivity map; report category-macro and pooled scores",
+    "method": "Five cases per independently scoreable BFCL V4 single-turn category, balancing format sensitivity; stateful multi-turn, memory, and web-search categories remain full-suite only",
     "model_outcomes_used": false,
     "seed": "harnesseval-light-v1"
   },
@@ -521,17 +371,11 @@
     "live_parallel_multiple": 5,
     "live_relevance": 5,
     "live_simple": 5,
-    "memory": 5,
-    "multi_turn_base": 5,
-    "multi_turn_long_context": 5,
-    "multi_turn_miss_func": 5,
-    "multi_turn_miss_param": 5,
     "multiple": 5,
     "parallel": 5,
     "parallel_multiple": 5,
     "simple_java": 5,
     "simple_javascript": 5,
-    "simple_python": 5,
-    "web_search": 5
+    "simple_python": 5
   }
 }

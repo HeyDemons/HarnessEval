@@ -10,6 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from .base import BridgeCase, native_spec, read_case, workspace_tools
+from .bfcl import (
+    declaration_only_result,
+    normalize_bfcl_parameters,
+    prepared_bfcl_messages,
+    render_bfcl_prompt,
+)
 
 
 def _tool_name(original: str) -> str:
@@ -85,19 +91,24 @@ def load_trajectory(case_id: str, root: Path) -> BridgeCase:
                 }
             service_url = os.environ.get("API_URL", "")
             key = os.environ.get("TOOLBENCH_KEY", "")
-            if not service_url or not key:
-                raise RuntimeError("TRAJECT tool execution requires API_URL and TOOLBENCH_KEY")
+            if not service_url:
+                raise RuntimeError("TRAJECT tool execution requires API_URL")
             payload = {
                 "category": tool.get("domain name", ""),
                 "tool_name": tool.get("parent tool name", tool.get("tool name", "")),
                 "api_name": tool.get("API name", tool.get("tool name", "")),
-                "tool_input": arguments,
+                # ToolBench/StableToolBench's /virtual contract carries the tool
+                # arguments as a JSON string inside the outer JSON request.
+                "tool_input": json.dumps(arguments, ensure_ascii=False),
                 # ToolBench requires this field. "none" preserves the complete
                 # response while avoiding the upstream example's hard truncation.
                 "strip": "none",
                 "toolbench_key": key,
             }
-            request = urllib.request.Request(service_url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json", "toolbench_key": key}, method="POST")
+            headers = {"Content-Type": "application/json"}
+            if key:
+                headers["toolbench_key"] = key
+            request = urllib.request.Request(service_url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
             try:
                 with urllib.request.urlopen(request) as response:
                     return json.loads(response.read().decode("utf-8"))
@@ -120,6 +131,7 @@ def load_trajectory(case_id: str, root: Path) -> BridgeCase:
 
 def load_bfcl(case_id: str, root: Path) -> BridgeCase:
     value = read_case(root)
+    messages = prepared_bfcl_messages(value)
     specs = []
     handlers = {}
     for item in value.get("functions", []):
@@ -130,16 +142,25 @@ def load_bfcl(case_id: str, root: Path) -> BridgeCase:
         # checker converts the answer key to match, so this is the documented mapping and not
         # a local workaround; bfcl_score.py passes an OpenAI-family model name to match it.
         name = str(function["name"]).replace(".", "_")
-        parameters = function.get("parameters") or {"type": "object", "properties": {}}
-        if parameters.get("type") == "dict":
-            parameters = {**parameters, "type": "object"}
+        parameters = normalize_bfcl_parameters(function.get("parameters"))
         specs.append(native_spec(name, str(function.get("description", "")), parameters, parallel=True, read_only=True))
 
         async def record(arguments: dict[str, Any], *, function_name: str = name) -> Any:
-            return {"recorded_function_call": function_name, "arguments": arguments}
+            return declaration_only_result(function_name, arguments)
 
         handlers[name] = record
-    return BridgeCase("bfcl", case_id, value["prompt"], specs, handlers, {"source": value.get("source")})
+    return BridgeCase(
+        "bfcl",
+        case_id,
+        render_bfcl_prompt(messages),
+        specs,
+        handlers,
+        {
+            "source": value.get("source"),
+            "messages": messages,
+            "lifecycle": "single_turn_declaration_only",
+        },
+    )
 
 
 def load_case(benchmark: str, case_id: str, root: Path) -> BridgeCase:

@@ -13,6 +13,7 @@ from benchmark_platform.harnesses.api import (
     OpenAICompatibleClient,
     completion_client_from_env,
 )
+from benchmark_platform.harnesses.content import ToolImage, tool_result_content
 
 
 class _Response:
@@ -30,6 +31,41 @@ class _Response:
 
 
 class NativeTransportTests(unittest.TestCase):
+    def test_tool_image_is_sent_as_multimodal_content_not_base64_text(self) -> None:
+        observed = {}
+
+        def fake_urlopen(request, timeout):
+            observed["payload"] = json.loads(request.data.decode("utf-8"))
+            return _Response(
+                {
+                    "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+            )
+
+        result = {
+            "ok": True,
+            "result": {
+                "path": "figure.jpg",
+                "image": ToolImage("image/jpeg", b"\xff\xd8\xff"),
+            },
+        }
+        messages = [{"role": "user", "content": tool_result_content(result)}]
+        self.assertNotIn("/9j/", json.dumps(messages, ensure_ascii=False))
+
+        client = OpenAICompatibleClient(
+            ApiConfig("https://example.invalid/v1", "secret", "model", transport_retries=0)
+        )
+        with patch("urllib.request.urlopen", fake_urlopen):
+            asyncio.run(client.complete(messages))
+
+        content = observed["payload"]["messages"][0]["content"]
+        self.assertEqual(content[0]["type"], "text")
+        self.assertIn('"bytes": 3', content[0]["text"])
+        self.assertEqual(content[1]["type"], "image_url")
+        self.assertEqual(content[1]["image_url"]["url"], "data:image/jpeg;base64,/9j/")
+        self.assertEqual(content[1]["image_url"]["detail"], "auto")
+
     def test_native_messages_and_tool_schema_are_not_rewritten_or_sliced(self) -> None:
         large_argument = "x" * 200_000
         messages = [
@@ -271,7 +307,7 @@ if __name__ == "__main__":
 class ReasoningEffortTests(unittest.TestCase):
     """A matched control must send the same reasoning knob the product harness sends."""
 
-    def _payload(self, config: ApiConfig) -> dict:
+    def _payload(self, config: ApiConfig, temperature: float | None = None) -> dict:
         captured: dict = {}
 
         def fake_urlopen(request, timeout=None):
@@ -282,7 +318,11 @@ class ReasoningEffortTests(unittest.TestCase):
             })
 
         with patch("urllib.request.urlopen", fake_urlopen):
-            asyncio.run(OpenAICompatibleClient(config).complete([{"role": "user", "content": "hi"}]))
+            asyncio.run(
+                OpenAICompatibleClient(config).complete(
+                    [{"role": "user", "content": "hi"}], temperature=temperature
+                )
+            )
         return captured
 
     def _config(self, **overrides) -> ApiConfig:
@@ -297,6 +337,20 @@ class ReasoningEffortTests(unittest.TestCase):
         payload = self._payload(self._config(temperature=0.0))
         self.assertEqual(payload["temperature"], 0.0)
         self.assertNotIn("reasoning_effort", payload)
+
+    def test_a_profile_that_names_a_temperature_keeps_it_under_a_reasoning_effort(self) -> None:
+        """dylan asks for 1.0 and lats for lats_temperature because sampling diversity is the
+        method, not a preference: DyLAN's agents have nothing to debate if they all answer the
+        same. Folding those into the effort branch disabled the method silently, and the API
+        takes both parameters together."""
+        payload = self._payload(self._config(reasoning_effort="high"), temperature=1.0)
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["temperature"], 1.0)
+
+    def test_a_profile_that_names_no_temperature_still_sends_none_under_an_effort(self) -> None:
+        """The actor-only control stays matched to the product harness, which sends none."""
+        payload = self._payload(self._config(reasoning_effort="high", temperature=0.7))
+        self.assertNotIn("temperature", payload)
 
 
 

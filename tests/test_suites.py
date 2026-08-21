@@ -80,10 +80,13 @@ class SuiteTests(unittest.TestCase):
     def test_bfcl_uses_real_task_categories_not_auxiliary_index(self) -> None:
         suite = self.suites.get("bfcl", "light")
         categories = Counter(case["category"] for case in suite["cases"])
-        self.assertEqual(suite["declared_count"], 95)
-        self.assertEqual(len(categories), 19)
+        self.assertEqual(suite["declared_count"], 65)
+        self.assertEqual(len(categories), 13)
         self.assertEqual(set(categories.values()), {5})
         self.assertNotIn("format_sensitivity", categories)
+        self.assertFalse(any(category.startswith("multi_turn") for category in categories))
+        self.assertNotIn("memory", categories)
+        self.assertNotIn("web_search", categories)
         self.assertTrue(all(isinstance(case["format_sensitive"], bool) for case in suite["cases"]))
 
     def test_terminal_selection_is_frozen_but_runner_limit_is_disclosed(self) -> None:

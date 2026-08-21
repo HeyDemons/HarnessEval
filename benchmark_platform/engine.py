@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import ipaddress
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -14,6 +16,16 @@ from urllib.parse import urlsplit, urlunsplit
 
 from .catalog import Benchmark, Catalog
 from .store import CaseStore, TERMINAL_STATUSES
+from .terminal_runtime import (
+    container_workdir,
+    copy_container_workdir,
+    docker_exec_command,
+    docker_resource_flags,
+    run_captured,
+    run_shared_verifier,
+    terminal_agent_prompt,
+    terminal_task_settings,
+)
 from .util import atomic_json, command_exists, slug, stream_process, utc_now
 
 
@@ -28,6 +40,70 @@ def docker_socket_source(context: dict[str, Any]) -> str:
     if not host.startswith(prefix):
         raise RuntimeError(f"Docker context does not expose a Unix socket: {host}")
     return host[len(prefix) :]
+
+
+def docker_add_host_flags(network: str) -> list[str]:
+    """Return validated, opt-in host pins for networked benchmark containers.
+
+    Docker Desktop/Colima DNS can disagree with the host resolver, while public DNS is
+    unreachable from some benchmark networks. Operators may pin reproducible resolutions
+    as a comma- or whitespace-separated list of ``hostname:ip``/``hostname=ip`` entries.
+    The value is consumed by the host-side runner and is never copied into the container.
+    """
+    if network == "none":
+        return []
+    configured = os.environ.get("BENCHMARK_DOCKER_ADD_HOSTS", "").strip()
+    if not configured:
+        return []
+    flags: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in re.split(r"[,\s]+", configured):
+        if not entry:
+            continue
+        if "=" in entry:
+            host, address = entry.split("=", 1)
+        elif entry.count(":") == 1:
+            host, address = entry.split(":", 1)
+        else:
+            raise ValueError(
+                "BENCHMARK_DOCKER_ADD_HOSTS entries must use hostname:ip or hostname=ip"
+            )
+        host = host.strip().lower()
+        address = address.strip()
+        labels = host.split(".")
+        if (
+            not host
+            or len(host) > 253
+            or any(
+                not label
+                or len(label) > 63
+                or re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", label) is None
+                for label in labels
+            )
+        ):
+            raise ValueError(f"Invalid BENCHMARK_DOCKER_ADD_HOSTS hostname: {host!r}")
+        try:
+            canonical_address = str(ipaddress.ip_address(address))
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid BENCHMARK_DOCKER_ADD_HOSTS address for {host!r}: {address!r}"
+            ) from exc
+        pair = (host, canonical_address)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        flags.extend(["--add-host", f"{host}:{canonical_address}"])
+    return flags
+
+
+def docker_host_gateway_flags(network: str, urls: list[str]) -> list[str]:
+    """Expose Docker's host gateway when a container URL explicitly targets it."""
+    if network != "bridge":
+        return []
+    for url in urls:
+        if urlsplit(url).hostname == "host.docker.internal":
+            return ["--add-host", "host.docker.internal:host-gateway"]
+    return []
 
 
 def terminal_agent_command(command_override: list[str] | None, smoke: bool) -> str | None:
@@ -108,6 +184,8 @@ HARNESS_ENV = frozenset({
     "HARNESS_REASONING_EFFORT",
     "HARNESS_API_STREAM",
     "HARNESS_USER_AGENT",
+    "HARNESS_COMMAND_TIMEOUT_S",
+    "HARNESS_TASK_OUTPUT_LIMIT",
 })
 
 
@@ -418,7 +496,9 @@ class Platform:
         try:
             import tomllib
         except ModuleNotFoundError as exc:
-            raise RuntimeError("Terminal task metadata requires Python 3.11 or newer") from exc
+            raise RuntimeError(
+                "Terminal task metadata requires Python 3.11 or newer"
+            ) from exc
         task_dir = Path(benchmark.adapter["task_dir"])
         if case_id:
             # The catalog pins one task directory, but every suite case names its own task and
@@ -435,7 +515,64 @@ class Platform:
             metadata = tomllib.load(stream)
         return task_dir, metadata
 
-    def _build_terminal_task(self, benchmark: Benchmark, *, pull: bool) -> dict[str, Any]:
+    def _terminal_create_command(
+        self,
+        *,
+        benchmark: Benchmark,
+        metadata: dict[str, Any],
+        image: str,
+        container: str,
+        labels: list[str],
+        extra_flags: list[str] | None = None,
+    ) -> list[str]:
+        """Create a persistent task container shared by the agent and verifier phases."""
+        settings = terminal_task_settings(metadata)
+        command = self._docker("create", "--init", "--name", container)
+        for label in labels:
+            command.extend(["--label", label])
+        if platform := benchmark.adapter.get("platform"):
+            command.extend(["--platform", platform])
+        command.extend(["--network", settings.network])
+        if settings.network == "bridge":
+            command.extend(["--add-host", "host.docker.internal:host-gateway"])
+        command.extend(docker_add_host_flags(settings.network))
+        command.extend(self._egress_env(settings.network))
+        command.extend(docker_resource_flags(settings))
+        command.extend(extra_flags or [])
+        # Only an explicit task-level override may replace the image's OCI WORKDIR.
+        if settings.workdir is not None:
+            command.extend(["-w", settings.workdir])
+        command.extend([image, "sh", "-lc", "while :; do sleep 3600; done"])
+        return command
+
+    def _terminal_task_settings(self, metadata: dict[str, Any]):
+        return terminal_task_settings(metadata)
+
+    def _terminal_container_workdir(self, container: str) -> str:
+        return container_workdir(self._docker, container)
+
+    def _terminal_run_shared_verifier(self, **kwargs: Any) -> dict[str, Any]:
+        return run_shared_verifier(docker=self._docker, **kwargs)
+
+    def _terminal_agent_prompt(self, instruction: str) -> str:
+        return terminal_agent_prompt(instruction)
+
+    def _terminal_copy_workdir(
+        self, *, container: str, workdir: str, destination: Path
+    ) -> subprocess.CompletedProcess[str]:
+        return copy_container_workdir(
+            docker=self._docker,
+            container=container,
+            workdir=workdir,
+            destination=destination,
+        )
+
+    def _terminal_remove_container(self, container: str) -> None:
+        run_captured(self._docker("rm", "-f", container), timeout_sec=30)
+
+    def _build_terminal_task(
+        self, benchmark: Benchmark, *, pull: bool
+    ) -> dict[str, Any]:
         task_dir, metadata = self._terminal_metadata(benchmark)
         adapter = benchmark.adapter
         task_image = metadata.get("environment", {}).get("docker_image")
@@ -843,8 +980,14 @@ class Platform:
             ]
             mounts = [
                 {"host": str(self.root), "container": "/opt/harnesseval", "mode": "ro"},
-                {"host": str(prepared / "input"), "container": "/bridge", "mode": "ro"},
+                {
+                    "host": str(prepared / "input"),
+                    "container": "/bridge",
+                    "mode": "rw" if benchmark.id == "gdpval" else "ro",
+                },
             ]
+            if benchmark.id == "gdpval":
+                adapter["read_only"] = False
             comparability = "unscored_bridge_trajectory"
             scoring_note = "The bridge result must be finalized by the benchmark-native scorer before publication."
         synthetic = Benchmark(
@@ -1181,6 +1324,19 @@ class Platform:
         command.extend(["--label", "orch.benchmark-platform=1", "--label", f"orch.benchmark={benchmark.id}"])
         network = (spec or {}).get("network", adapter.get("network", "none"))
         command.extend(["--network", network])
+        container_api_url = _container_reachable_proxy(os.environ.get("API_URL", ""))
+        egress_env = self._egress_env(network)
+        proxy_urls = [
+            assignment.split("=", 1)[1]
+            for assignment in egress_env[1::2]
+            if assignment.split("=", 1)[0].lower() in {"http_proxy", "https_proxy", "all_proxy"}
+            and assignment.split("=", 1)[1]
+        ]
+        # A local ToolBench-compatible endpoint is hosted outside the benchmark
+        # container. The same translation is used for a host-local outbound proxy. Docker
+        # Desktop provides this name itself; Linux needs the explicit host-gateway mapping.
+        command.extend(docker_host_gateway_flags(network, [container_api_url, *proxy_urls]))
+        command.extend(docker_add_host_flags(network))
         if adapter.get("platform"):
             command.extend(["--platform", adapter["platform"]])
         if adapter.get("read_only", True):
@@ -1188,11 +1344,13 @@ class Platform:
         if not adapter.get("run_as_root", False):
             command.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
         command.extend(["-e", "HOME=/tmp", "-e", "PYTHONUNBUFFERED=1"])
-        command.extend(self._egress_env(network))
+        command.extend(egress_env)
         if working_dir := adapter.get("working_dir"):
             command.extend(["-w", working_dir])
         for name in env_names:
-            command.extend(["-e", name])
+            # localhost in operator-facing configuration means the Docker host, while
+            # localhost inside the benchmark image would mean the image itself.
+            command.extend(["-e", f"API_URL={container_api_url}" if name == "API_URL" else name])
         for host, container, mode in self._validated_mounts([*benchmark.raw.get("mounts", []), *extra_mounts]):
             command.extend(["-v", f"{host}:{container}:{mode}"])
         command.extend(["-v", f"{attempt.resolve()}:/job:rw"])
@@ -1283,6 +1441,7 @@ class Platform:
 
         def controller_command(action: str) -> list[str]:
             command = self._docker("run", "--rm", "--init", "--network", "bridge")
+            command.extend(docker_add_host_flags("bridge"))
             command.extend(self._egress_env("bridge"))
             command.extend(["-v", f"{socket_path}:/var/run/docker.sock:rw"])
             command.extend(["-e", "DOCKER_HOST=unix:///var/run/docker.sock"])
@@ -1328,6 +1487,7 @@ class Platform:
                 create.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.task-container-agent=1"])
                 create.extend(["--platform", public_case["task_image"]["platform"]])
                 create.extend(["--network", "bridge"])
+                create.extend(docker_add_host_flags("bridge"))
                 create.extend(self._egress_env("bridge"))
                 create.extend(
                     [
@@ -1426,13 +1586,19 @@ class Platform:
                         check=False,
                     )
         payload_path = attempt / "payload.json"
-        payload = json.loads(payload_path.read_text(encoding="utf-8")) if payload_path.is_file() else {}
+        payload = (
+            json.loads(payload_path.read_text(encoding="utf-8"))
+            if payload_path.is_file()
+            else {}
+        )
         resolved = payload.get("scores", {}).get("resolved") == 1.0
         result = {
             **request,
             "status": (
                 "completed"
-                if harness_result.get("status") == "completed" and evaluator_returncode == 0 and resolved
+                if harness_result.get("status") == "completed"
+                and evaluator_returncode == 0
+                and resolved
                 else "failed"
             ),
             "finished_at": utc_now(),
@@ -1445,7 +1611,9 @@ class Platform:
         store.finish(attempt, result)
         return result
 
-    def _run_terminal_profile(self, store: CaseStore, benchmark: Benchmark) -> dict[str, Any]:
+    def _run_terminal_profile(
+        self, store: CaseStore, benchmark: Benchmark
+    ) -> dict[str, Any]:
         from .bridges.terminal_episode import run as run_terminal_profile
 
         adapter = benchmark.adapter
@@ -1454,30 +1622,27 @@ class Platform:
             import tomllib
 
             metadata = tomllib.load(stream)
-        prompt = (task_dir / "instruction.md").read_text(encoding="utf-8")
+        settings = terminal_task_settings(metadata)
+        if settings.verifier_mode != "shared":
+            raise RuntimeError(
+                "This Terminal-Bench adapter currently supports Harbor shared verifiers only; "
+                "the task explicitly requests a separate verifier environment"
+            )
+        prompt = self._terminal_agent_prompt(
+            (task_dir / "instruction.md").read_text(encoding="utf-8")
+        )
         image = adapter["image"]
         attempt_number, attempt = store.next_attempt()
         logs = attempt / "verifier"
         workspace = attempt / "workspace"
         logs.mkdir()
-        workspace.mkdir()
         container_name = f"bench-{benchmark.id}-{os.getpid()}-{attempt_number}"
-        create = self._docker("create", "--init", "--name", container_name)
-        create.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.task-container-agent=1"])
-        if platform := adapter.get("platform"):
-            create.extend(["--platform", platform])
-        create.extend(
-            [
-                "--network",
-                "bridge" if adapter.get("allow_internet") else "none",
-                *self._egress_env("bridge" if adapter.get("allow_internet") else "none"),
-                "-w",
-                "/app",
-                image,
-                "sh",
-                "-lc",
-                "while :; do sleep 3600; done",
-            ]
+        create = self._terminal_create_command(
+            benchmark=benchmark,
+            metadata=metadata,
+            image=image,
+            container=container_name,
+            labels=["orch.benchmark-platform=1", "orch.task-container-agent=1"],
         )
         request = {
             "schema_version": 1,
@@ -1493,77 +1658,83 @@ class Platform:
             "profile": adapter["profile"]["id"],
             "policy": adapter["policy"],
             "resume_identity": benchmark.raw["resume_identity"],
+            "agent_timeout_sec": settings.agent_timeout_sec,
+            "verifier_timeout_sec": settings.verifier_timeout_sec,
+            "resource_limits": settings.resource_limits,
+            "verifier_mode": settings.verifier_mode,
         }
         store.start(attempt, request)
         started = time.perf_counter()
-        harness_result: dict[str, Any] = {"status": "failed", "error": "Harness did not start"}
-        verifier_returncode = 1
-        verifier_name: str | None = None
+        harness_result: dict[str, Any] = {
+            "status": "failed",
+            "failure_kind": "task_environment",
+            "error": "Task container did not start",
+        }
+        verifier_result: dict[str, Any] = {
+            "status": "infra_failed",
+            "scores": {},
+            "returncode": 1,
+            "attempts": 0,
+            "termination_reason": "verifier_not_run",
+            "error": "Verifier did not run because the task container was unavailable",
+        }
+        native_workdir: str | None = None
+        container_started = False
         with (attempt / "terminal.log").open("a", encoding="utf-8") as terminal:
             try:
-                created = subprocess.run(create, text=True, capture_output=True, check=False)
-                if created.returncode != 0:
-                    terminal.write(created.stdout)
-                    terminal.write(created.stderr)
-                    terminal.flush()
-                else:
-                    started_container = subprocess.run(
-                        self._docker("start", container_name),
-                        text=True,
-                        capture_output=True,
-                        check=False,
+                created = run_captured(create, timeout_sec=60)
+                terminal.write(created.stdout)
+                terminal.write(created.stderr)
+                if created.returncode == 0:
+                    started_container = run_captured(
+                        self._docker("start", container_name), timeout_sec=60
                     )
-                    if started_container.returncode != 0:
-                        terminal.write(started_container.stdout)
-                        terminal.write(started_container.stderr)
-                        terminal.flush()
-                    else:
-                        harness_result = run_terminal_profile(
-                            profile_id=adapter["profile"]["id"],
-                            prompt=prompt,
-                            policy=adapter["policy"],
-                            container=container_name,
-                            trace_path=attempt / "harness_trace.jsonl",
-                        )
-                        atomic_json(attempt / "harness_result.json", harness_result)
-                    copied = subprocess.run(
-                        self._docker("cp", f"{container_name}:/app/.", str(workspace)),
-                        text=True,
-                        capture_output=True,
-                        check=False,
+                    terminal.write(started_container.stdout)
+                    terminal.write(started_container.stderr)
+                    container_started = started_container.returncode == 0
+                if container_started:
+                    native_workdir = container_workdir(self._docker, container_name)
+                    request["container_workdir"] = native_workdir
+                    atomic_json(attempt / "request.json", request)
+                    harness_result = run_terminal_profile(
+                        profile_id=adapter["profile"]["id"],
+                        prompt=prompt,
+                        policy=adapter["policy"],
+                        container=container_name,
+                        trace_path=attempt / "harness_trace.jsonl",
+                        workspace_root="/",
+                        default_workdir=native_workdir,
+                        timeout_sec=settings.agent_timeout_sec,
+                    )
+                    atomic_json(attempt / "harness_result.json", harness_result)
+                    verifier_result = run_shared_verifier(
+                        docker=self._docker,
+                        container=container_name,
+                        task_dir=task_dir,
+                        logs_dir=logs,
+                        timeout_sec=settings.verifier_timeout_sec,
+                        log=terminal,
+                        prefix=f"[{benchmark.id}:verifier] ",
+                        verifier_env={
+                            str(name): str(value)
+                            for name, value in (
+                                metadata.get("verifier", {}).get("env") or {}
+                            ).items()
+                        },
+                        verifier_user=metadata.get("verifier", {}).get("user"),
+                    )
+                    copied = copy_container_workdir(
+                        docker=self._docker,
+                        container=container_name,
+                        workdir=native_workdir,
+                        destination=workspace,
                     )
                     if copied.returncode != 0:
-                        terminal.write(copied.stdout)
-                        terminal.write(copied.stderr)
-                        terminal.flush()
-                    verifier_name = f"{container_name}-verifier"
-                    verify = self._docker("run", "--rm", "--init", "--name", verifier_name)
-                    verify.extend(["--label", "orch.benchmark-platform=1", "--label", "orch.verifier-only=1"])
-                    if platform := adapter.get("platform"):
-                        verify.extend(["--platform", platform])
-                    verify.extend(self._egress_env("bridge"))
-                    verify.extend(
-                        [
-                            "--network",
-                            "bridge",
-                            "-v",
-                            f"{workspace.resolve()}:/app:rw",
-                            "-v",
-                            f"{task_dir / 'tests'}:/tests:ro",
-                            "-v",
-                            f"{logs.resolve()}:/logs/verifier:rw",
-                            "-w",
-                            "/app",
-                            image,
-                            "bash",
-                            "/tests/test.sh",
-                        ]
-                    )
-                    verifier_returncode = stream_process(
-                        verify,
-                        terminal,
-                        prefix=f"[{benchmark.id}:verifier] ",
-                    )
+                        terminal.write(
+                            f"[{benchmark.id}:artifact] Unable to copy {native_workdir}: "
+                            f"{copied.stderr or copied.stdout}\n"
+                        )
+                terminal.flush()
             except KeyboardInterrupt:
                 result = {
                     **request,
@@ -1573,43 +1744,49 @@ class Platform:
                 }
                 store.finish(attempt, result)
                 raise
+            except Exception as exc:
+                terminal.write(f"{type(exc).__name__}: {exc}\n")
+                terminal.flush()
+                if harness_result.get("error") == "Task container did not start":
+                    harness_result["error"] = f"{type(exc).__name__}: {exc}"
             finally:
-                if verifier_name:
-                    subprocess.run(
-                        self._docker("rm", "-f", verifier_name),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-                subprocess.run(
-                    self._docker("rm", "-f", container_name),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-        reward_path = logs / "reward.txt"
-        reward = reward_path.read_text(encoding="utf-8").strip() if reward_path.is_file() else None
+                self._terminal_remove_container(container_name)
+
         payload = {
-            "scores": {"reward": float(reward)} if reward is not None else {},
+            "scores": verifier_result.get("scores") or {},
+            "native_score_status": verifier_result["status"],
             "verifier": str(logs),
+            "verifier_details": verifier_result,
             "oracle_smoke": False,
         }
         atomic_json(attempt / "payload.json", payload)
+        harness_completed = harness_result.get("status") == "completed"
+        verifier_completed = verifier_result.get("status") == "completed"
+        if not harness_completed:
+            failure_kind = harness_result.get("failure_kind") or "agent_runtime"
+            error = harness_result.get("error")
+        elif not verifier_completed:
+            failure_kind = "verifier_infrastructure"
+            error = verifier_result.get("error")
+        else:
+            failure_kind = None
+            error = None
         result = {
             **request,
-            "status": (
-                "completed"
-                if harness_result.get("status") == "completed"
-                and verifier_returncode == 0
-                and reward == "1"
-                else "failed"
-            ),
+            "status": "completed"
+            if harness_completed and verifier_completed
+            else "failed",
+            "failure_kind": failure_kind,
+            "error": error,
             "finished_at": utc_now(),
             "execution_seconds": time.perf_counter() - started,
-            "returncode": 0 if harness_result.get("status") == "completed" else 1,
-            "verifier_returncode": verifier_returncode,
+            "returncode": int(
+                harness_result.get("returncode", 0 if harness_completed else 1)
+            ),
+            "verifier_returncode": verifier_result.get("returncode", 1),
             "payload": payload,
             "harness": harness_result,
+            "container_workdir": native_workdir,
         }
         store.finish(attempt, result)
         return result
@@ -1623,30 +1800,57 @@ class Platform:
         command_override: list[str] | None,
     ) -> dict[str, Any]:
         adapter = benchmark.adapter
-        task_dir, metadata = self._terminal_metadata(benchmark)
+        # The catalog pins regex-log for discovery/smoke, while a normal suite run names
+        # the actual sibling task in its case id. Reusing the pinned metadata here silently
+        # ran the wrong image and verifier for every generic non-smoke case.
+        task_dir, metadata = self._terminal_metadata(
+            benchmark, None if smoke else store.case_id
+        )
+        settings = terminal_task_settings(metadata)
+        if settings.verifier_mode != "shared":
+            return self._record_blocked(
+                store,
+                benchmark,
+                "Terminal task requests a separate verifier environment, which this adapter does not implement",
+            )
         image = metadata.get("environment", {}).get("docker_image") or adapter["image"]
         if not self.image_exists(image):
-            built = self.build(benchmark)
-            if built["status"] != "completed":
-                return self._record_blocked(store, benchmark, "Terminal task image build failed", extra={"build": built})
+            if metadata.get("environment", {}).get("docker_image"):
+                pulled = run_captured(self._docker("pull", image), timeout_sec=600)
+                built = {
+                    "status": "completed" if pulled.returncode == 0 else "failed",
+                    "returncode": pulled.returncode,
+                    "image": image,
+                    "stderr": pulled.stderr,
+                }
+            else:
+                built = self.build(benchmark)
+            if built["status"] != "completed" or not self.image_exists(image):
+                return self._record_blocked(
+                    store,
+                    benchmark,
+                    "Terminal task image build failed",
+                    extra={"build": built},
+                )
         shell_command = terminal_agent_command(command_override, smoke)
         if shell_command is None:
-            return self._record_blocked(store, benchmark, "Terminal task run requires an agent command after --")
+            return self._record_blocked(
+                store, benchmark, "Terminal task run requires an agent command after --"
+            )
         attempt_number, attempt = store.next_attempt()
         logs = attempt / "verifier"
         workspace = attempt / "workspace"
         logs.mkdir()
-        workspace.mkdir()
         container_name = f"bench-{benchmark.id}-{os.getpid()}-{attempt_number}"
-        create = self._docker("create", "--init", "--name", container_name)
-        create.extend(["--label", "orch.benchmark-platform=1", "--label", f"orch.benchmark={benchmark.id}"])
-        if platform := adapter.get("platform"):
-            create.extend(["--platform", platform])
-        create.extend(["--network", "bridge" if metadata["environment"].get("allow_internet") else "none"])
-        create.extend(self._egress_env("bridge" if metadata["environment"].get("allow_internet") else "none"))
-        if smoke:
-            create.extend(["-v", f"{task_dir / 'solution'}:/solution:ro"])
-        create.extend(["-w", "/app", image, "bash", "-lc", shell_command])
+        extra_flags = ["-v", f"{task_dir / 'solution'}:/solution:ro"] if smoke else []
+        create = self._terminal_create_command(
+            benchmark=benchmark,
+            metadata=metadata,
+            image=image,
+            container=container_name,
+            labels=["orch.benchmark-platform=1", f"orch.benchmark={benchmark.id}"],
+            extra_flags=extra_flags,
+        )
         request = {
             "schema_version": 1,
             "benchmark": benchmark.id,
@@ -1659,77 +1863,99 @@ class Platform:
             "smoke": smoke,
             "environment_names": [],
             "task_name": metadata["task"]["name"],
+            "agent_timeout_sec": settings.agent_timeout_sec,
+            "verifier_timeout_sec": settings.verifier_timeout_sec,
+            "resource_limits": settings.resource_limits,
+            "verifier_mode": settings.verifier_mode,
         }
         store.start(attempt, request)
         started = time.perf_counter()
         agent_returncode = 1
-        verifier_returncode = 1
-        verifier_name: str | None = None
+        agent_timed_out = False
+        container_started = False
+        native_workdir: str | None = None
+        environment_error: str | None = None
+        verifier_result: dict[str, Any] = {
+            "status": "infra_failed",
+            "scores": {},
+            "returncode": 1,
+            "attempts": 0,
+            "termination_reason": "verifier_not_run",
+            "error": "Verifier did not run because the task container was unavailable",
+        }
         with (attempt / "terminal.log").open("a", encoding="utf-8") as terminal:
             try:
-                created = subprocess.run(create, text=True, capture_output=True, check=False)
+                created = run_captured(create, timeout_sec=60)
+                terminal.write(created.stdout)
+                terminal.write(created.stderr)
                 if created.returncode != 0:
-                    terminal.write(created.stdout)
-                    terminal.write(created.stderr)
-                    terminal.flush()
-                else:
-                    agent_returncode = stream_process(
-                        self._docker("start", "-a", container_name),
-                        terminal,
-                        prefix=f"[{benchmark.id}:agent] ",
+                    environment_error = (
+                        created.stderr
+                        or created.stdout
+                        or "Task container creation failed"
                     )
-                    copied = subprocess.run(
-                        self._docker("cp", f"{container_name}:/app/.", str(workspace)),
-                        text=True,
-                        capture_output=True,
-                        check=False,
+                else:
+                    started_container = run_captured(
+                        self._docker("start", container_name), timeout_sec=60
+                    )
+                    terminal.write(started_container.stdout)
+                    terminal.write(started_container.stderr)
+                    container_started = started_container.returncode == 0
+                    if not container_started:
+                        environment_error = (
+                            started_container.stderr
+                            or started_container.stdout
+                            or "Task container start failed"
+                        )
+                if container_started:
+                    native_workdir = container_workdir(self._docker, container_name)
+                    request["container_workdir"] = native_workdir
+                    atomic_json(attempt / "request.json", request)
+                    agent = run_captured(
+                        docker_exec_command(
+                            self._docker,
+                            container_name,
+                            ["bash", "-lc", shell_command],
+                            timeout_sec=settings.agent_timeout_sec,
+                            user=metadata.get("agent", {}).get("user"),
+                        ),
+                        timeout_sec=settings.agent_timeout_sec + 15,
+                    )
+                    agent_returncode = agent.returncode
+                    agent_timed_out = agent.returncode == 124
+                    if agent.stdout:
+                        terminal.write(f"[{benchmark.id}:agent] {agent.stdout}")
+                    if agent.stderr:
+                        terminal.write(f"[{benchmark.id}:agent:stderr] {agent.stderr}")
+                    verifier_result = run_shared_verifier(
+                        docker=self._docker,
+                        container=container_name,
+                        task_dir=task_dir,
+                        logs_dir=logs,
+                        timeout_sec=settings.verifier_timeout_sec,
+                        log=terminal,
+                        prefix=f"[{benchmark.id}:verifier] ",
+                        verifier_env={
+                            str(name): str(value)
+                            for name, value in (
+                                metadata.get("verifier", {}).get("env") or {}
+                            ).items()
+                        },
+                        verifier_user=metadata.get("verifier", {}).get("user"),
+                    )
+                    copied = copy_container_workdir(
+                        docker=self._docker,
+                        container=container_name,
+                        workdir=native_workdir,
+                        destination=workspace,
                     )
                     if copied.returncode != 0:
-                        terminal.write(copied.stdout)
-                        terminal.write(copied.stderr)
-                        terminal.flush()
-                    verifier_name = f"{container_name}-verifier"
-                    verify = self._docker("run", "--rm", "--init", "--name", verifier_name)
-                    verify.extend(["--label", "orch.benchmark-platform=1", "--label", f"orch.benchmark={benchmark.id}"])
-                    if platform := adapter.get("platform"):
-                        verify.extend(["--platform", platform])
-                    verify.extend(self._egress_env("bridge"))
-                    verify.extend(
-                        [
-                            "--network",
-                            "bridge",
-                            "-v",
-                            f"{workspace.resolve()}:/app:rw",
-                            "-v",
-                            f"{task_dir / 'tests'}:/tests:ro",
-                            "-v",
-                            f"{logs.resolve()}:/logs/verifier:rw",
-                            "-w",
-                            "/app",
-                            image,
-                            "bash",
-                            "/tests/test.sh",
-                        ]
-                    )
-                    verifier_returncode = stream_process(
-                        verify,
-                        terminal,
-                        prefix=f"[{benchmark.id}:verifier] ",
-                    )
+                        terminal.write(
+                            f"[{benchmark.id}:artifact] Unable to copy {native_workdir}: "
+                            f"{copied.stderr or copied.stdout}\n"
+                        )
+                terminal.flush()
             except KeyboardInterrupt:
-                if verifier_name:
-                    subprocess.run(
-                        self._docker("rm", "-f", verifier_name),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-                subprocess.run(
-                    self._docker("rm", "-f", container_name),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
                 result = {
                     **request,
                     "status": "cancelled",
@@ -1738,36 +1964,55 @@ class Platform:
                 }
                 store.finish(attempt, result)
                 raise
+            except Exception as exc:
+                environment_error = f"{type(exc).__name__}: {exc}"
+                terminal.write(environment_error + "\n")
+                terminal.flush()
             finally:
-                if verifier_name:
-                    subprocess.run(
-                        self._docker("rm", "-f", verifier_name),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-                subprocess.run(
-                    self._docker("rm", "-f", container_name),
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-        reward_path = logs / "reward.txt"
-        reward = reward_path.read_text(encoding="utf-8").strip() if reward_path.is_file() else None
+                self._terminal_remove_container(container_name)
+
         payload = {
-            "scores": {"reward": float(reward)} if reward is not None else {},
+            "scores": verifier_result.get("scores") or {},
+            "native_score_status": verifier_result["status"],
             "verifier": str(logs),
+            "verifier_details": verifier_result,
             "oracle_smoke": smoke,
         }
         atomic_json(attempt / "payload.json", payload)
+        verifier_completed = verifier_result.get("status") == "completed"
+        if environment_error is not None:
+            failure_kind = "task_environment"
+            error = environment_error
+        elif agent_timed_out:
+            failure_kind = "agent_timeout"
+            error = f"Agent exceeded its {settings.agent_timeout_sec:.1f}s wall-clock timeout"
+        elif agent_returncode != 0:
+            failure_kind = "agent_runtime"
+            error = f"Agent command exited with code {agent_returncode}"
+        elif not verifier_completed:
+            failure_kind = "verifier_infrastructure"
+            error = verifier_result.get("error")
+        else:
+            failure_kind = None
+            error = None
         result = {
             **request,
-            "status": "completed" if agent_returncode == 0 and verifier_returncode == 0 and reward == "1" else "failed",
+            # A valid reward of zero is a completed measurement, not an execution failure.
+            "status": (
+                "completed"
+                if agent_returncode == 0
+                and verifier_completed
+                and environment_error is None
+                else "failed"
+            ),
+            "failure_kind": failure_kind,
+            "error": error,
             "finished_at": utc_now(),
             "execution_seconds": time.perf_counter() - started,
             "returncode": agent_returncode,
-            "verifier_returncode": verifier_returncode,
+            "verifier_returncode": verifier_result.get("returncode", 1),
             "payload": payload,
+            "container_workdir": native_workdir,
         }
         store.finish(attempt, result)
         return result

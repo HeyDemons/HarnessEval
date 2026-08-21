@@ -271,9 +271,16 @@ class EpisodeBroker:
     def metrics(self) -> dict[str, Any]:
         if self.context is None:
             return {}
+        calls = self.context.environment.calls
         return {
             "llm_calls": self.context.llm_calls,
             "prompt_tokens": self.context.prompt_tokens,
             "completion_tokens": self.context.completion_tokens,
-            "tool_calls": len(self.context.environment.calls),
+            # Native user communication is represented as a bridge tool only so an async
+            # paper method can yield to the benchmark-owned simulator. It is not a benchmark
+            # tool call, and the product arm records the same transition as a new turn rather
+            # than in committed_calls. Keep the comparison column symmetric and expose the
+            # communication count separately.
+            "tool_calls": sum(item.get("name") != SEND_MESSAGE_TOOL for item in calls),
+            "user_messages": sum(item.get("name") == SEND_MESSAGE_TOOL for item in calls),
         }

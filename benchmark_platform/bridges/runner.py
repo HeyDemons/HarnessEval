@@ -35,7 +35,17 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             path.chmod(path.stat().st_mode | (0o222 if path.is_file() else 0o333))
     bridge = load_case(benchmark, case_id, case_root)
     environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
-    context = RunContext(profile_id, bridge.prompt, completion_client_from_env(), environment, trace, policy)
+    effective_policy = dict(policy)
+    if benchmark == "bfcl":
+        effective_policy["declaration_only_tools"] = True
+    context = RunContext(
+        profile_id,
+        bridge.prompt,
+        completion_client_from_env(),
+        environment,
+        trace,
+        effective_policy,
+    )
     _write(job / "bridge_manifest.json", {"benchmark": benchmark, "case_id": case_id, "profile": profile_id, "tool_schemas": [tool.prompt_schema() for tool in bridge.tools], "metadata": bridge.metadata})
     started = time.perf_counter()
     try:
@@ -57,18 +67,51 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             "bridge": bridge.metadata,
         }
     except Exception as exc:
-        result = {
-            "schema_version": 1,
-            "status": "failed",
-            "benchmark": benchmark,
-            "case_id": case_id,
-            "profile": profile.id,
-            "execution_seconds": time.perf_counter() - started,
-            "error": f"{type(exc).__name__}: {exc}",
-            "llm_calls": context.llm_calls,
-            "tool_calls": len(environment.calls),
-        }
-        await trace.emit("bridge_error", error=result["error"])
+        error = f"{type(exc).__name__}: {exc}"
+        if benchmark == "bfcl" and environment.calls:
+            # BFCL scores the declared calls themselves. Some multi-turn profiles have a
+            # stricter terminal protocol (for example MemGPT's heartbeat and Magentic-One's
+            # final synthesis) than BFCL's one-response lifecycle. Once a call exists, a
+            # later profile termination error must not erase that measurable prediction.
+            result = {
+                "schema_version": 1,
+                "status": "completed",
+                "benchmark": benchmark,
+                "case_id": case_id,
+                "profile": profile.id,
+                "provenance": profile.provenance,
+                "topology": profile.topology,
+                "final_answer": None,
+                "execution_seconds": time.perf_counter() - started,
+                "llm_calls": context.llm_calls,
+                "tool_calls": len(environment.calls),
+                "prompt_tokens": context.prompt_tokens,
+                "completion_tokens": context.completion_tokens,
+                "bridge": bridge.metadata,
+                "termination": {
+                    "kind": "profile_error_after_calls",
+                    "error": error,
+                },
+            }
+            await trace.emit(
+                "bridge_warning",
+                kind="profile_error_after_calls",
+                error=error,
+                tool_calls=len(environment.calls),
+            )
+        else:
+            result = {
+                "schema_version": 1,
+                "status": "failed",
+                "benchmark": benchmark,
+                "case_id": case_id,
+                "profile": profile.id,
+                "execution_seconds": time.perf_counter() - started,
+                "error": error,
+                "llm_calls": context.llm_calls,
+                "tool_calls": len(environment.calls),
+            }
+            await trace.emit("bridge_error", error=result["error"])
     _write(job / "harness_result.json", result)
     return result
 

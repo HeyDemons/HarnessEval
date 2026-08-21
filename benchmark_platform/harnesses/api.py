@@ -10,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .content import ToolImage
+
 
 @dataclass(frozen=True)
 class ApiConfig:
@@ -67,6 +69,36 @@ class StreamInterrupted(Exception):
     so without this the caller silently records an empty completion as the model's answer.
     It joins the transport-retry budget because that is exactly the transient it is.
     """
+
+
+def _chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate internal image tool results to Chat Completions content parts."""
+    rendered: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            rendered.append(message)
+            continue
+        parts: list[dict[str, Any]] = []
+        changed = False
+        for part in content:
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "image"
+                and isinstance(part.get("image"), ToolImage)
+            ):
+                image = part["image"]
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image.data_uri, "detail": image.detail},
+                    }
+                )
+                changed = True
+            else:
+                parts.append(part)
+        rendered.append({**message, "content": parts} if changed else message)
+    return rendered
 
 
 def _reassemble_stream(response: Any) -> dict[str, Any]:
@@ -176,7 +208,7 @@ class OpenAICompatibleClient:
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         temperature: float | None = None,
         json_mode: bool = False,
@@ -243,17 +275,26 @@ class OpenAICompatibleClient:
     ) -> Completion:
         payload: dict[str, Any] = {
             "model": self.config.model,
-            "messages": messages,
+            "messages": _chat_messages(messages),
             "stream": self.config.stream,
         }
         if self.config.stream:
             payload["stream_options"] = {"include_usage": True}
         # A reasoning model rejects or ignores temperature; the product harness omits it for
-        # the same reason, so a matched control must omit it here too.
+        # the same reason, so a matched control must omit it here too. That applies to the
+        # default, not to a profile that names a temperature itself: dylan passes 1.0 and lats
+        # passes lats_temperature because sampling diversity IS their published mechanism --
+        # DyLAN's agents have nothing to debate if they all answer identically, LATS has
+        # nothing to branch on -- and folding them into the same else-branch silently disabled
+        # the method under HARNESS_REASONING_EFFORT. The two parameters are not exclusive at
+        # the API: gpt-5.6-terra accepted reasoning_effort=high with temperature=1.0 and five
+        # such calls answered Octopus/Octopus/Otter/Elephant/Octopus, so the diversity is real.
         if self.config.reasoning_effort:
             payload["reasoning_effort"] = self.config.reasoning_effort
-        else:
-            payload["temperature"] = self.config.temperature if temperature is None else temperature
+        if temperature is not None:
+            payload["temperature"] = temperature
+        elif not self.config.reasoning_effort:
+            payload["temperature"] = self.config.temperature
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         if tools:

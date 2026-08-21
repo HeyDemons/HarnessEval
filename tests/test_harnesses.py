@@ -88,6 +88,7 @@ class HarnessTests(unittest.TestCase):
             )
             answer = asyncio.run(run_profile(context))
             self.assertTrue(trace.path.read_text(encoding="utf-8"))
+            self.last_client = context.client
             return answer, environment
 
     def test_actor_only_dynamic_tools(self) -> None:
@@ -147,6 +148,124 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "42")
         self.assertEqual([call["name"] for call in environment.calls], ["lookup"])
 
+    def test_react_prompt_reproduces_the_upstream_format_block(self) -> None:
+        """A bare answer stays a protocol error and still costs a turn: the contract is
+        unchanged, so ReAct is no more forgiving than the actor-only control. What was missing
+        is that the contract was never stated. Both upstream sources enumerate the legal
+        actions -- the paper as "Action can be three types: (1) Search[entity] ...
+        (3) Finish[answer]", LangChain's FORMAT_INSTRUCTIONS as "should be one of
+        [{tool_names}]" -- and this profile had replaced the whole block with prose, so
+        gpt-5.6-terra narrated its actions and stated answers with no label."""
+        answer, environment = self.run_profile(
+            "react",
+            [
+                "42",
+                'Thought: get alpha\nAction: lookup\nAction Input: {"key":"alpha"}',
+                "Thought: done\nFinal Answer: 42",
+            ],
+        )
+        self.assertEqual(answer, "42")
+        self.assertEqual([call["name"] for call in environment.calls], ["lookup"])
+
+        # ScriptedClient stores the live message list by reference, so read the final state.
+        conversation = self.last_client.messages[-1]
+        system = conversation[0]["content"]
+        for line in (
+            "Thought: you should always think about what to do",
+            "Action: the action to take, should be one of [lookup, multiply]",
+            "Observation: the result of the action",
+            "Final Answer: the final answer to the original input question",
+        ):
+            self.assertIn(line, system)
+        # The bare "42" was rejected rather than returned, and came back as upstream's message.
+        self.assertIn(
+            "Invalid Format: Missing 'Action:' after 'Thought:'",
+            [message["content"] for message in conversation if message["role"] == "user"],
+        )
+
+    def test_react_action_glued_to_the_action_input_label(self) -> None:
+        """gpt-5.6-terra emits steps with no newline between the labels. Capturing a bare word
+        reads "Action: lookupAction Input: {...}" as the tool "lookupAction" and burns the turn
+        on unknown_tool; upstream's pattern anchors on the label and reads "lookup"."""
+        answer, environment = self.run_profile(
+            "react",
+            [
+                'Thought: get alpha.Action: lookupAction Input: {"key":"alpha"}',
+                "Thought: done\nFinal Answer: 42",
+            ],
+        )
+        self.assertEqual(answer, "42")
+        self.assertEqual([call["name"] for call in environment.calls], ["lookup"])
+
+    def test_react_rejects_a_turn_with_both_action_and_final_answer(self) -> None:
+        answer, environment = self.run_profile(
+            "react",
+            [
+                'Thought: ambiguous\nAction: lookup\nAction Input: {"key":"alpha"}\nFinal Answer: 6',
+                "Thought: done\nFinal Answer: 42",
+            ],
+        )
+        self.assertEqual(answer, "42")
+        self.assertEqual(environment.calls, [])
+
+    def test_magentic_team_is_staffed_from_the_tools_that_exist(self) -> None:
+        """Upstream fills the orchestrator's team from the participants the caller assembled.
+        Hardcoding all four roles sent 19 of 32 terminal-bench dispatches to a web_surfer with
+        no retrieval tool behind it -- two calls at reasoning_effort=high each, for a worker
+        holding the same toolset as everyone else. GAIA keeps the full roster, so its recorded
+        arms stay comparable."""
+        from benchmark_platform.harnesses.paper_methods import _magentic_team
+
+        self.assertEqual(
+            list(_magentic_team({"list_files", "read_file", "run_command", "web_search"})),
+            ["web_surfer", "file_surfer", "coder", "executor"],
+        )
+        self.assertEqual(
+            list(_magentic_team({"read_file", "list_files", "write_file", "run_command"})),
+            ["file_surfer", "coder", "executor"],
+        )
+        # Domain-action benchmarks staff the catch-all alone rather than an empty team.
+        self.assertEqual(list(_magentic_team({"get_order_details", "calculate"})), ["executor"])
+
+    def test_magentic_off_roster_speaker_falls_back_instead_of_killing_the_arm(self) -> None:
+        """A smaller roster makes the model likelier to name the canonical team anyway, and
+        `selected unknown worker` used to end the arm with score None."""
+        answer, environment = self.run_profile(
+            "magentic-one",
+            [
+                "facts",
+                "plan",
+                '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"web_surfer",'
+                '"instruction":"look it up"}',
+                '{"report":"no retrieval tool here"}',
+                '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor",'
+                '"instruction":"finish"}',
+                "42",
+            ],
+        )
+        self.assertEqual(answer, "42")
+
+    def test_planned_profiles_survive_a_step_that_omits_keys(self) -> None:
+        """A planner that omits "tool", names an unplanned step, or writes "$E1.result[0]"
+        used to raise straight out of the arm: status=failed, score=None, the whole baseline
+        lost to a protocol slip that ReAct hands back to the model as a tool error. Each of
+        these plans has to reach its synthesis call instead."""
+        answer, environment = self.run_profile(
+            "llmcompiler",
+            [
+                '{"tasks":[{"id":"1","arguments":{"key":"alpha"}},'
+                '{"id":"2","tool":"lookup","arguments":{"key":"$9.nothing"}},'
+                '{"id":"3","tool":"lookup","arguments":{"key":"$1.result[0]"}}]}',
+                "42",
+            ],
+        )
+        self.assertEqual(answer, "42")
+        self.assertEqual([call["name"] for call in environment.calls], ["lookup", "lookup"])
+
+        # sa speculates best-effort; a predictor that returns no actions list is a miss.
+        answer, _ = self.run_profile("sa", ['{"predicted":"nothing"}', '{"final":"42"}'])
+        self.assertEqual(answer, "42")
+
     def test_plan_execute_uses_agent_executors_for_textual_steps(self) -> None:
         answer, environment = self.run_profile(
             "plan-execute",
@@ -194,8 +313,8 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "alpha is 6")
         self.assertEqual(len(client.messages), 3)
         executor_prompt = client.messages[1][1]["content"]
+        self.assertIn("Original objective: " + context.prompt, executor_prompt)
         self.assertIn("Current objective: retrieve alpha", executor_prompt)
-        self.assertNotIn(context.prompt, executor_prompt)
 
     def test_cmas_parallel_wave(self) -> None:
         answer, environment = self.run_profile(
@@ -366,6 +485,216 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "6")
         self.assertEqual([item["name"] for item in environment.calls], ["lookup"])
 
+    def test_lats_commits_only_the_selected_branch_to_standard_tool_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = ScriptedClient(
+                [
+                    '{"thought":"try alpha","tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"thought":"try beta","tool":"lookup","arguments":{"key":"beta"}}',
+                    '{"score":0.9,"success":false,"feedback":"finish this branch"}',
+                    '{"score":0.1,"success":false,"feedback":"weak branch"}',
+                    '{"thought":"finish from alpha","final":"6"}',
+                    '{"score":1.0,"success":true,"feedback":"complete"}',
+                ]
+            )
+            context = RunContext(
+                "lats",
+                "retrieve alpha",
+                client,
+                environment,
+                trace,
+                {
+                    "lats_iterations": 1,
+                    "lats_generate_samples": 2,
+                    "lats_value_samples": 1,
+                    "lats_rollout_width": 1,
+                    "lats_tree_depth": 2,
+                    "lats_rollout_depth": 2,
+                    "lats_max_parallel": 1,
+                    "lats_max_llm_calls": 6,
+                },
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [
+                json.loads(line)
+                for line in trace.path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(answer, "6")
+        self.assertEqual(
+            [call["arguments"] for call in environment.calls], [{"key": "alpha"}]
+        )
+        self.assertEqual(
+            [event["arguments"] for event in events if event["event"] == "tool_request"],
+            [{"key": "alpha"}],
+        )
+        self.assertEqual(
+            [
+                event["arguments"]
+                for event in events
+                if event["event"] == "lats_tool_request"
+            ],
+            [{"key": "alpha"}, {"key": "beta"}],
+        )
+
+    def test_lats_commits_winning_path_calls_in_trajectory_order(self) -> None:
+        answer, environment = self.run_profile(
+            "lats",
+            [
+                '{"thought":"retrieve alpha","tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"score":0.8,"success":false,"feedback":"continue"}',
+                '{"thought":"retrieve beta","tool":"lookup","arguments":{"key":"beta"}}',
+                '{"score":0.9,"success":false,"feedback":"finish"}',
+                '{"thought":"answer","final":"42"}',
+                '{"score":1.0,"success":true,"feedback":"complete"}',
+            ],
+            policy={
+                "lats_iterations": 1,
+                "lats_generate_samples": 1,
+                "lats_value_samples": 1,
+                "lats_rollout_width": 1,
+                "lats_tree_depth": 3,
+                "lats_rollout_depth": 3,
+                "lats_max_parallel": 1,
+                "lats_max_llm_calls": 6,
+            },
+        )
+        self.assertEqual(answer, "42")
+        self.assertEqual(
+            [call["arguments"] for call in environment.calls],
+            [{"key": "alpha"}, {"key": "beta"}],
+        )
+
+    def test_lats_limits_proposal_parallelism(self) -> None:
+        class ConcurrencyClient:
+            def __init__(self) -> None:
+                self.active = 0
+                self.max_active = 0
+                self.proposals = 0
+
+            async def complete(self, messages, *, temperature=None, json_mode=False):
+                prompt = messages[-1]["content"]
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                if "Generate one next LATS" in prompt:
+                    self.proposals += 1
+                    content = json.dumps(
+                        {"thought": f"candidate {self.proposals}", "final": str(self.proposals)}
+                    )
+                else:
+                    content = '{"score":1.0,"success":true,"feedback":"complete"}'
+                await asyncio.sleep(0.01)
+                self.active -= 1
+                return Completion(
+                    content,
+                    1,
+                    1,
+                    0.01,
+                    0,
+                    {"choices": [{"message": {"content": content}}]},
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ConcurrencyClient()
+            context = RunContext(
+                "lats",
+                "choose an answer",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {
+                    "lats_iterations": 1,
+                    "lats_generate_samples": 5,
+                    "lats_value_samples": 1,
+                    "lats_rollout_width": 1,
+                    "lats_tree_depth": 1,
+                    "lats_rollout_depth": 1,
+                    "lats_max_parallel": 2,
+                    "lats_max_llm_calls": 10,
+                },
+            )
+            asyncio.run(run_profile(context))
+
+        self.assertEqual(client.max_active, 2)
+        self.assertEqual(context.llm_calls, 10)
+
+    def test_lats_reserves_sampling_wave_before_spending_call_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient([])
+            context = RunContext(
+                "lats",
+                "do not start a partial wave",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {
+                    "lats_iterations": 1,
+                    "lats_generate_samples": 2,
+                    "lats_value_samples": 1,
+                    "lats_rollout_width": 1,
+                    "lats_tree_depth": 1,
+                    "lats_rollout_depth": 1,
+                    "lats_max_parallel": 1,
+                    "lats_max_llm_calls": 1,
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError, "no terminal answer within 0/1"):
+                asyncio.run(run_profile(context))
+
+        self.assertEqual(context.llm_calls, 0)
+        self.assertEqual(client.messages, [])
+
+    def test_lats_stops_dispatching_at_the_total_llm_call_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    '{"thought":"alpha","tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"thought":"beta","tool":"lookup","arguments":{"key":"beta"}}',
+                    '{"score":0.8,"success":false,"feedback":"continue"}',
+                    '{"score":0.7,"success":false,"feedback":"continue"}',
+                ]
+            )
+            environment = ToolEnvironment(tool_specs(), trace)
+            context = RunContext(
+                "lats",
+                "stay within budget",
+                client,
+                environment,
+                trace,
+                {
+                    "lats_iterations": 3,
+                    "lats_generate_samples": 2,
+                    "lats_value_samples": 1,
+                    "lats_rollout_width": 1,
+                    "lats_tree_depth": 3,
+                    "lats_rollout_depth": 3,
+                    "lats_max_parallel": 1,
+                    "lats_max_llm_calls": 4,
+                },
+            )
+            with self.assertRaisesRegex(RuntimeError, "no terminal answer within 4/4"):
+                asyncio.run(run_profile(context))
+            events = [
+                json.loads(line)
+                for line in trace.path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(context.llm_calls, 4)
+        self.assertEqual(len(client.messages), 4)
+        self.assertEqual(environment.calls, [])
+        self.assertEqual(
+            len([event for event in events if event["event"] == "llm_request"]), 4
+        )
+        self.assertEqual(
+            len([event for event in events if event["event"] == "lats_budget_exhausted"]),
+            1,
+        )
+
     def test_lats_rejects_non_snapshotable_mutating_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
@@ -401,6 +730,112 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(answer, "6")
         self.assertEqual([item["name"] for item in environment.calls], ["lookup"])
+
+    def test_memgpt_exposes_upstream_heartbeat_schemas(self) -> None:
+        answer, _ = self.run_profile(
+            "memgpt",
+            ['{"thought":"deliver","function":"send_message","arguments":{"message":"done"}}'],
+        )
+        self.assertEqual(answer, "done")
+        system = self.last_client.messages[0][0]["content"]
+        lines = system.splitlines()
+        memory = json.loads(next(line.removeprefix("Memory functions: ") for line in lines if line.startswith("Memory functions: ")))
+        benchmark = json.loads(next(line.removeprefix("Benchmark functions: ") for line in lines if line.startswith("Benchmark functions: ")))
+
+        for name, schema in memory.items():
+            parameters = schema["parameters"]
+            if name in {"send_message", "pause_heartbeats"}:
+                self.assertNotIn("request_heartbeat", parameters["properties"])
+                self.assertNotIn("request_heartbeat", parameters["required"])
+            else:
+                self.assertEqual(parameters["properties"]["request_heartbeat"]["type"], "boolean")
+                self.assertIn("request_heartbeat", parameters["required"])
+        for schema in benchmark:
+            self.assertEqual(schema["parameters"]["properties"]["request_heartbeat"]["type"], "boolean")
+            self.assertIn("request_heartbeat", schema["parameters"]["required"])
+
+    def test_memgpt_declaration_only_tools_keep_schema_and_auto_heartbeat(self) -> None:
+        async def record(arguments):
+            return {
+                "recorded_function_call": "lookup",
+                "arguments": arguments,
+                "declaration_only": True,
+                "execution": "not_run",
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            tool = ToolSpec(
+                "lookup",
+                "lookup",
+                {
+                    "type": "object",
+                    "properties": {"key": {"type": "string"}},
+                    "required": ["key"],
+                    "additionalProperties": False,
+                },
+                (),
+                parallel=True,
+                read_only=True,
+            )
+            environment = ToolEnvironment([tool], trace, {"lookup": record})
+            client = ScriptedClient(
+                [
+                    '{"thought":"record the answer call","function":"lookup",'
+                    '"arguments":{"key":"alpha"}}',
+                    '{"thought":"finish","function":"send_message",'
+                    '"arguments":{"message":"done"}}',
+                ]
+            )
+            context = RunContext(
+                "memgpt",
+                "retrieve alpha",
+                client,
+                environment,
+                trace,
+                {"max_turns": 2, "declaration_only_tools": True},
+            )
+            answer = asyncio.run(run_profile(context))
+
+        self.assertEqual(answer, "done")
+        self.assertEqual(environment.calls[0]["arguments"], {"key": "alpha"})
+        system = client.messages[0][0]["content"]
+        benchmark = json.loads(
+            next(
+                line.removeprefix("Benchmark functions: ")
+                for line in system.splitlines()
+                if line.startswith("Benchmark functions: ")
+            )
+        )
+        parameters = benchmark[0]["parameters"]
+        self.assertNotIn("request_heartbeat", parameters["properties"])
+        self.assertNotIn("request_heartbeat", parameters["required"])
+        self.assertIn("do not add request_heartbeat", system)
+        self.assertIn(
+            "Declaration-only tool call recorded",
+            json.dumps(client.messages[1], ensure_ascii=False),
+        )
+
+    def test_memgpt_pause_heartbeats_does_not_require_immediate_heartbeat_argument(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            context = RunContext(
+                "memgpt",
+                "pause timed heartbeats",
+                ScriptedClient(
+                    ['{"thought":"pause","function":"pause_heartbeats","arguments":{"minutes":5}}']
+                ),
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"max_turns": 1},
+            )
+            with self.assertRaisesRegex(RuntimeError, "yielded without send_message"):
+                asyncio.run(run_profile(context))
+            events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
+
+        function_event = next(event for event in events if event["event"] == "memgpt_function")
+        self.assertEqual(function_event["function"], "pause_heartbeats")
+        self.assertIsNone(function_event["request_heartbeat"])
 
     def test_memgpt_summarizes_only_after_provider_context_error(self) -> None:
         class ContextLimitClient(ScriptedClient):
@@ -446,6 +881,10 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls, [])
 
+    def test_dylan_preserves_complete_open_ended_candidate(self) -> None:
+        answer, _ = self.run_profile("dylan", ["7, 9", "7, 9", "7, 9"])
+        self.assertEqual(answer, "7, 9")
+
     def test_multi_persona_published_single_model_protocol(self) -> None:
         answer, environment = self.run_profile("multi-persona", ["Final answer: 42"])
         self.assertEqual(answer, "Final answer: 42")
@@ -489,6 +928,18 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls[-1]["result"]["result"]["product"], 42)
+
+    def test_llmcompiler_scans_past_incidental_json_for_the_plan(self) -> None:
+        answer, environment = self.run_profile(
+            "llmcompiler",
+            [
+                '{"query":"retrieve alpha"}\n'
+                '{"tasks":[{"id":"1","tool":"lookup","arguments":{"key":"alpha"},"dependencies":[]}]}',
+                "6",
+            ],
+        )
+        self.assertEqual(answer, "6")
+        self.assertEqual([call["name"] for call in environment.calls], ["lookup"])
 
     def test_rewoo_plan_evidence_solver(self) -> None:
         answer, environment = self.run_profile(
@@ -559,6 +1010,48 @@ class HarnessTests(unittest.TestCase):
         self.assertFalse(failures[0]["ok"])
         self.assertEqual(failures[0]["output"]["error"], "unknown_worker")
         self.assertIn("unknown_worker", client.messages[-1][0]["content"])
+
+    def test_rewoo_llm_worker_transforms_interpolated_evidence_for_later_tools(
+        self,
+    ) -> None:
+        answer, environment = self.run_profile(
+            "rewoo",
+            [
+                "\n".join(
+                    [
+                        "Plan: retrieve alpha",
+                        '#E1 = lookup[{"key":"alpha"}]',
+                        "Plan: transform the first result",
+                        "#E2 = LLM[Return the word beta only. The alpha evidence was #E1.value.]",
+                        "Plan: retrieve the transformed key",
+                        '#E3 = lookup[{"key":#E2}]',
+                    ]
+                ),
+                "beta",
+                "42",
+            ],
+        )
+
+        self.assertEqual(answer, "42")
+        self.assertEqual(
+            [call["arguments"] for call in environment.calls],
+            [{"key": "alpha"}, {"key": "beta"}],
+        )
+        self.assertIn(
+            "alpha evidence was 6", self.last_client.messages[1][-1]["content"]
+        )
+        planner_prompt = self.last_client.messages[0][0]["content"]
+        self.assertIn("LLM[plain-text instruction]", planner_prompt)
+        self.assertIn("#E1 = Worker[input]", planner_prompt)
+
+    def test_rewoo_rejects_concatenated_planner_drafts(self) -> None:
+        with self.assertRaisesRegex(ValueError, "expected E2, got E1"):
+            parse_rewoo_plan(
+                "Plan: retrieve alpha\n"
+                '#E1 = lookup[{"key":"alpha"}]\n'
+                "Plan: retrieve beta\n"
+                '#E1 = lookup[{"key":"beta"}]'
+            )
 
     def test_sa_exact_action_cache_hit(self) -> None:
         answer, environment = self.run_profile(

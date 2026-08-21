@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .bfcl import bfcl_single_turn_messages, render_bfcl_prompt
+
 
 def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,9 +195,19 @@ def prepare_bfcl(case_id: str, output: Path) -> None:
             break
     if selected is None:
         raise KeyError(f"BFCL case not found: {case_id}")
-    messages = selected.get("question") or []
-    prompt = json.dumps(messages, ensure_ascii=False)
-    _write(output / "input" / "case.json", {"benchmark": "bfcl", "case_id": case_id, "prompt": prompt, "functions": selected.get("function") or [], "source": source})
+    messages = bfcl_single_turn_messages(selected.get("question"))
+    prompt = render_bfcl_prompt(messages)
+    _write(
+        output / "input" / "case.json",
+        {
+            "benchmark": "bfcl",
+            "case_id": case_id,
+            "prompt": prompt,
+            "messages": messages,
+            "functions": selected.get("function") or [],
+            "source": source,
+        },
+    )
     gold = {key: value for key, value in selected.items() if key not in {"question", "function"}}
     # The official scorer dispatches on the category, which is only recoverable from the
     # filename, and grades against an answer key kept in a sibling directory rather than in

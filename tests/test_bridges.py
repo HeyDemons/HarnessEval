@@ -6,18 +6,30 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
+from benchmark_platform.bridges import base, runner as bridge_runner
 from benchmark_platform.bridges.adapters import load_case
+from benchmark_platform.bridges.bfcl import (
+    noncanonical_schema_types,
+    normalize_bfcl_parameters,
+)
 from benchmark_platform.bridges.episode import NativeTool
 from benchmark_platform.bridges.product_episode import ProductEpisodeBridge
+from benchmark_platform.bridges.product_server import (
+    PRODUCT_WORKSPACE_ROOT,
+    translate_product_workspace_arguments,
+)
 from benchmark_platform.bridges.prepare import _trajectory_source_tools, _trajectory_tool
 from benchmark_platform.bridges.tau_episode import _visible_history as _tau_visible_history
 from benchmark_platform.bridges.vita_episode import _message_text, _visible_history
 from benchmark_platform.bridges.task_product_server import TaskProductBridge
 from benchmark_platform.harnesses.api import Completion
-from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment
+from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment, ToolImage
+from benchmark_platform.harnesses.content import WIRE_IMAGE_MARKER, json_safe, wire_tool_result
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import PROFILES
 
@@ -126,6 +138,157 @@ def make_case(root: Path, benchmark: str) -> None:
 
 
 class BridgeMatrixTests(unittest.TestCase):
+    def test_bfcl_uses_official_type_mapping_and_declaration_only_results(self) -> None:
+        parameters = normalize_bfcl_parameters(
+            {
+                "type": "dict",
+                "properties": {
+                    "anything": {"type": "any"},
+                    "count": {"type": "long"},
+                    "names": {"type": "Array", "items": {"type": "String"}},
+                    "rows": {
+                        "type": "ArrayList",
+                        "items": {
+                            "type": "dict",
+                            "properties": {
+                                "ratio": {"type": "float", "description": "A ratio."}
+                            },
+                        },
+                    },
+                    "title": {"type": "String"},
+                },
+            }
+        )
+
+        self.assertEqual(parameters["type"], "object")
+        self.assertEqual(parameters["properties"]["anything"]["type"], "string")
+        self.assertEqual(parameters["properties"]["count"]["type"], "integer")
+        self.assertEqual(parameters["properties"]["names"]["type"], "array")
+        self.assertEqual(parameters["properties"]["names"]["items"]["type"], "string")
+        ratio = parameters["properties"]["rows"]["items"]["properties"]["ratio"]
+        self.assertEqual(ratio["type"], "number")
+        self.assertEqual(ratio["format"], "float")
+        self.assertIn("This is a float type value.", ratio["description"])
+        self.assertEqual(parameters["properties"]["title"]["type"], "string")
+        self.assertEqual(noncanonical_schema_types(parameters), set())
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            messages = [
+                {"role": "system", "content": "Use only the declared functions."},
+                {"role": "user", "content": "Look up item 7."},
+            ]
+            write_json(
+                root / "case.json",
+                {
+                    "prompt": "legacy JSON prompt must not win",
+                    "messages": messages,
+                    "functions": [
+                        {
+                            "name": "lookup.item",
+                            "description": "look up an item",
+                            "parameters": {
+                                "type": "dict",
+                                "properties": {"id": {"type": "long"}},
+                                "required": ["id"],
+                            },
+                        }
+                    ],
+                },
+            )
+            bridge = load_case("bfcl", "case", root)
+            trace = JsonlTrace(root / "bfcl.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            result = asyncio.run(environment.call("lookup_item", {"id": 7}))
+
+        self.assertNotIn('[[{"role"', bridge.prompt)
+        self.assertIn("Use only the declared functions.", bridge.prompt)
+        self.assertIn("Look up item 7.", bridge.prompt)
+        self.assertEqual(bridge.metadata["messages"], messages)
+        self.assertTrue(result["result"]["declaration_only"])
+        self.assertEqual(result["result"]["execution"], "not_run")
+
+    def test_bfcl_runner_keeps_calls_when_only_profile_termination_fails(self) -> None:
+        messages = [
+            {"role": "system", "content": "Use the declarations exactly."},
+            {"role": "user", "content": "Call lookup_item."},
+        ]
+
+        async def call_then_fail(context):
+            self.assertTrue(context.policy["declaration_only_tools"])
+            await context.environment.call("lookup_item", {"id": "7"})
+            raise RuntimeError("profile terminal protocol was not satisfied")
+
+        async def fail_without_call(context):
+            self.assertTrue(context.policy["declaration_only_tools"])
+            raise RuntimeError("provider failed before a prediction")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            case_root = root / "input"
+            case_root.mkdir()
+            make_case(case_root, "bfcl")
+            case = json.loads((case_root / "case.json").read_text(encoding="utf-8"))
+            case["messages"] = messages
+            write_json(case_root / "case.json", case)
+            environment = {
+                "HARNESS_API_BASE": "http://example.invalid/v1",
+                "HARNESS_API_KEY": "test-key",
+                "HARNESS_MODEL": "test-model",
+            }
+
+            completed_job = root / "completed-job"
+            completed_job.mkdir()
+            with (
+                patch.dict(os.environ, environment),
+                patch.object(bridge_runner, "completion_client_from_env", return_value=object()),
+                patch.object(bridge_runner, "run_profile", new=call_then_fail),
+            ):
+                completed = asyncio.run(
+                    bridge_runner.execute(
+                        "bfcl", "actor-only", "case", case_root, completed_job, {}
+                    )
+                )
+            manifest = json.loads(
+                (completed_job / "bridge_manifest.json").read_text(encoding="utf-8")
+            )
+            events = [
+                json.loads(line)
+                for line in (completed_job / "harness_trace.jsonl")
+                .read_text(encoding="utf-8")
+                .splitlines()
+            ]
+
+            failed_job = root / "failed-job"
+            failed_job.mkdir()
+            with (
+                patch.dict(os.environ, environment),
+                patch.object(bridge_runner, "completion_client_from_env", return_value=object()),
+                patch.object(bridge_runner, "run_profile", new=fail_without_call),
+            ):
+                failed = asyncio.run(
+                    bridge_runner.execute(
+                        "bfcl", "actor-only", "case", case_root, failed_job, {}
+                    )
+                )
+
+        self.assertEqual(completed["status"], "completed")
+        self.assertEqual(completed["tool_calls"], 1)
+        self.assertNotIn("error", completed)
+        self.assertEqual(completed["termination"]["kind"], "profile_error_after_calls")
+        self.assertIn("terminal protocol", completed["termination"]["error"])
+        self.assertEqual(manifest["metadata"]["messages"], messages)
+        self.assertTrue(
+            any(
+                event["event"] == "bridge_warning"
+                and event["kind"] == "profile_error_after_calls"
+                for event in events
+            )
+        )
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(failed["tool_calls"], 0)
+        self.assertIn("provider failed before a prediction", failed["error"])
+
     def test_vita_visible_history_structures_tool_calls_without_runtime_timestamp(self) -> None:
         class ToolCall:
             id = "call-1"
@@ -254,6 +417,68 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertIs(_trajectory_source_tools({"tool_list": underscored}, "case-b"), underscored)
         with self.assertRaises(ValueError):
             _trajectory_source_tools({}, "case-c")
+
+    def test_trajectory_allows_stabletoolbench_empty_key(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"ok": true, "result": "simulated"}'
+
+        observed = {}
+
+        def fake_urlopen(request):
+            observed["url"] = request.full_url
+            observed["payload"] = json.loads(request.data.decode("utf-8"))
+            observed["headers"] = {name.lower(): value for name, value in request.header_items()}
+            return Response()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "trajectory-bench")
+            bridge = load_case("trajectory-bench", "case", root)
+            with patch.dict(os.environ, {"API_URL": "http://host.docker.internal:8080/virtual"}, clear=True), \
+                 patch("benchmark_platform.bridges.adapters.urllib.request.urlopen", fake_urlopen):
+                result = asyncio.run(bridge.handlers[bridge.tools[0].name]({"id": "42"}))
+
+        self.assertEqual(result, {"ok": True, "result": "simulated"})
+        self.assertEqual(observed["url"], "http://host.docker.internal:8080/virtual")
+        self.assertEqual(observed["payload"]["toolbench_key"], "")
+        self.assertEqual(json.loads(observed["payload"]["tool_input"]), {"id": "42"})
+        self.assertNotIn("toolbench_key", observed["headers"])
+
+    def test_trajectory_sends_nonempty_key_in_body_and_header(self) -> None:
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return b'{"ok": true}'
+
+        observed = {}
+
+        def fake_urlopen(request):
+            observed["payload"] = json.loads(request.data.decode("utf-8"))
+            observed["headers"] = {name.lower(): value for name, value in request.header_items()}
+            return Response()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "trajectory-bench")
+            bridge = load_case("trajectory-bench", "case", root)
+            with patch.dict(os.environ, {"API_URL": "https://tools.example/virtual", "TOOLBENCH_KEY": "secret"}, clear=True), \
+                 patch("benchmark_platform.bridges.adapters.urllib.request.urlopen", fake_urlopen):
+                asyncio.run(bridge.handlers[bridge.tools[0].name]({"id": "42"}))
+
+        self.assertEqual(observed["payload"]["toolbench_key"], "secret")
+        self.assertEqual(observed["headers"]["toolbench_key"], "secret")
 
     def test_product_episode_rendezvous_and_speculation_gate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -456,7 +681,52 @@ class BridgeMatrixTests(unittest.TestCase):
             self.assertIn("run_command", [tool.name for tool in gdp.tools])
             self.assertIn("web_search", [tool.name for tool in gdp.tools])
 
-    def test_workspace_command_returns_complete_output_without_api_secret(self) -> None:
+    def test_workspace_list_files_matches_complete_relative_globs(self) -> None:
+        async def listed(root: Path, arguments: dict) -> list[str]:
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "list-files.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            result = await environment.call("list_files", arguments)
+            self.assertTrue(result["ok"])
+            return result["result"]["files"]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            workspace = root / "workspace"
+            (workspace / "root.json").write_text("{}", encoding="utf-8")
+            (workspace / "nested").mkdir()
+            (workspace / "nested" / "child.json").write_text("{}", encoding="utf-8")
+
+            recursive = asyncio.run(listed(root, {}))
+            double_star = asyncio.run(listed(root, {"pattern": "**/*"}))
+            nested_json = asyncio.run(listed(root, {"pattern": "nested/*.json"}))
+
+        self.assertIn("root.json", recursive)
+        self.assertIn("nested/child.json", recursive)
+        self.assertIn("root.json", double_star)
+        self.assertIn("nested/child.json", double_star)
+        self.assertEqual(nested_json, ["nested/child.json"])
+
+    def test_product_workspace_absolute_paths_are_translated_to_bridge_relative_paths(self) -> None:
+        self.assertEqual(
+            translate_product_workspace_arguments(
+                "run_command", {"argv": ["pwd"], "cwd": PRODUCT_WORKSPACE_ROOT}
+            ),
+            {"argv": ["pwd"], "cwd": "."},
+        )
+        self.assertEqual(
+            translate_product_workspace_arguments(
+                "read_file", {"path": PRODUCT_WORKSPACE_ROOT + "/nested/evidence.txt"}
+            ),
+            {"path": "nested/evidence.txt"},
+        )
+        self.assertEqual(
+            translate_product_workspace_arguments("read_file", {"path": "/tmp/evidence.txt"}),
+            {"path": "/tmp/evidence.txt"},
+        )
+
+    def test_workspace_command_middle_truncates_long_output_without_losing_its_tail(self) -> None:
         async def exercise(root: Path):
             bridge = load_case("gaia", "case", root)
             trace = JsonlTrace(root / "command.jsonl")
@@ -486,8 +756,206 @@ class BridgeMatrixTests(unittest.TestCase):
                     os.environ["HARNESS_API_KEY"] = previous
             self.assertTrue(result["ok"])
             stdout = result["result"]["stdout"]
-            self.assertTrue(stdout.startswith("x" * 200000))
-            self.assertTrue(stdout.rstrip().endswith("absent"))
+            self.assertLess(len(stdout), 200000)
+            self.assertIn("<START_TOOL_OUTPUT>", stdout)
+            self.assertIn("<END_TOOL_OUTPUT>", stdout)
+            self.assertTrue(stdout.startswith("The stdout of your command was too long"))
+            self.assertIn("x" * 100, stdout)
+            self.assertIn("absent", stdout)
+            self.assertTrue(stdout.endswith("<END_TOOL_OUTPUT>"))
+
+    def test_workspace_read_file_middle_truncates_large_utf8_content(self) -> None:
+        async def exercise(root: Path):
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "large-file.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            return await environment.call("read_file", {"path": "large.txt"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            (root / "workspace" / "large.txt").write_text(
+                "BEGIN" + "x" * 100_000 + "END", encoding="utf-8"
+            )
+            result = asyncio.run(exercise(root))
+
+        text = result["result"]["text"]
+        self.assertLess(len(text), 100_008)
+        self.assertIn("<START_TOOL_OUTPUT>", text)
+        self.assertIn("BEGIN", text)
+        self.assertIn("END", text)
+
+    def test_memgpt_next_request_does_not_embed_an_unbounded_command_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "memgpt-large-command.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            client = RecordingClient(
+                [
+                    json.dumps(
+                        {
+                            "thought": "inspect a large source",
+                            "function": "run_command",
+                            "arguments": {
+                                "argv": [sys.executable, "-c", "print('x' * 100000)"],
+                                "request_heartbeat": True,
+                            },
+                        }
+                    ),
+                    '{"thought":"deliver","function":"send_message","arguments":{"message":"done"}}',
+                ]
+            )
+            context = RunContext(
+                "memgpt", bridge.prompt, client, environment, trace, {"max_turns": 2}
+            )
+            answer = asyncio.run(run_profile(context))
+
+        next_request = json.dumps(client.requests[1], ensure_ascii=False)
+        self.assertEqual(answer, "done")
+        self.assertLess(len(next_request), 100_000)
+        self.assertIn("<START_TOOL_OUTPUT>", next_request)
+        self.assertIn("<END_TOOL_OUTPUT>", next_request)
+
+    def test_workspace_command_inherits_the_proxy_but_still_not_a_secret(self) -> None:
+        """The container's only route out is the proxy the host injects, and stripping it made
+        GAIA look like it had no network: web_search kept the harness process's own environment
+        and worked, while every run_command fetch died with "Network is unreachable". The
+        allowlist has to carry the proxy and still withhold credentials."""
+
+        async def exercise(root: Path):
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "proxy.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            return await environment.call(
+                "run_command",
+                {
+                    "argv": [
+                        sys.executable,
+                        "-c",
+                        "import os; print(os.getenv('https_proxy', 'absent')); "
+                        "print(os.getenv('HARNESS_API_KEY', 'absent'))",
+                    ]
+                },
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            previous = {name: os.environ.get(name) for name in ("https_proxy", "HARNESS_API_KEY")}
+            os.environ["https_proxy"] = "http://10.0.2.2:7890"
+            os.environ["HARNESS_API_KEY"] = "not-for-command-tools"
+            try:
+                result = asyncio.run(exercise(root))
+            finally:
+                for name, value in previous.items():
+                    if value is None:
+                        os.environ.pop(name, None)
+                    else:
+                        os.environ[name] = value
+            self.assertTrue(result["ok"])
+            self.assertEqual(
+                result["result"]["stdout"].split(), ["http://10.0.2.2:7890", "absent"]
+            )
+
+    def test_workspace_command_that_hangs_is_bounded_and_reaped(self) -> None:
+        """An unbounded command can eat a whole episode: one GAIA case spent 1678s on curls
+        that never resolved and was cancelled with no score. The timeout has to reach the
+        grandchild too, since the model reaches the network through a shell."""
+
+        async def exercise(root: Path):
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "timeout.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            marker = root / "workspace" / "grandchild-still-running"
+            argv = [
+                "bash",
+                "-c",
+                f"({sys.executable} -c \"import time; time.sleep(30); open({str(marker)!r},'w')\" &) ; sleep 30",
+            ]
+            return await environment.call("run_command", {"argv": argv}), marker
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            previous = base.COMMAND_TIMEOUT_S
+            base.COMMAND_TIMEOUT_S = 1.0
+            try:
+                started = time.monotonic()
+                result, marker = asyncio.run(exercise(root))
+                elapsed = time.monotonic() - started
+            finally:
+                base.COMMAND_TIMEOUT_S = previous
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["error"], "command_timeout")
+            self.assertEqual(result["timeout_seconds"], 1.0)
+            # Same keys as command_failed: a reference-resolving profile must not hit a
+            # KeyError just because the command timed out instead of exiting nonzero.
+            self.assertEqual(result["stdout"], "")
+            self.assertIn("killed", result["stderr"])
+            self.assertLess(elapsed, 20)
+            time.sleep(1.0)
+            self.assertFalse(marker.exists(), "the backgrounded grandchild outlived the kill")
+
+    def test_workspace_image_is_structured_content_and_trace_stays_small(self) -> None:
+        async def exercise(root: Path):
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "image.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            result = await environment.call("read_file", {"path": "evidence.jpg"})
+            client = RecordingClient(["done"])
+            context = RunContext("react", bridge.prompt, client, environment, trace, {})
+            await context.complete("image_followup", [{"role": "user", "content": "Inspect it"}])
+            return result, client.requests, trace.path
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            payload = b"\xff\xd8\xff" + b"image-bytes" * 1000
+            (root / "workspace" / "evidence.jpg").write_bytes(payload)
+            result, requests, trace_path = asyncio.run(exercise(root))
+
+            image = result["result"]["image"]
+            self.assertIsInstance(image, ToolImage)
+            self.assertEqual(image.data, payload)
+            self.assertNotIn("content", result["result"])
+            self.assertNotIn("base64", json.dumps(result, ensure_ascii=False))
+            content = requests[0][-1]["content"]
+            self.assertIsInstance(content, list)
+            self.assertIs(content[-1]["image"], image)
+            self.assertLess(trace_path.stat().st_size, 5000)
+            self.assertNotIn("image-bytes", trace_path.read_text(encoding="utf-8"))
+
+    def test_product_image_wire_encoding_is_confined_to_the_response_payload(self) -> None:
+        image = ToolImage("image/png", b"\x89PNG\r\n")
+        result = {"ok": True, "result": {"path": "figure.png", "image": image}}
+
+        encoded = wire_tool_result(result)
+        wire_image = encoded["result"]["image"]
+        self.assertEqual(wire_image["type"], "image")
+        self.assertEqual(wire_image["bytes"], len(image.data))
+        self.assertEqual(wire_image[WIRE_IMAGE_MARKER]["mime_type"], "image/png")
+        self.assertEqual(wire_image[WIRE_IMAGE_MARKER]["data"], "iVBORw0K")
+        self.assertNotIn(WIRE_IMAGE_MARKER, json.dumps(json_safe(result)))
+        self.assertNotIn("iVBORw0K", json.dumps(json_safe(result)))
+
+    def test_workspace_non_image_binary_is_never_inlined(self) -> None:
+        async def exercise(root: Path):
+            bridge = load_case("gaia", "case", root)
+            trace = JsonlTrace(root / "binary.jsonl")
+            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+            return await environment.call("read_file", {"path": "archive.bin"})
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            make_case(root, "gaia")
+            (root / "workspace" / "archive.bin").write_bytes(b"\x00\xff" * 1000)
+            result = asyncio.run(exercise(root))["result"]
+            self.assertTrue(result["binary"])
+            self.assertEqual(result["bytes"], 2000)
+            self.assertNotIn("content", result)
+            self.assertNotIn("base64", json.dumps(result, ensure_ascii=False))
 
     def test_workspace_command_exposes_nonzero_exit_as_tool_failure(self) -> None:
         async def exercise(root: Path):

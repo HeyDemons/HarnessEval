@@ -322,6 +322,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         "duration": simulation.duration,
         "messages": len(simulation.messages),
         "native_reward": native_reward,
+        "native_score": native_reward.get("reward") if native_reward is not None else None,
         "native_score_status": "completed" if native_reward is not None else "not_requested",
         "simulation": simulation.model_dump(mode="json"),
         **broker_metrics,

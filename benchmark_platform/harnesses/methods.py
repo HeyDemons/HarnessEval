@@ -5,7 +5,7 @@ import json
 import re
 from typing import Any
 
-from .core import RunContext, extract_json
+from .core import RunContext, extract_json, json_safe, tool_result_content
 
 
 ACTION_SYSTEM = """You are a tool-using agent. Work only from the task and complete tool observations.
@@ -59,19 +59,38 @@ async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = No
         messages.extend(
             [
                 {"role": "assistant", "content": canonical_action},
-                {"role": "user", "content": "Observation: " + json.dumps(result, ensure_ascii=False)},
+                {"role": "user", "content": tool_result_content(result)},
             ]
         )
     raise RuntimeError("Agent-loop turn budget exhausted without a final answer")
 
 
+# Upstream anchors the tool name on the literal "Action Input" label
+# (langchain_classic/agents/output_parsers/react_single_input.py), so it reads
+# "Action: web_searchAction Input: {...}" -- a step the model emitted with no newline between
+# the two labels -- as the tool "web_search". This profile's own pattern captured a bare word
+# and got "web_searchAction", an unknown tool, five times across one GAIA sweep. Prefer
+# upstream's shape and keep the bare-word pattern as the fallback this profile added for
+# models that omit the label entirely (see the comment in _parse_react).
+LABELLED_ACTION = re.compile(
+    r"Action\s*\d*\s*:[\s]*(.*?)[\s]*Action\s*\d*\s*Input\s*\d*\s*:", flags=re.IGNORECASE | re.DOTALL
+)
+BARE_ACTION = re.compile(r"Action\s*:\s*([\w.-]+)", flags=re.IGNORECASE)
+
+
 def _parse_react(text: str) -> dict[str, Any]:
     final = re.search(r"Final Answer\s*:\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
-    action = re.search(r"Action\s*:\s*([\w.-]+)", text, flags=re.IGNORECASE)
-    if final and (action is None or final.start() < action.start()):
+    action = LABELLED_ACTION.search(text) or BARE_ACTION.search(text)
+    if final and action:
+        # LangChain's ReActSingleInputOutputParser rejects an output containing both
+        # signals. Executing the action or accepting the answer would each silently choose
+        # one half of an ambiguous turn the published parser sends back for repair.
+        raise ValueError("Parsing LLM output produced both a final answer and a parse-able action")
+    if final:
         return {"final": final.group(1).strip()}
     if not action:
-        raise ValueError("Response is neither a ReAct action nor a final answer")
+        # Upstream's wording for this exact case, MISSING_ACTION_AFTER_THOUGHT_ERROR_MESSAGE.
+        raise ValueError("Invalid Format: Missing 'Action:' after 'Thought:'")
     # The arguments are the first JSON object after the action name. The literal
     # "Action Input:" label the parser used to demand is only described in prose by the
     # system prompt, so a model that names the tool and then emits its JSON has followed
@@ -87,7 +106,9 @@ def _parse_react(text: str) -> dict[str, Any]:
             arguments, _ = decoder.raw_decode(tail[start:])
         except json.JSONDecodeError:
             continue
-        return {"tool": action.group(1), "arguments": arguments}
+        # Upstream strips the captured name the same way; the labelled pattern can span a
+        # newline between the two labels.
+        return {"tool": action.group(1).strip(), "arguments": arguments}
     raise ValueError("ReAct action names a tool but supplies no JSON action input")
 
 
@@ -96,9 +117,32 @@ async def run_react(ctx: RunContext) -> str:
         {
             "role": "system",
             "content": (
+                # The opening line follows the ReAct paper's own instruction (ysymyth/ReAct,
+                # hotpotqa.ipynb): "Solve a question answering task with interleaving Thought,
+                # Action, Observation steps." The format block is LangChain's ReAct
+                # FORMAT_INSTRUCTIONS (langchain_classic/agents/mrkl/prompt.py), which is where
+                # this profile's Action / Action Input / Final Answer labels come from -- the
+                # paper itself ends with the action Finish[answer] and has no such labels.
+                #
+                # Both sources enumerate the legal actions: the paper as "Action can be three
+                # types: (1) Search[entity] ... (3) Finish[answer]", LangChain as "should be one
+                # of [{tool_names}]". This profile was the only place that dropped that clause
+                # and described the protocol in prose instead, and gpt-5.6-terra read the prose
+                # as licence to narrate ("Action: Search the exact title.") and to state answers
+                # with no Final Answer label -- on GAIA it emitted the exact gold string bare for
+                # 15 consecutive turns and lost the episode. Restoring the upstream wording
+                # changes no parser behaviour: a turn spent off-protocol is still a turn.
                 "Solve the task by interleaving Thought, Action, and Observation, as in ReAct.\n"
                 f"Available tools: {ctx.environment.schema}\n"
-                "For a tool turn emit Thought, Action, and JSON Action Input. When complete emit Thought and Final Answer. "
+                "Use the following format:\n"
+                "Question: the input question you must answer\n"
+                "Thought: you should always think about what to do\n"
+                f"Action: the action to take, should be one of [{', '.join(ctx.environment.names)}]\n"
+                "Action Input: the input to the action, as one JSON object\n"
+                "Observation: the result of the action\n"
+                "... (this Thought/Action/Action Input/Observation can repeat N times)\n"
+                "Thought: I now know the final answer\n"
+                "Final Answer: the final answer to the original input question\n"
                 "Never invent an observation."
             ),
         },
@@ -112,7 +156,11 @@ async def run_react(ctx: RunContext) -> str:
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": f"Protocol error: {exc}. Emit one complete ReAct step."},
+                    # Upstream sends the parse error straight back as the next observation and
+                    # relies on the format block, which is in the system message every turn, to
+                    # say what the shape should have been. Restating it here would be this
+                    # profile inventing coaching the reproduction does not have.
+                    {"role": "user", "content": str(exc)},
                 ]
             )
             continue
@@ -122,7 +170,7 @@ async def run_react(ctx: RunContext) -> str:
         messages.extend(
             [
                 {"role": "assistant", "content": raw},
-                {"role": "user", "content": "Observation: " + json.dumps(result, ensure_ascii=False)},
+                {"role": "user", "content": tool_result_content(result)},
             ]
         )
     raise RuntimeError("ReAct turn budget exhausted without a final answer")
@@ -170,6 +218,7 @@ async def run_plan_execute(ctx: RunContext) -> str:
             ctx,
             f"executor_{step_id}",
             prompt=(
+                f"Original objective: {ctx.prompt}\n\n"
                 f"Previous steps: {json.dumps(completed, ensure_ascii=False)}\n\n"
                 f"Current objective: {instruction}"
             ),
@@ -231,7 +280,7 @@ async def run_cmas(ctx: RunContext) -> str:
                 "role": "user",
                 "content": (
                     "Synthesize the independent worker reports into the answer.\n"
-                    f"Task: {ctx.prompt}\nReports: {json.dumps(reports, ensure_ascii=False)}\n"
+                    f"Task: {ctx.prompt}\nReports: {json.dumps(json_safe(reports), ensure_ascii=False)}\n"
                     'Return JSON only: {"final":"answer"}'
                 ),
             }
