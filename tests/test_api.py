@@ -33,6 +33,11 @@ class _Response:
         return self.body
 
 
+class _RawResponse(_Response):
+    def __init__(self, body: bytes):
+        self.body = body
+
+
 class NativeTransportTests(unittest.TestCase):
     def test_tool_image_is_sent_as_multimodal_content_not_base64_text(self) -> None:
         observed = {}
@@ -149,6 +154,29 @@ class NativeTransportTests(unittest.TestCase):
             patch("benchmark_platform.harnesses.api.time.sleep") as sleep,
         ):
             completion = asyncio.run(client.complete_native([{"role": "user", "content": "test"}]))
+
+        self.assertEqual(completion.content, "done")
+        self.assertEqual(completion.transport_retries, 1)
+        self.assertEqual(urlopen.call_count, 2)
+        sleep.assert_called_once_with(1)
+
+    def test_empty_json_response_uses_transport_retry_budget(self) -> None:
+        client = OpenAICompatibleClient(
+            ApiConfig("https://example.invalid/v1", "secret", "model", transport_retries=1)
+        )
+        response = _Response(
+            {
+                "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        )
+        with (
+            patch("urllib.request.urlopen", side_effect=[_RawResponse(b""), response]) as urlopen,
+            patch("benchmark_platform.harnesses.api.time.sleep") as sleep,
+        ):
+            completion = asyncio.run(
+                client.complete_native([{"role": "user", "content": "test"}])
+            )
 
         self.assertEqual(completion.content, "done")
         self.assertEqual(completion.transport_retries, 1)

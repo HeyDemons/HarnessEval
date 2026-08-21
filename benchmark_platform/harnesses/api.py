@@ -366,6 +366,7 @@ class OpenAICompatibleClient:
                 http.client.HTTPException,
                 ConnectionError,
                 StreamInterrupted,
+                json.JSONDecodeError,
             ) as exc:
                 if retries >= self.config.transport_retries:
                     raise ProviderError(
@@ -586,6 +587,7 @@ class AnthropicMessagesClient:
             try:
                 with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                     body = response.read()
+                raw = json.loads(body.decode("utf-8"))
                 break
             except urllib.error.HTTPError as exc:
                 try:
@@ -606,7 +608,13 @@ class AnthropicMessagesClient:
                         kind="http",
                         status_code=exc.code,
                     ) from exc
-            except (TimeoutError, urllib.error.URLError, http.client.HTTPException, ConnectionError) as exc:
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                ConnectionError,
+                json.JSONDecodeError,
+            ) as exc:
                 if retries >= self.config.transport_retries:
                     raise ProviderError(
                         f"API transport failed after {retries} retries: {type(exc).__name__}: {exc}",
@@ -615,7 +623,6 @@ class AnthropicMessagesClient:
             retries += 1
             time.sleep(2 ** (retries - 1))
 
-        raw = json.loads(body.decode("utf-8"))
         text_parts: list[str] = []
         tool_calls: list[dict[str, Any]] = []
         for block in raw.get("content") or []:
