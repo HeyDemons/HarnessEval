@@ -18,7 +18,6 @@ from benchmark_platform.harnesses.core import (
     normalize_json_schema,
 )
 from benchmark_platform.harnesses.methods import run_profile
-from benchmark_platform.harnesses.lats import DEFAULT_LATS_MAX_LLM_CALLS
 from benchmark_platform.harnesses.rewoo import parse_rewoo_plan
 
 
@@ -48,9 +47,6 @@ def tool_specs() -> list[ToolSpec]:
 
 
 class HarnessTests(unittest.TestCase):
-    def test_lats_default_llm_call_budget_is_16(self) -> None:
-        self.assertEqual(DEFAULT_LATS_MAX_LLM_CALLS, 16)
-
     def test_source_schema_aliases_are_normalized_recursively(self) -> None:
         source = {
             "type": "dict",

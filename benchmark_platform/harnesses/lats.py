@@ -9,9 +9,6 @@ from typing import Any
 from .core import RunContext, extract_json
 
 
-DEFAULT_LATS_MAX_LLM_CALLS = 16
-
-
 class _LatsBudgetExhausted(RuntimeError):
     pass
 
@@ -404,9 +401,7 @@ async def run_lats(ctx: RunContext) -> str:
     reflection_limit = int(ctx.policy.get("lats_reflection_limit", 3))
     temperature = float(ctx.policy.get("lats_temperature", 1.0))
     max_parallel = int(ctx.policy.get("lats_max_parallel", 1))
-    max_llm_calls = int(
-        ctx.policy.get("lats_max_llm_calls", DEFAULT_LATS_MAX_LLM_CALLS)
-    )
+    max_llm_calls = int(ctx.policy.get("lats_max_llm_calls", 16))
     if min(
         iterations,
         generate_samples,
