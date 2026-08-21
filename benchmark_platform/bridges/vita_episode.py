@@ -146,7 +146,8 @@ def _patch_vita_generation(client: CompletionClient) -> None:
             for item in formatted
             if item.get("role") in {"system", "user", "assistant"}
         ]
-        completion = asyncio.run(client.complete(compatible, temperature=kwargs.get("temperature")))
+        # Same reasoning as tau_episode: this hook is synchronous and already off the loop.
+        completion = client.complete_sync(compatible, temperature=kwargs.get("temperature"))
         return AssistantMessage(
             role="assistant",
             content=completion.content,
@@ -321,6 +322,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         "duration": simulation.duration,
         "messages": len(simulation.messages),
         "native_reward": native_reward,
+        "native_score": native_reward.get("reward") if native_reward is not None else None,
         "native_score_status": "completed" if native_reward is not None else "not_requested",
         "simulation": simulation.model_dump(mode="json"),
         **broker_metrics,

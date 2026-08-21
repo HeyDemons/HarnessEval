@@ -41,6 +41,38 @@ the unbiased VitaBench-60, and representative tau2, BFCL, and Terminal-Bench 2
 subsets. Exact denominators, scoring limits, and selection integrity rules are
 in [the evaluation suite specification](docs/EVALUATION_SUITES.md).
 
+The repository-level matrix runner accepts every ready non-SWE light suite. Run a
+server preflight before spending model tokens:
+
+```bash
+python3 scripts/run_bench.py --benchmark vitabench --preflight
+python3 scripts/run_bench.py --benchmark trajectory-bench --preflight
+python3 scripts/run_bench.py --benchmark bfcl --preflight
+
+python3 scripts/run_bench.py --benchmark vitabench --limit 3 --methods react,perseus
+python3 scripts/run_bench.py --benchmark bfcl --limit 3 --methods react,perseus
+```
+
+TRAJECT requires a ToolBench-compatible execution endpoint in `API_URL`.
+`TOOLBENCH_KEY` is optional: it is sent in both the JSON body and request header when
+set, while StableToolBench MirrorAPI supports the documented empty key. For a
+StableToolBench service running on the same server as Docker, use
+`API_URL=http://localhost:<port>/virtual`; the runner translates host loopback to
+`host.docker.internal` inside benchmark containers and adds Docker's `host-gateway`
+mapping on Linux. The explicit `host.docker.internal` form is also accepted. For a
+remote or protected endpoint, set its full URL and a non-empty `TOOLBENCH_KEY`.
+
+```bash
+export API_URL=http://localhost:8080/virtual
+export TOOLBENCH_KEY=
+python3 scripts/run_bench.py --benchmark trajectory-bench --preflight
+```
+
+GDPval scores are independent model-rubric proxy scores, consistent with its catalog
+comparability claim; they are not represented as expert pairwise grades. The BFCL light
+suite is limited to the 13 independently scoreable single-turn categories; stateful
+multi-turn, memory, and web-search categories remain full-suite work.
+
 ## Install
 
 Requirements are Python 3.11+, Docker, and Git.

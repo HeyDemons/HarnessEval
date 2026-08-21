@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from .bfcl import bfcl_single_turn_messages, render_bfcl_prompt
+
 
 def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,7 +183,10 @@ def prepare_bfcl(case_id: str, output: Path) -> None:
     root = Path("/opt/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data")
     selected = None
     source = None
-    for path in sorted(root.rglob("*.json")):
+    # Only the top-level category files hold cases. possible_answer/ mirrors their filenames
+    # and its records carry the same "id", so rglob let a gold record masquerade as the case
+    # itself -- it only ever picked the right one because "B" sorts before "p".
+    for path in sorted(root.glob("BFCL_v4_*.json")):
         for record in _records(path):
             if str(record.get("id")) == case_id:
                 selected, source = record, path.name
@@ -190,10 +195,32 @@ def prepare_bfcl(case_id: str, output: Path) -> None:
             break
     if selected is None:
         raise KeyError(f"BFCL case not found: {case_id}")
-    messages = selected.get("question") or []
-    prompt = json.dumps(messages, ensure_ascii=False)
-    _write(output / "input" / "case.json", {"benchmark": "bfcl", "case_id": case_id, "prompt": prompt, "functions": selected.get("function") or [], "source": source})
-    _write(output / "authority" / "gold.json", {key: value for key, value in selected.items() if key not in {"question", "function"}})
+    messages = bfcl_single_turn_messages(selected.get("question"))
+    prompt = render_bfcl_prompt(messages)
+    _write(
+        output / "input" / "case.json",
+        {
+            "benchmark": "bfcl",
+            "case_id": case_id,
+            "prompt": prompt,
+            "messages": messages,
+            "functions": selected.get("function") or [],
+            "source": source,
+        },
+    )
+    gold = {key: value for key, value in selected.items() if key not in {"question", "function"}}
+    # The official scorer dispatches on the category, which is only recoverable from the
+    # filename, and grades against an answer key kept in a sibling directory rather than in
+    # the case record. Without both, every category except the relevance ones is unscorable
+    # -- which is exactly the state this bridge shipped in.
+    gold["test_category"] = source[len("BFCL_v4_"):-len(".json")]
+    answers = root / "possible_answer" / source
+    if answers.is_file():
+        for record in _records(answers):
+            if str(record.get("id")) == case_id:
+                gold.update({key: value for key, value in record.items() if key != "id"})
+                break
+    _write(output / "authority" / "gold.json", gold)
 
 
 def main() -> None:

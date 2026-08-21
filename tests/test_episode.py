@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import queue
+import threading
+import time
 import subprocess
 import sys
 import tempfile
@@ -8,7 +12,8 @@ import textwrap
 import unittest
 from enum import Enum
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -120,6 +125,9 @@ class EpisodeBrokerTests(unittest.TestCase):
                                 broker.next_wave()
                             continue
                         result = broker.next_wave()
+                        if profile.id == "memgpt":
+                            self.assertEqual([item.name for item in result], [SEND_MESSAGE_TOOL])
+                            continue
                         self.assertIsInstance(result, FinalResponse)
                         transcript = json.dumps(client.requests, ensure_ascii=False)
                         if profile.tool_contract == "no-external-tools":
@@ -191,6 +199,46 @@ class EpisodeBrokerTests(unittest.TestCase):
             result = broker.next_wave(user_message="B")
             self.assertIsInstance(result, FinalResponse)
             self.assertEqual(result.answer, "Option B")
+            self.assertEqual(broker.metrics()["tool_calls"], 0)
+            self.assertEqual(broker.metrics()["user_messages"], 1)
+
+    def test_memgpt_user_reply_preserves_internal_memory_in_same_broker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            client = ScriptedClient(
+                [
+                    '{"thought":"remember","function":"archival_memory_insert",'
+                    '"arguments":{"content":"the pending option","request_heartbeat":true}}',
+                    '{"thought":"ask","function":"send_message",'
+                    '"arguments":{"message":"Which option?"}}',
+                    '{"thought":"check memory","function":"archival_memory_search",'
+                    '"arguments":{"query":"pending option","page":0,"request_heartbeat":true}}',
+                    '{"thought":"reply","function":"send_message",'
+                    '"arguments":{"message":"I kept the memory and received B."}}',
+                ]
+            )
+            broker = EpisodeBroker(
+                profile="memgpt",
+                prompt="ask for an option and remember why",
+                tools=[],
+                trace_path=Path(directory) / "trace.jsonl",
+                policy={"max_turns": 4},
+                client=client,
+            )
+            broker.start()
+
+            first = broker.next_wave()
+            self.assertEqual([item.name for item in first], [SEND_MESSAGE_TOOL])
+            self.assertEqual(first[0].arguments["content"], "Which option?")
+            self.assertNotIn(SEND_MESSAGE_TOOL, client.requests[0][0]["content"])
+
+            second = broker.next_wave(user_message="B")
+            self.assertEqual([item.name for item in second], [SEND_MESSAGE_TOOL])
+            self.assertEqual(second[0].arguments["content"], "I kept the memory and received B.")
+            self.assertEqual(len(client.requests), 4)
+            final_request = "\n".join(str(item.get("content", "")) for item in client.requests[-1])
+            self.assertIn("the pending option", final_request)
+            self.assertIn('"matches"', final_request)
+            self.assertIn("B", final_request)
 
     def test_abandoned_request_does_not_block_interpreter_exit(self) -> None:
         """A native adapter may stop calling next_wave with a request still pending:
@@ -297,5 +345,254 @@ class EpisodeBrokerTests(unittest.TestCase):
         )
 
 
+class TauTurnLifecycleTests(unittest.TestCase):
+    def test_plain_profile_answers_are_consecutive_assistant_turns(self) -> None:
+        """A paper profile returning text ends one assistant turn, not the tau2 episode."""
+        from benchmark_platform.bridges import tau_episode
+
+        class HalfDuplexAgent:
+            @classmethod
+            def __class_getitem__(cls, item):
+                return cls
+
+            def __init__(self, tools, domain_policy):
+                self.tools = tools
+                self.domain_policy = domain_policy
+
+        class AssistantMessage:
+            def __init__(self, *, role, content=None, tool_calls=None, cost=0.0):
+                self.role = role
+                self.content = content
+                self.tool_calls = tool_calls
+                self.tool_messages = None
+                self.cost = cost
+
+        class UserMessage:
+            def __init__(self, content):
+                self.role = "user"
+                self.content = content
+                self.tool_calls = None
+                self.tool_messages = None
+
+            def is_tool_call(self):
+                return False
+
+        class ToolMessage:
+            pass
+
+        class MultiToolMessage:
+            pass
+
+        class ToolCall:
+            def __init__(self, *, id, name, arguments, requestor):
+                self.id = id
+                self.name = name
+                self.arguments = arguments
+                self.requestor = requestor
+
+        class TextRunConfig:
+            def __init__(self, **values):
+                self.__dict__.update(values)
+
+        class Registry:
+            def __init__(self):
+                self.factories = {}
+
+            def register_agent_factory(self, factory, name):
+                self.factories[name] = factory
+
+        class Simulation:
+            reward_info = None
+            termination_reason = SimpleNamespace(value="user_stop")
+            duration = 1.0
+
+            def __init__(self, messages):
+                self.messages = messages
+
+            def get_messages(self):
+                return self.messages
+
+            def model_dump(self, *, mode):
+                return {"messages": len(self.messages), "mode": mode}
+
+        class Environment:
+            @staticmethod
+            def get_policy():
+                return "policy"
+
+        created: list[object] = []
+
+        class FakeBroker:
+            def __init__(self, *, prompt, **kwargs):
+                self.prompt = prompt
+                self.next_calls = 0
+                created.append(self)
+
+            def start(self):
+                return None
+
+            def next_wave(self, **kwargs):
+                self.next_calls += 1
+                if self.next_calls != 1:
+                    raise RuntimeError("a completed per-turn broker was reused")
+                return FinalResponse(f"assistant turn {len(created)}")
+
+            @staticmethod
+            def metrics():
+                return {
+                    "llm_calls": 1,
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "tool_calls": 3,
+                }
+
+        registry = Registry()
+
+        class Orchestrator:
+            def __init__(self, agent):
+                self.agent = agent
+                self.environment = Environment()
+
+            def run(self):
+                greeting = AssistantMessage(role="assistant", content="Hello")
+                state = self.agent.get_init_state([greeting])
+                first_user = UserMessage("first identifier")
+                first_answer, state = self.agent.generate_next_message(first_user, state)
+                second_user = UserMessage("second detail")
+                second_answer, state = self.agent.generate_next_message(second_user, state)
+                return Simulation([greeting, first_user, first_answer, second_user, second_answer])
+
+        def build_text_orchestrator(config, task, *, seed):
+            agent = registry.factories[config.agent](tools=[], domain_policy="domain policy")
+            return Orchestrator(agent)
+
+        def module(name, **attributes):
+            value = ModuleType(name)
+            value.__dict__.update(attributes)
+            if name.rpartition(".")[2] in {"tau2", "agent", "data_model", "evaluator", "runner"}:
+                value.__path__ = []
+            return value
+
+        fake_modules = {
+            "tau2": module("tau2"),
+            "tau2.agent": module("tau2.agent"),
+            "tau2.agent.base_agent": module("tau2.agent.base_agent", HalfDuplexAgent=HalfDuplexAgent),
+            "tau2.data_model": module("tau2.data_model"),
+            "tau2.data_model.message": module(
+                "tau2.data_model.message",
+                AssistantMessage=AssistantMessage,
+                UserMessage=UserMessage,
+                ToolMessage=ToolMessage,
+                MultiToolMessage=MultiToolMessage,
+                ToolCall=ToolCall,
+            ),
+            "tau2.data_model.simulation": module(
+                "tau2.data_model.simulation", TextRunConfig=TextRunConfig
+            ),
+            "tau2.evaluator": module("tau2.evaluator"),
+            "tau2.evaluator.evaluator": module(
+                "tau2.evaluator.evaluator", EvaluationType=lambda value: value
+            ),
+            "tau2.registry": module("tau2.registry", registry=registry),
+            "tau2.runner": module("tau2.runner"),
+            "tau2.runner.build": module(
+                "tau2.runner.build",
+                _build_env_kwargs=lambda config, task: {},
+                build_text_orchestrator=build_text_orchestrator,
+            ),
+            "tau2.runner.simulation": module(
+                "tau2.runner.simulation", run_simulation=lambda *args, **kwargs: None
+            ),
+        }
+
+        profiles = ("cmas", "memgpt", "dylan", "multi-persona", "llmcompiler", "rewoo")
+        with tempfile.TemporaryDirectory() as directory, patch.dict(sys.modules, fake_modules), patch.object(
+            tau_episode, "EpisodeBroker", FakeBroker
+        ), patch.object(tau_episode, "_load_task", return_value=("retail", object())), patch.object(
+            tau_episode, "_patch_tau_generation"
+        ), patch.object(
+            tau_episode, "completion_client_from_env", return_value=object()
+        ):
+            for profile in profiles:
+                with self.subTest(profile=profile):
+                    created.clear()
+                    result = tau_episode.run_episode(
+                        profile,
+                        "retail:85",
+                        {"native_evaluate": False},
+                        Path(directory),
+                    )
+                    self.assertEqual(len(created), 2)
+                    self.assertIn("user: first identifier", created[0].prompt)
+                    self.assertNotIn("second detail", created[0].prompt)
+                    self.assertIn("assistant: assistant turn 1", created[1].prompt)
+                    self.assertIn("user: second detail", created[1].prompt)
+                    self.assertEqual(result["llm_calls"], 2)
+                    self.assertEqual(result["tool_calls"], 6)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class HandshakeTimeoutTests(unittest.TestCase):
+    """Neither side of the native handshake may wait without a bound.
+
+    The adapter is allowed to stop asking for the next wave with requests still pending, and
+    the coroutine awaiting that reply then waits forever while the adapter waits for the
+    message only that coroutine can produce. Neither side is on a socket, so nothing times
+    out on its own: an observed arm sat for an hour with 64 threads in futex_wait_queue and
+    the sweep sat behind it.
+    """
+
+    def _broker(self, tmp: Path):
+        sys.path.insert(0, str(REPO_ROOT))
+        from benchmark_platform.bridges import episode
+
+        broker = episode.EpisodeBroker.__new__(episode.EpisodeBroker)
+        broker._events = queue.Queue()
+        broker._ready = threading.Event()
+        broker._pending = {}
+        broker._broken = None
+        broker._thread = SimpleNamespace(is_alive=lambda: True)
+        return episode, broker
+
+    def test_an_unanswered_request_fails_instead_of_waiting_forever(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            episode, broker = self._broker(Path(tmp))
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 0.25):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError) as caught:
+                    asyncio.run(broker._request("lookup", {}))
+                waited = time.monotonic() - started
+            self.assertIn("never answered", str(caught.exception))
+            self.assertLess(waited, 5, "must give up on its own, not hang")
+            # A later call must fail at once rather than wait the timeout all over again.
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 30):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError):
+                    asyncio.run(broker._request("lookup", {}))
+                self.assertLess(time.monotonic() - started, 1)
+
+    def test_a_finished_baseline_fails_the_wave_at_once(self) -> None:
+        """dylan stops early by design; its thread is gone and no wave can ever arrive."""
+        with tempfile.TemporaryDirectory() as tmp:
+            episode, broker = self._broker(Path(tmp))
+            broker._thread = SimpleNamespace(is_alive=lambda: False)
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 3600):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError) as caught:
+                    broker.next_wave()
+                self.assertLess(time.monotonic() - started, 5, "must not wait out the timeout")
+            self.assertIn("no further wave", str(caught.exception))
+
+    def test_a_silent_baseline_fails_the_wave_instead_of_waiting_forever(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            episode, broker = self._broker(Path(tmp))
+            with patch.object(episode, "HANDSHAKE_TIMEOUT_S", 0.25):
+                started = time.monotonic()
+                with self.assertRaises(RuntimeError) as caught:
+                    broker.next_wave()
+                waited = time.monotonic() - started
+            self.assertIn("no action or answer", str(caught.exception))
+            self.assertLess(waited, 5, "must give up on its own, not hang")

@@ -8,7 +8,7 @@ import re
 from collections import Counter
 from typing import Any
 
-from .core import RunContext, extract_json
+from .core import RunContext, extract_json, json_safe, tool_result_content
 from .dmas import run_dmas
 from .lats import run_lats
 from .memgpt import run_memgpt
@@ -51,11 +51,6 @@ async def run_aflow(ctx: RunContext) -> str:
     return candidates[-1]
 
 
-def _numeric_answer(text: str) -> str:
-    numbers = re.findall(r"(?<![\w.])-?\d+(?:\.\d+)?", text.replace(",", ""))
-    return numbers[-1] if numbers else text.strip()
-
-
 async def run_dylan(ctx: RunContext) -> str:
     """DyLAN's published text-agent network; it intentionally has no tool loop."""
     random.seed(0)
@@ -83,7 +78,10 @@ async def run_dylan(ctx: RunContext) -> str:
                 ],
                 temperature=1.0,
             )
-            votes = Counter(_numeric_answer(item) for item in replies.values())
+            # DyLAN's open-ended evaluator keeps each complete response as its candidate
+            # (``ans_parser = lambda x: x``). Projecting it to the last number corrupts
+            # compound GAIA answers such as ``7, 9`` and ``White;5876``.
+            votes = Counter(item.strip() for item in replies.values())
             answer, count = votes.most_common(1)[0]
             if count > (2 * len(active)) // 3:
                 await ctx.trace.emit("dylan_early_stop", round=round_id + 1, answer=answer)
@@ -104,7 +102,7 @@ async def run_dylan(ctx: RunContext) -> str:
             )
             selected = [max(0, min(len(active) - 1, int(item) - 1)) for item in ranked.get("top", [])[:2]]
             active = [active[index] for index in selected] or active[:2]
-    votes = Counter(_numeric_answer(item) for item in replies.values())
+    votes = Counter(item.strip() for item in replies.values())
     return votes.most_common(1)[0][0]
 
 
@@ -124,13 +122,37 @@ async def run_multi_persona(ctx: RunContext) -> str:
     )
 
 
-async def run_magentic_one(ctx: RunContext) -> str:
-    workers = {
-        "web_surfer": "gather external information with retrieval tools",
-        "file_surfer": "inspect local files and structured records",
-        "coder": "derive and verify results with computation tools",
-        "executor": "perform other permitted task actions",
+WORKER_ROLES = (
+    ("web_surfer", "gather external information with retrieval tools", ("web_search",)),
+    ("file_surfer", "inspect local files and structured records", ("read_file", "list_files")),
+    ("coder", "derive and verify results with computation tools", ("run_command",)),
+    # The catch-all is always on the team: every environment permits some action, and a team
+    # with no members would leave the orchestrator nothing to select.
+    ("executor", "perform other permitted task actions", ()),
+)
+
+
+def _magentic_team(names: set[str]) -> dict[str, str]:
+    """Offer only the roles this environment can actually staff.
+
+    Upstream fills the orchestrator's {team} and {names} from the participants the caller
+    assembled -- "there is no requirement to involve all team members" is about a team that
+    exists, not about roles with nothing behind them. This profile instead hardcoded all four
+    and never told the ledger prompt which tools exist, so on terminal-bench, where no
+    retrieval tool is declared at all, 19 of 32 dispatches went to web_surfer: two LLM calls
+    each, at reasoning_effort=high, for a worker holding the same toolset as everyone else and
+    a brief it could not act on. The tool names below are this platform's own; a benchmark
+    whose tools are all domain actions (tau2, bfcl) correctly staffs only the executor.
+    """
+    return {
+        role: description
+        for role, description, required in WORKER_ROLES
+        if not required or names.intersection(required)
     }
+
+
+async def run_magentic_one(ctx: RunContext) -> str:
+    workers = _magentic_team(set(ctx.environment.names))
     facts = await ctx.complete("orchestrator_facts", [{"role": "user", "content": f"Create a facts ledger.\n{ctx.prompt}"}])
     plan = await ctx.complete(
         "orchestrator_plan",
@@ -149,7 +171,7 @@ async def run_magentic_one(ctx: RunContext) -> str:
                         'Return JSON: {"satisfied":false,"in_loop":false,"progress":true,'
                         '"next_speaker":"web_surfer","instruction":"..."}.\n'
                         f"Task: {ctx.prompt}\nTeam: {workers}\nFacts: {facts}\nPlan: {plan}\n"
-                        f"History: {json.dumps(history, ensure_ascii=False)}"
+                        f"History: {json.dumps(json_safe(history), ensure_ascii=False)}"
                     ),
                 }
             ],
@@ -157,7 +179,7 @@ async def run_magentic_one(ctx: RunContext) -> str:
         if ledger.get("satisfied") is True:
             return await ctx.complete(
                 "orchestrator_final",
-                [{"role": "user", "content": f"Return the final answer.\nTask: {ctx.prompt}\nHistory: {json.dumps(history, ensure_ascii=False)}"}],
+                [{"role": "user", "content": f"Return the final answer.\nTask: {ctx.prompt}\nHistory: {json.dumps(json_safe(history), ensure_ascii=False)}"}],
             )
         if ledger.get("in_loop") is True or ledger.get("progress") is False:
             stalls += 1
@@ -167,14 +189,19 @@ async def run_magentic_one(ctx: RunContext) -> str:
                     raise RuntimeError("Magentic-One replan budget exhausted")
                 plan = await ctx.complete(
                     "orchestrator_replan",
-                    [{"role": "user", "content": f"Replan after stalled progress.\nTask: {ctx.prompt}\nHistory: {json.dumps(history, ensure_ascii=False)}"}],
+                    [{"role": "user", "content": f"Replan after stalled progress.\nTask: {ctx.prompt}\nHistory: {json.dumps(json_safe(history), ensure_ascii=False)}"}],
                 )
                 history = []
                 stalls = 0
                 continue
         speaker = str(ledger.get("next_speaker", "executor"))
         if speaker not in workers:
-            raise ValueError(f"Magentic-One selected unknown worker: {speaker}")
+            # Naming someone off the roster used to end the arm outright, and a smaller roster
+            # makes it likelier: the model keeps reaching for the canonical Magentic-One team.
+            # The catch-all holds the same toolset as every other role, so the instruction can
+            # still be carried out; the substitution is traced rather than silently applied.
+            await ctx.trace.emit("magentic_unknown_worker", requested=speaker, substituted="executor")
+            speaker = "executor"
         action = await ctx.complete_json(
             speaker,
             [
@@ -196,17 +223,86 @@ async def run_magentic_one(ctx: RunContext) -> str:
     raise RuntimeError("Magentic-One round budget exhausted")
 
 
-def _resolve_reference(value: Any, results: dict[str, Any]) -> Any:
-    if isinstance(value, str) and value.startswith("$"):
-        step, _, remainder = value[1:].partition(".")
-        selected = results[step]
-        for part in remainder.split(".") if remainder else []:
-            selected = selected[int(part)] if isinstance(selected, list) else selected[part]
-        return selected
+_PLAN_REFERENCE = re.compile(r"\$([A-Za-z0-9_-]+)((?:\.[A-Za-z0-9_-]+|\[\d+\])*)")
+
+
+def _reference_value(token: str, results: dict[str, Any]) -> Any:
+    match = _PLAN_REFERENCE.fullmatch(token)
+    if match is None:
+        return {"unresolved_reference": token}
+    step, remainder = match.groups()
+    if step not in results:
+        return {"unresolved_reference": token}
+    selected = results[step]
+    for part in re.findall(r"[^.\[\]]+", remainder):
+        try:
+            selected = (
+                selected[int(part)] if isinstance(selected, list) else selected[part]
+            )
+        except (KeyError, IndexError, TypeError, ValueError):
+            return {"unresolved_reference": token}
+    return selected
+
+
+def _reference_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    return json.dumps(json_safe(value), ensure_ascii=False, separators=(",", ":"))
+
+
+def _resolve_reference(
+    value: Any,
+    results: dict[str, Any],
+    *,
+    interpolate_strings: bool = False,
+) -> Any:
+    """Resolve a "$step.field" plan reference against the results already collected.
+
+    A reference that does not resolve yields a marker rather than raising. The planner
+    prompts state only the "$E1.result.field" form, so a model naturally writes
+    "$E1.result[0]" or names a step it never planned, and every one of those used to raise
+    straight out of the arm: status=failed, score=None, an entire baseline lost to a
+    protocol slip that ReAct hands back to the model as an ordinary tool error. Bracket
+    subscripts resolve for the same reason -- the stated syntax invites them. The marker
+    travels into the tool arguments and the synthesis prompt, so a reference that could not
+    be resolved stays visible instead of being silently dropped.
+    """
+    if isinstance(value, str):
+        if _PLAN_REFERENCE.fullmatch(value):
+            return _reference_value(value, results)
+        if interpolate_strings:
+
+            def replace(match: re.Match[str]) -> str:
+                token = match.group(0)
+                resolved = _reference_value(token, results)
+                if (
+                    isinstance(resolved, dict)
+                    and resolved.get("unresolved_reference") == token
+                    and not (
+                        match.group(1).isdigit()
+                        or re.fullmatch(r"E\d+", match.group(1))
+                    )
+                ):
+                    # Preserve shell variables such as $PATH. ReWOO plan references use
+                    # numeric ids or the published #E<n> form adapted here as $E<n>.
+                    return token
+                return _reference_text(resolved)
+
+            return _PLAN_REFERENCE.sub(replace, value)
     if isinstance(value, list):
-        return [_resolve_reference(item, results) for item in value]
+        return [
+            _resolve_reference(item, results, interpolate_strings=interpolate_strings)
+            for item in value
+        ]
     if isinstance(value, dict):
-        return {key: _resolve_reference(item, results) for key, item in value.items()}
+        return {
+            key: _resolve_reference(
+                item,
+                results,
+                interpolate_strings=interpolate_strings,
+            )
+            for key, item in value.items()
+        }
     return value
 
 
@@ -224,29 +320,55 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                 ),
             }
         ],
+        required_root_key="tasks",
     )
     tasks = plan.get("tasks")
     if not isinstance(tasks, list):
         raise ValueError("LLMCompiler planner omitted tasks")
-    pending = {str(item["id"]): item for item in tasks}
+    # A task that is not an object, or that omits its id, would previously raise out of the
+    # arm from the dict comprehension itself. Index-derived ids keep the DAG addressable.
+    pending = {
+        str(item.get("id", index)): item
+        for index, item in enumerate(tasks, start=1)
+        if isinstance(item, dict)
+    }
     results: dict[str, Any] = {}
     while pending:
-        ready = [item for item in pending.values() if all(str(dep) in results for dep in item.get("dependencies", []))]
+        ready = [
+            (task_id, item)
+            for task_id, item in pending.items()
+            if all(str(dep) in results for dep in item.get("dependencies", []))
+        ]
         if not ready:
             raise RuntimeError("LLMCompiler dependency deadlock")
 
-        async def execute(item: dict[str, Any]) -> tuple[str, Any]:
+        async def execute(task_id: str, item: dict[str, Any]) -> tuple[str, Any]:
+            name = item.get("tool")
+            if not isinstance(name, str) or not name:
+                # The same shape environment.call returns for an unusable request, so the
+                # joiner sees a failed step instead of the arm dying on a KeyError.
+                return task_id, {
+                    "ok": False,
+                    "error": "malformed_task",
+                    "detail": "task omitted a tool name",
+                }
             arguments = _resolve_reference(item.get("arguments") or {}, results)
-            return str(item["id"]), await ctx.environment.call(str(item["tool"]), arguments)
+            return task_id, await ctx.environment.call(name, arguments)
 
-        for task_id, result in await asyncio.gather(*(execute(item) for item in ready)):
+        for task_id, result in await asyncio.gather(
+            *(execute(tid, item) for tid, item in ready)
+        ):
             results[task_id] = result
             pending.pop(task_id)
     return await ctx.complete(
         "compiler_joiner",
-        [{"role": "user", "content": f"Return the final answer.\nTask: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\nResults: {json.dumps(results, ensure_ascii=False)}"}],
+        [
+            {
+                "role": "user",
+                "content": f"Return the final answer.\nTask: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\nResults: {json.dumps(json_safe(results), ensure_ascii=False)}",
+            }
+        ],
     )
-
 
 def _action_key(name: str, arguments: dict[str, Any]) -> str:
     return f"{name}:{json.dumps(arguments, ensure_ascii=False, sort_keys=True, separators=(',', ':'))}"
@@ -274,7 +396,11 @@ async def run_sa(ctx: RunContext) -> str:
                 }
             ],
         )
+        # A predictor that returns no actions key, or a non-list, is a prediction miss and
+        # nothing more: speculation is best effort. Slicing None raised out of the arm.
         actions = draft.get("actions") if isinstance(draft, dict) else []
+        if not isinstance(actions, list):
+            actions = []
         speculation_epoch = ctx.environment.state_version
         cache: dict[str, tuple[int, dict[str, Any]]] = {}
         valid = [item for item in actions[:top_k] if isinstance(item, dict) and item.get("tool") in safe_names and isinstance(item.get("arguments"), dict)]
@@ -389,7 +515,7 @@ async def run_sa(ctx: RunContext) -> str:
         messages.extend(
             [
                 {"role": "assistant", "content": canonical_action},
-                {"role": "user", "content": "Observation: " + json.dumps(result, ensure_ascii=False)},
+                {"role": "user", "content": tool_result_content(result)},
             ]
         )
     raise RuntimeError("Speculative Actions turn budget exhausted")

@@ -95,7 +95,7 @@ PROFILES = (
         topology="LLM processor -> memory/function executor -> heartbeat queue",
         provenance="protocol-reproduction",
         source="https://github.com/cpacker/MemGPT",
-        revision="4f93faff35e9ac1f7d6050a498a7e9a11e66296c",
+        revision="134df8f7ea68d4dd07a9f9d6cdac6b0c46c12ff3",
         tool_contract="dynamic-virtual-memory",
         notes="Preserves core, recall, and archival memory functions plus chained heartbeat execution.",
     ),

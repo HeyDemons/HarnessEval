@@ -1,15 +1,40 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import fnmatch
 import json
+import mimetypes
 import os
+import signal
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from benchmark_platform.harnesses.core import ToolHandler, ToolSpec
+from benchmark_platform.harnesses.core import SUBPROCESS_ENV, ToolHandler, ToolImage, ToolSpec
+
+
+MODEL_IMAGE_MIME_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
+# Long enough to pip install a package over the proxy, far shorter than the episode it would
+# otherwise be able to consume. HARNESS_COMMAND_TIMEOUT_S overrides it and is on the bridge
+# env allowlist, so a benchmark whose commands legitimately run longer can raise it.
+COMMAND_TIMEOUT_S = float(os.getenv("HARNESS_COMMAND_TIMEOUT_S", "180"))
+# inspect_evals' default GAIA solver uses Inspect's bash/python tools. Inspect caps one
+# model-visible tool output at 16 KiB; keep the same default here so a command cannot insert
+# several megabytes into the next model request. HARNESS_TASK_OUTPUT_LIMIT already exposes
+# this compatibility knob for the task bridge, so workspace and task arms share it.
+TOOL_OUTPUT_LIMIT = int(os.getenv("HARNESS_TASK_OUTPUT_LIMIT", str(16 * 1024)))
+
+
+def clip_tool_output(text: str, stream: str) -> str:
+    if len(text) <= TOOL_OUTPUT_LIMIT:
+        return text
+    half = TOOL_OUTPUT_LIMIT // 2
+    truncated = text[:half] + text[-(TOOL_OUTPUT_LIMIT - half) :]
+    return (
+        f"The {stream} of your command was too long to be displayed.\n"
+        f"Here is a truncated version:\n"
+        f"<START_TOOL_OUTPUT>\n{truncated}\n<END_TOOL_OUTPUT>"
+    )
 
 
 @dataclass
@@ -61,17 +86,49 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
 
     async def list_files(arguments: dict[str, Any]) -> Any:
         base = safe_path(root, str(arguments.get("path", ".")))
-        pattern = str(arguments.get("pattern", "*"))
-        files = [str(path.relative_to(root)) for path in sorted(base.rglob("*")) if path.is_file() and fnmatch.fnmatch(path.name, pattern)]
+        if "pattern" not in arguments:
+            candidates = base.rglob("*")
+        else:
+            pattern = str(arguments["pattern"])
+            pattern_path = Path(pattern)
+            if pattern_path.is_absolute() or ".." in pattern_path.parts:
+                raise ValueError("list_files pattern must stay relative to the requested path")
+            # Match against complete relative paths. Basename-only fnmatch made ``**/*``
+            # exclude root files and made directory-bearing patterns impossible.
+            candidates = base.glob(pattern)
+        files = []
+        for path in sorted(candidates):
+            safe_path(root, str(path))
+            if path.is_file():
+                files.append(str(path.relative_to(root)))
         return {"root": str(root), "files": files}
 
     async def read_file(arguments: dict[str, Any]) -> Any:
         path = safe_path(root, str(arguments["path"]))
         payload = path.read_bytes()
+        relative = str(path.relative_to(root))
         try:
-            return {"path": str(path.relative_to(root)), "text": payload.decode("utf-8")}
+            text = payload.decode("utf-8")
         except UnicodeDecodeError:
-            return {"path": str(path.relative_to(root)), "encoding": "base64", "content": base64.b64encode(payload).decode("ascii")}
+            mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            if mime_type in MODEL_IMAGE_MIME_TYPES:
+                return {
+                    "path": relative,
+                    "mime_type": mime_type,
+                    "bytes": len(payload),
+                    "image": ToolImage(mime_type, payload),
+                }
+            return {
+                "path": relative,
+                "mime_type": mime_type,
+                "bytes": len(payload),
+                "binary": True,
+                "message": (
+                    "Binary content is not inlined. Inspect it with run_command and a format-aware "
+                    "program so raw bytes do not consume the model context."
+                ),
+            }
+        return {"path": relative, "text": clip_tool_output(text, "content")}
 
     async def write_file(arguments: dict[str, Any]) -> Any:
         path = safe_path(root, str(arguments["path"]))
@@ -95,11 +152,7 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
         if not argv:
             raise ValueError("argv must not be empty")
         cwd = safe_path(root, str(arguments.get("cwd", ".")))
-        environment = {
-            name: value
-            for name, value in os.environ.items()
-            if name in {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH"}
-        }
+        environment = {name: value for name, value in os.environ.items() if name in SUBPROCESS_ENV}
         kwargs: dict[str, Any] = {}
         if os.name == "posix" and os.getuid() == 0:
             kwargs.update({"user": 65534, "group": 65534})
@@ -110,15 +163,47 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # A new session so the timeout below can reap the whole tree: a shell that
+            # backgrounds a fetch outlives a signal sent to the shell alone.
+            start_new_session=True,
             **kwargs,
         )
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), COMMAND_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            # Nothing bounded this call before, and a GAIA case proved what that costs: with
+            # no route out, the model's curl hung ~90s per try and the case reached 1678s
+            # before the runner cancelled it, scoring nothing. Now that the proxy is passed
+            # through, commands really do reach the network, so an unbounded wait is a live
+            # way to lose a case. Report it as a tool failure the model can read and retry
+            # against rather than letting it consume the whole episode.
+            # ponytail: output buffered before the kill is dropped; stream the pipes if a
+            # case ever needs the partial transcript of a command that timed out.
+            with suppress(ProcessLookupError):
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            with suppress(Exception):
+                await process.wait()
+            # Same keys as the command_failed payload below. plan-execute and rewoo resolve
+            # cross-step references like "$s1.stdout" straight off this dict and raise an
+            # uncaught KeyError when a key is missing, which kills the whole arm rather than
+            # returning an error the model could react to; a timeout must not become a second
+            # way to trigger that.
+            return {
+                "ok": False,
+                "error": "command_timeout",
+                "argv": argv,
+                "cwd": str(cwd.relative_to(root)),
+                "returncode": None,
+                "stdout": "",
+                "stderr": f"command exceeded {COMMAND_TIMEOUT_S}s and was killed",
+                "timeout_seconds": COMMAND_TIMEOUT_S,
+            }
         payload = {
             "argv": argv,
             "cwd": str(cwd.relative_to(root)),
             "returncode": process.returncode,
-            "stdout": stdout.decode("utf-8", errors="replace"),
-            "stderr": stderr.decode("utf-8", errors="replace"),
+            "stdout": clip_tool_output(stdout.decode("utf-8", errors="replace"), "stdout"),
+            "stderr": clip_tool_output(stderr.decode("utf-8", errors="replace"), "stderr"),
         }
         if process.returncode != 0:
             return {"ok": False, "error": "command_failed", **payload}
@@ -135,7 +220,11 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
             ),
             native_spec(
                 "read_file",
-                "Read one complete workspace file; binary files are returned as base64.",
+                (
+                    "Read one workspace file. UTF-8 files return text with long content middle-truncated; "
+                    "supported images are attached as model image input; other binary files return metadata "
+                    "only and should be inspected with run_command."
+                ),
                 {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]},
                 parallel=True,
                 read_only=True,
@@ -146,7 +235,10 @@ def workspace_tools(root: Path, *, writable: bool, include_web: bool) -> tuple[l
     specs.append(
         native_spec(
             "run_command",
-            "Run one argv command in the isolated case workspace. The process receives no API credentials; stdout and stderr are returned completely.",
+            (
+                "Run one argv command in the isolated case workspace. The process receives no API "
+                "credentials; long stdout and stderr are middle-truncated to the Inspect tool-output limit."
+            ),
             {
                 "type": "object",
                 "properties": {

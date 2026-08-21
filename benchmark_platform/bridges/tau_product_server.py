@@ -37,7 +37,7 @@ def decode_result(content: Any, error: bool) -> dict[str, Any]:
 
 def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[str, Any]) -> None:
     from tau2.agent.base_agent import HalfDuplexAgent
-    from tau2.data_model.message import AssistantMessage, ToolCall
+    from tau2.data_model.message import AssistantMessage, ToolCall, ToolMessage
     from tau2.data_model.simulation import TextRunConfig
     from tau2.evaluator.evaluator import EvaluationType
     from tau2.registry import registry
@@ -52,6 +52,29 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
     domain = TASK_SET_DOMAINS.get(task_set, task_set)
     agent_name = f"harnesseval_product_{uuid.uuid4().hex}"
     final_pending: PendingProductAction | None = None
+    # The agent publishes its manifest from inside the running simulation, which is after the
+    # orchestrator -- and so the environment this speculates against -- exists. The holder
+    # carries the executor across that ordering; until it is filled the manifest declares no
+    # safe tools, which is the same refusal the profile shipped with.
+    speculation: dict[str, Any] = {"executor": None}
+
+    def native_message(response: dict[str, Any], call: Any) -> Any:
+        """Rebuild the tool reply tau2 would have produced from an already-executed result.
+
+        tau2's ToolMessage has no `name` field, unlike vitabench's, so this mirrors the
+        construction in tau2's own Environment.get_response rather than vita's bridge.
+        """
+        error = response.get("ok") is not True
+        content = response.get("result") if not error else response.get("detail", response.get("error"))
+        if not isinstance(content, str):
+            content = json.dumps(content, ensure_ascii=False, default=str)
+        return ToolMessage(
+            id=call.id,
+            content=content,
+            requestor=call.requestor,
+            role="tool",
+            error=error,
+        )
 
     class ProductAgent(HalfDuplexAgent[dict[str, Any]]):
         def __init__(self, tools, domain_policy, **kwargs):
@@ -104,9 +127,11 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
                 metadata={
                     "native_lifecycle": True,
                     "tool_contract": _tool_contract(self.tools),
-                    "speculation_policy": "disabled_until_native_commit_hook_is_available",
+                    "speculation_policy": "benchmark_declared_read_tools_with_native_commit_replay",
+                    "requires_speculative_commit": True,
                 },
-                allow_speculation=False,
+                speculative_executor=speculation["executor"],
+                allow_speculation=speculation["executor"] is not None,
             )
 
         def generate_next_message(self, message, state):
@@ -171,6 +196,43 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
             enforce_communication_protocol=True,
         )
         orchestrator = build_text_orchestrator(config, task, seed=seed)
+
+        # Speculation was refused here until the environment could be reached out of band:
+        # tau2 drives tool execution from the orchestrator, not from the agent, so unlike
+        # vitabench there was nothing for the bridge to call. Environment.get_response takes
+        # the same ToolCall and returns the same ToolMessage vitabench's does, so the two
+        # halves of the contract port directly -- prelaunch a read tool against the live
+        # environment, then replay the recorded reply when the actor authoritatively makes
+        # that call instead of executing it twice.
+        #
+        # Only tools tau2 itself declares read-only reach the executor: _native_tools sets
+        # read_only from _declared_read_only and parallel from read_only, and
+        # ProductEpisodeBridge derives safe_tools from that pair. A write like
+        # cancel_pending_order is therefore never prelaunched, which is what made speculating
+        # against a stateful retail or airline domain unsafe in the first place.
+        environment = orchestrator.environment
+        original_get_response = environment.get_response
+        safe_names = {tool.name for tool in _native_tools(environment.get_tools()) if tool.read_only}
+
+        def get_response(call: Any) -> Any:
+            replay = bridge.replay_response(call.id)
+            return native_message(replay, call) if replay is not None else original_get_response(call)
+
+        def speculate(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            if name not in safe_names:
+                return {"ok": False, "error": "tool_not_safe_for_speculation"}
+            message = original_get_response(
+                ToolCall(
+                    id=f"spec-{uuid.uuid4().hex}",
+                    name=name,
+                    arguments=arguments,
+                    requestor="assistant",
+                )
+            )
+            return decode_result(message.content, bool(message.error))
+
+        environment.get_response = get_response
+        speculation["executor"] = speculate
         if policy.get("native_evaluate", True) is False:
             simulation = orchestrator.run()
             simulation.policy = orchestrator.environment.get_policy()

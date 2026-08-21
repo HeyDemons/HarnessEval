@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import random
 import time
@@ -202,13 +201,13 @@ def _patch_tau_generation(client: CompletionClient) -> None:
         compatible = to_litellm_messages(messages)
         schemas = [tool.openai_schema for tool in tools] if tools else None
         started = time.perf_counter()
-        completion = asyncio.run(
-            client.complete_native(
-                compatible,
-                tools=schemas,
-                tool_choice=tool_choice,
-                temperature=kwargs.get("temperature"),
-            )
+        # Called synchronously from tau2's own worker thread: go straight to the blocking
+        # client instead of spinning up an event loop per turn just to await a wrapper.
+        completion = client.complete_sync(
+            compatible,
+            tools=schemas,
+            tool_choice=tool_choice,
+            temperature=kwargs.get("temperature"),
         )
         raw_message = completion.raw["choices"][0]["message"]
         parsed_calls = []
@@ -279,6 +278,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         def __init__(self, tools, domain_policy, **kwargs):
             super().__init__(tools=tools, domain_policy=domain_policy)
             self.broker: EpisodeBroker | None = None
+            self.brokers: list[EpisodeBroker] = []
             self.history: list[Any] = []
 
         def set_seed(self, value: int):
@@ -288,15 +288,14 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
             self.history = list(message_history or [])
             return {"initialized": True}
 
-        def _start(self, incoming: Any) -> None:
-            history = [*self.history, incoming]
+        def _start(self) -> None:
             prompt = (
                 "Act as the benchmark assistant under the complete domain policy below. The hidden user "
                 "scenario is unavailable; rely only on visible conversation. Use send_message_to_user "
                 "whenever another user turn is required. Do not claim completion until the user's request "
                 "has been handled under policy.\n\n"
                 f"<domain_policy>\n{self.domain_policy}\n</domain_policy>\n\n"
-                f"<visible_conversation>\n{_visible_history(history)}\n</visible_conversation>"
+                f"<visible_conversation>\n{_visible_history(self.history)}\n</visible_conversation>"
             )
             self.broker = EpisodeBroker(
                 profile=profile,
@@ -306,11 +305,20 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                 policy=policy,
                 client=client,
             )
+            self.brokers.append(self.broker)
             self.broker.start()
 
         def generate_next_message(self, message, state):
+            # tau2 owns the episode and invokes this method once per incoming user/tool
+            # message. A profile's ordinary return value is therefore one assistant turn,
+            # not an instruction to terminate the native conversation. Profiles that use
+            # send_message_to_user remain inside one broker; profiles that return text are
+            # restarted on the next user turn with the complete visible history.
+            if message is not None:
+                self.history.append(message)
             if self.broker is None:
-                self._start(message)
+                self._start()
+                assert self.broker is not None
                 wave = self.broker.next_wave()
             else:
                 wave = self.broker.next_wave(
@@ -318,26 +326,44 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                     user_message=_user_message(message),
                 )
             if isinstance(wave, FinalResponse):
-                return AssistantMessage(role="assistant", content=wave.answer, cost=0.0), state
-            message_actions = [item for item in wave if item.is_message]
-            if message_actions:
-                if len(message_actions) != 1 or len(wave) != 1:
-                    raise RuntimeError("tau2 cannot mix user communication and tool calls in one turn")
-                return AssistantMessage(
-                    role="assistant",
-                    content=str(message_actions[0].arguments["content"]),
-                    cost=0.0,
-                ), state
-            calls = [
-                ToolCall(
-                    id=item.id,
-                    name=item.name,
-                    arguments=item.arguments,
-                    requestor="assistant",
-                )
-                for item in wave
-            ]
-            return AssistantMessage(role="assistant", tool_calls=calls, cost=0.0), state
+                response = AssistantMessage(role="assistant", content=wave.answer, cost=0.0)
+                self.broker = None
+            else:
+                message_actions = [item for item in wave if item.is_message]
+                if message_actions:
+                    if len(message_actions) != 1 or len(wave) != 1:
+                        raise RuntimeError("tau2 cannot mix user communication and tool calls in one turn")
+                    response = AssistantMessage(
+                        role="assistant",
+                        content=str(message_actions[0].arguments["content"]),
+                        cost=0.0,
+                    )
+                else:
+                    calls = [
+                        ToolCall(
+                            id=item.id,
+                            name=item.name,
+                            arguments=item.arguments,
+                            requestor="assistant",
+                        )
+                        for item in wave
+                    ]
+                    response = AssistantMessage(role="assistant", tool_calls=calls, cost=0.0)
+            self.history.append(response)
+            return response, state
+
+        def metrics(self) -> dict[str, int]:
+            totals = {
+                "llm_calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "tool_calls": 0,
+                "user_messages": 0,
+            }
+            for broker in self.brokers:
+                for name, value in broker.metrics().items():
+                    totals[name] += int(value)
+            return totals
 
     registry.register_agent_factory(HarnessAgent, agent_name)
     config = TextRunConfig(
@@ -365,7 +391,6 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
             evaluation_type=evaluation_type,
             env_kwargs=_build_env_kwargs(config, task),
         )
-    broker = orchestrator.agent.broker
     reward = simulation.reward_info.reward if simulation.reward_info is not None else None
     return {
         "schema_version": 1,
@@ -384,7 +409,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         "native_score_status": "completed" if reward is not None else "not_requested",
         "simulation": simulation.model_dump(mode="json"),
         "tool_contract": _tool_contract(getattr(orchestrator.agent, "tools", None) or []),
-        **(broker.metrics() if broker else {}),
+        **orchestrator.agent.metrics(),
     }
 
 

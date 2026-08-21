@@ -6,11 +6,18 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from benchmark_platform.catalog import Catalog
 from benchmark_platform.cli import build_parser
-from benchmark_platform.engine import Platform, docker_socket_source, terminal_agent_command
+from benchmark_platform.engine import (
+    Platform,
+    docker_add_host_flags,
+    docker_host_gateway_flags,
+    docker_socket_source,
+    terminal_agent_command,
+)
 from benchmark_platform.scorers.gaia import question_score
 from benchmark_platform.store import CaseStore
 from benchmark_platform.util import atomic_json, slug
@@ -163,6 +170,58 @@ class PlatformTests(unittest.TestCase):
 
         with patch.dict(os.environ, {"BENCHMARK_BUILD_PROXY": "inherit"}, clear=True):
             self.assertEqual(platform._build_egress_args(), [])
+    def test_runtime_extra_hosts_are_explicit_validated_and_network_scoped(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "BENCHMARK_DOCKER_ADD_HOSTS": (
+                    "ai.centos.hk:202.160.129.37,api.example.test=192.0.2.8 "
+                    "ai.centos.hk:202.160.129.37"
+                )
+            },
+            clear=True,
+        ):
+            self.assertEqual(
+                docker_add_host_flags("bridge"),
+                [
+                    "--add-host",
+                    "ai.centos.hk:202.160.129.37",
+                    "--add-host",
+                    "api.example.test:192.0.2.8",
+                ],
+            )
+            self.assertEqual(docker_add_host_flags("none"), [])
+
+        for invalid in (
+            "missing-address",
+            "bad_host:192.0.2.1",
+            "example.test:not-an-ip",
+            "example.test:192.0.2.1:443",
+        ):
+            with patch.dict(
+                os.environ,
+                {"BENCHMARK_DOCKER_ADD_HOSTS": invalid},
+                clear=True,
+            ):
+                with self.assertRaises(ValueError, msg=invalid):
+                    docker_add_host_flags("bridge")
+
+    def test_host_local_proxy_gets_linux_docker_gateway_mapping(self) -> None:
+        self.assertEqual(
+            docker_host_gateway_flags(
+                "bridge",
+                ["https://api.example.test/v1", "http://host.docker.internal:7890"],
+            ),
+            ["--add-host", "host.docker.internal:host-gateway"],
+        )
+        self.assertEqual(
+            docker_host_gateway_flags("bridge", ["https://api.example.test/v1"]),
+            [],
+        )
+        self.assertEqual(
+            docker_host_gateway_flags("none", ["http://host.docker.internal:7890"]),
+            [],
+        )
 
     def test_pre_pull_uses_local_base_unless_refresh_is_explicit(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
@@ -206,6 +265,40 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertIsNone(terminal_agent_command(None, smoke=False))
 
+    def test_generic_terminal_run_resolves_the_requested_task_case(self) -> None:
+        platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
+        benchmark = SimpleNamespace(adapter={}, id="terminal-bench-2")
+        metadata = {
+            "environment": {},
+            "verifier": {"environment_mode": "separate"},
+        }
+        store = SimpleNamespace(case_id="prove-plus-comm")
+        with (
+            patch.object(
+                platform, "_terminal_metadata", return_value=(Path("/task"), metadata)
+            ) as resolved,
+            patch.object(
+                platform, "_record_blocked", return_value={"status": "blocked"}
+            ),
+        ):
+            platform._run_terminal_task(
+                store, benchmark, smoke=False, command_override=["true"]
+            )
+        resolved.assert_called_once_with(benchmark, "prove-plus-comm")
+
+        with (
+            patch.object(
+                platform, "_terminal_metadata", return_value=(Path("/task"), metadata)
+            ) as resolved,
+            patch.object(
+                platform, "_record_blocked", return_value={"status": "blocked"}
+            ),
+        ):
+            platform._run_terminal_task(
+                store, benchmark, smoke=True, command_override=None
+            )
+        resolved.assert_called_once_with(benchmark, None)
+
     def test_harness_profiles_have_unique_ids(self) -> None:
         from benchmark_platform.harnesses import PROFILES
 
@@ -237,6 +330,13 @@ class PlatformTests(unittest.TestCase):
             if row["baseline"] == "lats" and row["benchmark"] == "trajectory-bench"
         )
         self.assertTrue(lats_trajectory["runnable"])
+        lats_gaia = next(
+            row
+            for row in rows
+            if row["baseline"] == "lats" and row["benchmark"] == "gaia"
+        )
+        self.assertFalse(lats_gaia["runnable"])
+        self.assertEqual(lats_gaia["baseline_requirement"], "branch_snapshot_or_all_tools_read_only")
 
     def test_adapter_fingerprint_is_content_based(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")

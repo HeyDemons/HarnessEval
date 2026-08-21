@@ -31,7 +31,7 @@ Light and full results must never be pooled into one aggregate.
 | TRAJECT-Bench | 100 | 10 per domain; 25 per parallel/sequential x simple/hard cell | Endpoint-live-verified subset; native trajectory metrics |
 | VitaBench | 60 | 15 per delivery, OTA, in-store, and cross-domain | Native assertions and rubric evaluator |
 | tau2/tau3 text | 30 | 10 per airline, retail, and telecom | Native state/action reward |
-| BFCL V4 | 95 | 5 per each of 19 task categories | Native category-macro and pooled scoring |
+| BFCL V4 single-turn | 65 | 5 per each of 13 independently scoreable categories | Official AST/category checker; stateful multi-turn, memory, and web-search remain full-suite only |
 | Terminal-Bench 2 | 20 | Public category, difficulty, and network metadata coverage | Native verifier after generic per-task adapter expansion |
 | SWE-bench Verified | held | Apple Silicon execution path under review | No score claim |
 

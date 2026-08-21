@@ -10,6 +10,32 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping
 
 from .api import Completion, CompletionClient
+from .content import ToolImage, json_safe, tool_result_content
+
+
+# Every tool subprocess is handed this allowlist and nothing else, so no API credential can
+# reach a command the model wrote. The proxy names are on it because the container's only route
+# out is the proxy the host injects (http_proxy=http://10.0.2.2:7890 on the 4090 box): a curl
+# through it answers 200 while a direct connection is unreachable. Dropping those names is what
+# made GAIA look like it had no network at all -- web_search runs in the harness process and
+# keeps its own environment, so it worked, while every run_command fetch the model tried died
+# with "Network is unreachable": requests, wget, git clone, pip install, 52 calls across one
+# sweep. Cases that need a page, a dataset file or a package are unsolvable without them.
+SUBPROCESS_ENV = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "PYTHONPATH",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+)
 
 
 JSON_SCHEMA_TYPE_ALIASES = {
@@ -88,6 +114,90 @@ def extract_json(text: str, expected_type: type | tuple[type, ...] | None = None
     raise ValueError("Response did not contain one complete JSON value")
 
 
+def _extract_json_object_with_root_key(text: str, root_key: str) -> dict[str, Any]:
+    """Find the first complete JSON object whose root contains ``root_key``.
+
+    This is deliberately separate from ``extract_json``. Agent action loops must keep
+    honouring the first action in a generated sequence, but LLMCompiler's upstream parser
+    scans the complete planner response for legal plan actions. Its JSON adaptation therefore
+    needs to skip incidental objects such as ``{"query": ...}`` and select the plan object.
+    """
+    decoder = json.JSONDecoder()
+    stripped = text.strip()
+    fenced = [
+        match.group(1).strip()
+        for match in re.finditer(r"```(?:json)?\s*(.*?)```", stripped, re.DOTALL | re.IGNORECASE)
+    ]
+    for source in [*fenced, stripped]:
+        in_string = False
+        escaped = False
+        for index, character in enumerate(source):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+                continue
+            if character == '"':
+                in_string = True
+                continue
+            if character != "{":
+                continue
+            try:
+                value, _ = decoder.raw_decode(source[index:])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict) and root_key in value:
+                return value
+    raise ValueError(
+        f"Response did not contain a JSON object with root field {root_key!r}"
+    )
+
+
+def _extract_single_json_object(
+    text: str, root_key: str | None = None
+) -> dict[str, Any]:
+    """Decode exactly one object, optionally requiring a root field.
+
+    Planner calls differ from agent action loops: a planner response is one complete
+    program, not a speculative sequence whose first action can be executed safely.  If a
+    provider returns several concatenated planner drafts, choosing either endpoint silently
+    changes the plan.  Rejecting the sequence lets ``complete_json`` use its existing
+    protocol-repair turn and obtain one authoritative plan instead.
+    """
+    decoder = json.JSONDecoder()
+    stripped = text.strip()
+    fenced = [
+        match.group(1).strip()
+        for match in re.finditer(
+            r"```(?:json)?\s*(.*?)```", stripped, re.DOTALL | re.IGNORECASE
+        )
+    ]
+    sources = fenced or [stripped]
+    matches: list[dict[str, Any]] = []
+    for source in sources:
+        try:
+            value, end = decoder.raw_decode(source)
+        except json.JSONDecodeError:
+            continue
+        if source[end:].strip() or not isinstance(value, dict):
+            continue
+        if root_key is not None and root_key not in value:
+            continue
+        matches.append(value)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError("Response contained multiple complete JSON objects")
+    if root_key is not None:
+        raise ValueError(
+            f"Response did not contain exactly one JSON object with root field {root_key!r}"
+        )
+    raise ValueError("Response did not contain exactly one complete JSON object")
+
+
 def _tiles_json_sequence(decoder: json.JSONDecoder, text: str) -> bool:
     """True when text is exactly a whitespace-separated run of complete JSON values."""
     cursor = 0
@@ -111,7 +221,11 @@ class JsonlTrace:
         self._lock = asyncio.Lock()
 
     async def emit(self, event: str, **fields: Any) -> None:
-        line = json.dumps({"ts": time.time(), "event": event, **fields}, ensure_ascii=False, sort_keys=True)
+        line = json.dumps(
+            json_safe({"ts": time.time(), "event": event, **fields}),
+            ensure_ascii=False,
+            sort_keys=True,
+        )
         async with self._lock:
             with self.path.open("a", encoding="utf-8") as stream:
                 stream.write(line + "\n")
@@ -228,6 +342,7 @@ class ToolEnvironment:
         self._exclusive_active = False
         self._waiting_exclusive = 0
         self._state_version = 0
+        self._images: list[ToolImage] = []
 
     @property
     def names(self) -> list[str]:
@@ -308,9 +423,117 @@ class ToolEnvironment:
             "state_version_before": state_before,
             "state_version_after": self._state_version,
         }
+        self._remember_images(result)
         self.calls.append(record)
         await self.trace.emit("tool_result", **record)
         return result
+
+    async def call_isolated(
+        self, name: str, arguments: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Execute one read-only search-branch call without publishing it as an answer.
+
+        Tree-search profiles have to observe candidate actions while exploring, but only
+        the calls on the selected trajectory are part of the profile's prediction.  In
+        particular, BFCL scores the standard ``tool_request`` events themselves.  Keep
+        exploratory calls in an explicitly LATS-namespaced trace and return their complete
+        records so the winning path can be committed later without executing the tools a
+        second time.
+        """
+
+        tool = self.tools.get(name)
+        if tool is None:
+            raise ValueError(f"Cannot isolate unknown tool {name!r}")
+        if not tool.read_only:
+            raise ValueError(f"Cannot isolate mutating tool {name!r}")
+        await self.trace.emit("lats_tool_request", name=name, arguments=arguments)
+        record = await self._execute_isolated_read_only_call(tool, arguments)
+        await self.trace.emit("lats_tool_result", **record)
+        return record["result"], record
+
+    async def commit_isolated_calls(self, records: list[dict[str, Any]]) -> None:
+        """Publish already-executed read-only calls in selected-trajectory order."""
+
+        for record in records:
+            name = str(record["name"])
+            arguments = record["arguments"]
+            tool = self.tools.get(name)
+            if tool is None or not tool.read_only:
+                raise ValueError(f"Cannot commit non-isolated tool record {name!r}")
+            await self.trace.emit("tool_request", name=name, arguments=arguments)
+            self._remember_images(record["result"])
+            self.calls.append(record)
+            await self.trace.emit("tool_result", **record)
+
+    async def _execute_isolated_read_only_call(
+        self, tool: ToolSpec, arguments: dict[str, Any]
+    ) -> dict[str, Any]:
+        state_before = self._state_version
+        if errors := validate_arguments(normalize_json_schema(tool.parameters), arguments):
+            result = {"ok": False, "error": "invalid_arguments", "details": errors}
+        elif tool.parallel and tool.read_only:
+            await self._enter_shared()
+            try:
+                state_before = self._state_version
+                result = await self._invoke(tool, arguments)
+            finally:
+                await self._leave_shared()
+        else:
+            await self._enter_exclusive()
+            try:
+                state_before = self._state_version
+                result = await self._invoke(tool, arguments)
+            finally:
+                # A failed mutating tool may have applied a partial side effect. Treat
+                # every invocation as a state boundary; invalid arguments never enter.
+                await self._leave_exclusive(mutated=not tool.read_only)
+        record = {
+            "name": tool.name,
+            "arguments": arguments,
+            "result": result,
+            "state_version_before": state_before,
+            "state_version_after": self._state_version,
+        }
+        return record
+
+    def _remember_images(self, value: Any) -> None:
+        if isinstance(value, ToolImage):
+            if all(existing is not value for existing in self._images):
+                self._images.append(value)
+            return
+        if isinstance(value, Mapping):
+            for item in value.values():
+                self._remember_images(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                self._remember_images(item)
+
+    def with_images(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Attach tool-produced images to the latest user message for every later call."""
+        if not self._images:
+            return messages
+        rendered = [dict(message) for message in messages]
+        existing = {
+            id(part.get("image"))
+            for message in rendered
+            for part in (message.get("content") if isinstance(message.get("content"), list) else [])
+            if isinstance(part, dict) and isinstance(part.get("image"), ToolImage)
+        }
+        additions = [image for image in self._images if id(image) not in existing]
+        if not additions:
+            return rendered
+        target = next(
+            (index for index in range(len(rendered) - 1, -1, -1) if rendered[index].get("role") == "user"),
+            None,
+        )
+        if target is None:
+            rendered.append({"role": "user", "content": []})
+            target = len(rendered) - 1
+        content = rendered[target].get("content", "")
+        parts = list(content) if isinstance(content, list) else [{"type": "text", "text": str(content)}]
+        parts.extend({"type": "image", "image": image} for image in additions)
+        rendered[target]["content"] = parts
+        return rendered
 
     async def _invoke(self, tool: ToolSpec, arguments: dict[str, Any]) -> dict[str, Any]:
         if handler := self.handlers.get(tool.name):
@@ -319,7 +542,7 @@ class ToolEnvironment:
             except Exception as exc:
                 return {"ok": False, "error": "tool_handler_failed", "detail": f"{type(exc).__name__}: {exc}"}
             return value if isinstance(value, dict) and "ok" in value else {"ok": True, "result": value}
-        allowed = {"PATH", "HOME", "LANG", "LC_ALL", "PYTHONPATH", *tool.pass_env}
+        allowed = {*SUBPROCESS_ENV, *tool.pass_env}
         environment = {name: value for name, value in os.environ.items() if name in allowed}
         process = await asyncio.create_subprocess_exec(
             *tool.command,
@@ -396,11 +619,12 @@ class RunContext:
     async def complete(
         self,
         role: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         json_mode: bool = False,
         temperature: float | None = None,
     ) -> str:
+        messages = self.environment.with_images(messages)
         await self.trace.emit(
             "llm_request",
             role=role,
@@ -431,16 +655,25 @@ class RunContext:
     async def complete_json(
         self,
         role: str,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         temperature: float | None = None,
+        required_root_key: str | None = None,
+        strict_single_object: bool = False,
     ) -> dict[str, Any]:
         conversation = list(messages)
         protocol_repairs = int(self.policy.get("protocol_repairs", 1))
         for attempt in range(protocol_repairs + 1):
-            raw = await self.complete(role, conversation, json_mode=True, temperature=temperature)
+            raw = await self.complete(
+                role, conversation, json_mode=True, temperature=temperature
+            )
             try:
-                value = extract_json(raw, expected_type=dict)
+                if strict_single_object:
+                    value = _extract_single_json_object(raw, required_root_key)
+                elif required_root_key is not None:
+                    value = _extract_json_object_with_root_key(raw, required_root_key)
+                else:
+                    value = extract_json(raw, expected_type=dict)
                 return value
             except ValueError:
                 if attempt >= protocol_repairs:

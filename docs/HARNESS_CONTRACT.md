@@ -41,8 +41,14 @@ default and is sent only when the user explicitly configures it.
 Paper-profile policy parameters are also explicit. LATS uses
 `lats_iterations`, `lats_generate_samples`, `lats_value_samples`,
 `lats_rollout_width`, `lats_tree_depth`, `lats_rollout_depth`,
-`lats_failure_memory`, `lats_reflection_limit`, and `lats_temperature`; their
-defaults reproduce the source search shape.
+`lats_failure_memory`, `lats_reflection_limit`, and `lats_temperature`. Its
+source search shape is preserved, while `lats_max_parallel` (default `1`) and
+`lats_max_llm_calls` (default `64`) bound local transport fan-out and total HTTP
+requests independently of case-level concurrency. Proposal and value-sampling
+waves reserve their complete initial-call budget before dispatch. The official
+implementation obtains multiple proposal samples with one provider request;
+the generic compatible transport does not expose that batching primitive, so
+those samples are sent through the disclosed LATS-local semaphore.
 Each remembered trajectory remains complete. MemGPT uses `memgpt_core_memory_chars` and
 `memgpt_memory_warning_tokens`, matching the original core-memory and active
 context warning thresholds. Memory pressure is handled through semantic

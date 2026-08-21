@@ -9,6 +9,31 @@ from pathlib import Path
 from typing import Any
 
 
+_JSON_SCHEMA_TYPES = frozenset(
+    {"array", "boolean", "integer", "null", "number", "object", "string"}
+)
+
+
+def _noncanonical_schema_types(value: Any) -> set[str]:
+    invalid: set[str] = set()
+    if isinstance(value, list):
+        for item in value:
+            invalid.update(_noncanonical_schema_types(item))
+    elif isinstance(value, dict):
+        declared = value.get("type")
+        if isinstance(declared, str) and declared not in _JSON_SCHEMA_TYPES:
+            invalid.add(declared)
+        elif isinstance(declared, list):
+            invalid.update(
+                item
+                for item in declared
+                if isinstance(item, str) and item not in _JSON_SCHEMA_TYPES
+            )
+        for item in value.values():
+            invalid.update(_noncanonical_schema_types(item))
+    return invalid
+
+
 def _json_files(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("*.json") if ".git" not in path.parts)
 
@@ -78,7 +103,7 @@ def _trajectory() -> dict[str, Any]:
             name: importlib.util.find_spec(name) is not None
             for name in ["sentence_transformers", "torch"]
         },
-        "external_execution_configured": bool(os.getenv("API_URL") and os.getenv("TOOLBENCH_KEY")),
+        "external_execution_configured": bool(os.getenv("API_URL")),
         "complete": complete,
     }
 
@@ -165,6 +190,15 @@ def _tau2() -> dict[str, Any]:
 
 
 def _bfcl() -> dict[str, Any]:
+    # Importing BFCL's official utility module initializes result/score/lock directories.
+    # Benchmark images are executed as the invoking host UID, so the package checkout under
+    # /opt is intentionally not writable. Redirect only that import-time runtime state to
+    # the container's writable tmpfs; PROMPT_PATH still resolves from the installed package.
+    os.environ["BFCL_PROJECT_ROOT"] = f"/tmp/bfcl-toolset-probe-{os.getpid()}"
+    from bfcl_eval.constants.enums import ModelStyle
+    from bfcl_eval.constants.type_mappings import GORILLA_TO_OPENAPI
+    from bfcl_eval.model_handler.utils import convert_to_tool
+
     root = Path("/opt/gorilla/berkeley-function-call-leaderboard/bfcl_eval/data")
     files = _json_files(root)
     records = 0
@@ -177,11 +211,68 @@ def _bfcl() -> dict[str, Any]:
             if not isinstance(declared, list):
                 invalid.append({"file": path.name, "row": row_index, "error": "function list is not an array"})
                 continue
-            for function in declared:
+            source_functions = []
+            for function_index, function in enumerate(declared):
                 function = function.get("function", function) if isinstance(function, dict) else {}
                 functions += 1
-                if not function.get("name") or not isinstance(function.get("parameters", {}), dict):
-                    invalid.append({"file": path.name, "row": row_index, "error": "invalid function schema"})
+                if not function.get("name") or not isinstance(function.get("parameters"), dict):
+                    invalid.append(
+                        {
+                            "file": path.name,
+                            "row": row_index,
+                            "function": function_index,
+                            "error": "invalid function schema",
+                        }
+                    )
+                    continue
+                source_functions.append(function)
+            try:
+                converted = convert_to_tool(
+                    source_functions,
+                    GORILLA_TO_OPENAPI,
+                    ModelStyle.OPENAI_COMPLETIONS,
+                )
+            except Exception as exc:
+                invalid.append(
+                    {
+                        "file": path.name,
+                        "row": row_index,
+                        "error": "official schema conversion failed",
+                        "detail": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+                continue
+            if len(converted) != len(source_functions):
+                invalid.append(
+                    {
+                        "file": path.name,
+                        "row": row_index,
+                        "error": "official schema conversion changed function count",
+                    }
+                )
+            for function_index, tool in enumerate(converted):
+                function = tool.get("function") if isinstance(tool, dict) else None
+                parameters = function.get("parameters") if isinstance(function, dict) else None
+                bad_types = _noncanonical_schema_types(parameters)
+                if not function or not function.get("name") or not isinstance(parameters, dict):
+                    invalid.append(
+                        {
+                            "file": path.name,
+                            "row": row_index,
+                            "function": function_index,
+                            "error": "official conversion returned an invalid OpenAI tool",
+                        }
+                    )
+                elif bad_types:
+                    invalid.append(
+                        {
+                            "file": path.name,
+                            "row": row_index,
+                            "function": function_index,
+                            "error": "noncanonical JSON Schema types after official conversion",
+                            "types": sorted(bad_types),
+                        }
+                    )
     dependencies = {
         name: importlib.util.find_spec(name) is not None
         for name in ["bfcl_eval", "tree_sitter", "sentence_transformers", "faiss", "rank_bm25"]
@@ -192,6 +283,7 @@ def _bfcl() -> dict[str, Any]:
         "records": records,
         "function_schemas": functions,
         "invalid_schemas": invalid,
+        "schema_conversion": "bfcl_eval.model_handler.utils.convert_to_tool(openai-completions)",
         "dependencies": dependencies,
         "complete": not invalid and all(dependencies.values()) and records > 0,
     }

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import threading
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +17,19 @@ from benchmark_platform.harnesses.methods import run_profile
 
 
 SEND_MESSAGE_TOOL = "send_message_to_user"
+
+# Bound on either side of the native handshake. The adapter is allowed to stop asking for
+# the next wave with requests still pending -- its step budget runs out, its episode ends,
+# it raises -- and the coroutine awaiting that reply then waits forever while the adapter
+# waits for the message only that coroutine can produce. Neither side is on a socket, so
+# nothing ever times out: an observed arm sat for an hour with 64 threads in
+# futex_wait_queue, and the sweep sat behind it.
+#
+# It has to clear the client's worst case, or a legitimate retry chain would trip it:
+# HARNESS_API_TIMEOUT_S x (HARNESS_API_RETRIES + 1) plus backoff is ~730s at the defaults.
+# It also has to stay under HARNESS_ARM_TIMEOUT_S so the arm fails with a diagnosis rather
+# than being killed from outside with none.
+HANDSHAKE_TIMEOUT_S = float(os.environ.get("HARNESS_EPISODE_HANDSHAKE_S", "1800"))
 
 
 @dataclass(frozen=True)
@@ -108,6 +123,7 @@ class EpisodeBroker:
         self._events: queue.Queue[ActionRequest | FinalResponse | EpisodeFailure] = queue.Queue()
         self._ready = threading.Event()
         self._pending: dict[str, ActionRequest] = {}
+        self._broken: str | None = None
         self._thread = threading.Thread(target=self._thread_main, name=f"episode-{profile}", daemon=True)
         self.context: RunContext | None = None
 
@@ -115,6 +131,10 @@ class EpisodeBroker:
         self._thread.start()
 
     async def _request(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        # Once the handshake is known broken every later call fails at once. Waiting the
+        # full timeout again per tool call would drag one wedged episode out by hours.
+        if self._broken:
+            raise RuntimeError(self._broken)
         request = ActionRequest(uuid.uuid4().hex, name, arguments)
         request.reply = asyncio.get_running_loop().create_future()
         self._events.put(request)
@@ -122,7 +142,14 @@ class EpisodeBroker:
         # one resumes here, so the native adapter can emit one multi-tool turn.
         await asyncio.sleep(0)
         self._ready.set()
-        return await request.reply
+        try:
+            return await asyncio.wait_for(request.reply, HANDSHAKE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            self._broken = (
+                f"Native adapter never answered tool request {name!r} within "
+                f"{HANDSHAKE_TIMEOUT_S:.0f}s"
+            )
+            raise RuntimeError(self._broken) from None
 
     async def _run(self) -> None:
         from benchmark_platform.harnesses.core import ToolEnvironment
@@ -203,8 +230,23 @@ class EpisodeBroker:
                     request.resolve(self._decode_native_result(content, error))
             self._pending = {}
 
+        deadline = time.monotonic() + HANDSHAKE_TIMEOUT_S
         while True:
-            self._ready.wait()
+            while not self._ready.wait(1.0):
+                # A baseline is free to declare a final answer whenever it likes, and several
+                # do it before the benchmark's own conversation has ended -- dylan stops early
+                # by design. Its thread is then gone, so no wave will ever arrive, and waiting
+                # out the full timeout to learn that costs half an hour of a concurrency slot
+                # per case. The producer being dead is knowable immediately.
+                if not self._thread.is_alive():
+                    raise RuntimeError(
+                        "Baseline finished without the native episode reaching its own end; "
+                        "no further wave can arrive"
+                    )
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"Baseline produced no action or answer within {HANDSHAKE_TIMEOUT_S:.0f}s"
+                    )
             self._ready.clear()
             events: list[ActionRequest | FinalResponse | EpisodeFailure] = []
             while True:
@@ -229,9 +271,16 @@ class EpisodeBroker:
     def metrics(self) -> dict[str, Any]:
         if self.context is None:
             return {}
+        calls = self.context.environment.calls
         return {
             "llm_calls": self.context.llm_calls,
             "prompt_tokens": self.context.prompt_tokens,
             "completion_tokens": self.context.completion_tokens,
-            "tool_calls": len(self.context.environment.calls),
+            # Native user communication is represented as a bridge tool only so an async
+            # paper method can yield to the benchmark-owned simulator. It is not a benchmark
+            # tool call, and the product arm records the same transition as a new turn rather
+            # than in committed_calls. Keep the comparison column symmetric and expose the
+            # communication count separately.
+            "tool_calls": sum(item.get("name") != SEND_MESSAGE_TOOL for item in calls),
+            "user_messages": sum(item.get("name") == SEND_MESSAGE_TOOL for item in calls),
         }

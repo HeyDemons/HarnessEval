@@ -32,9 +32,9 @@ applications.
 | --- | --- | --- | --- |
 | GAIA | Isolated workspace, argv command, DDGS web search | Implemented | Public answer normalization can finalize a run |
 | GDPval | Isolated writable Office workspace, argv command, and DDGS web search | Implemented | Automated rubric remains a proxy to expert pairwise grading |
-| TRAJECT-Bench | Per-case native API schemas | Implemented; external ToolBench service credentials required | Native trajectory finalizer still required |
-| BFCL V4 | Per-case declared functions | Implemented for trajectory capture | Official category scorer still required |
-| VitaBench | Native stateful environment and hidden user simulator | Implemented through the official episode lifecycle | Native evaluator is optional and explicitly recorded |
+| TRAJECT-Bench | Per-case native API schemas | Implemented; external ToolBench service credentials required | Ordered tool-trajectory, set-inclusion, and answer diagnostics are finalized after each arm |
+| BFCL V4 | Per-case declared functions | The light suite contains independently scoreable single-turn categories and uses the official AST checker | Official single-turn category score; stateful categories remain full-suite only |
+| VitaBench | Native stateful environment and hidden user simulator | Implemented through the official episode lifecycle | Native trajectory evaluator is enabled by the light runner |
 | tau2/tau3 | Native stateful environment and hidden user simulator | Implemented through the official episode lifecycle | Official native reward is enabled by default |
 | Terminal-Bench 2 | Task container filesystem | Implemented with separate agent and verifier containers | Official task reward |
 | SWE-bench Verified | Nested official task containers | Implemented through the official controller and fresh evaluator container | Official repository tests; macOS ARM64 currently supports the configured digest-pinned case |

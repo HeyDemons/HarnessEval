@@ -9,8 +9,8 @@ from .harnesses.profiles import HarnessProfile
 BRIDGE_CAPABILITIES = {
     "gaia": ("single-turn-workspace", "implemented"),
     "gdpval": ("single-turn-artifact-workspace", "implemented"),
-    "trajectory-bench": ("single-turn-remote-tools", "implemented_external_tool_service_required"),
-    "bfcl": ("single-turn-function-declarations", "implemented_trajectory_only"),
+    "trajectory-bench": ("single-turn-remote-tools", "implemented_external_tool_service_and_host_scorer"),
+    "bfcl": ("single-turn-function-declarations", "implemented_single_turn_scored_stateful_categories_pending"),
     "vitabench": ("native-conversation", "implemented_native_episode"),
     "tau2": ("native-conversation", "implemented_native_episode"),
     "terminal-bench-2": ("task-container", "implemented_task_container_bridge"),

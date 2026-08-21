@@ -10,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .content import ToolImage
+
 
 @dataclass(frozen=True)
 class ApiConfig:
@@ -22,6 +24,14 @@ class ApiConfig:
     max_output_tokens: int | None = None
     api_type: str = "openai-completions"
     api_auth: str = "x-api-key"
+    reasoning_effort: str | None = None
+    # Off for a directly-constructed config (what the tests use); from_env turns it on,
+    # and from_env is the only path a real run takes. See _reassemble_stream for why.
+    stream: bool = False
+    # urllib's default "Python-urllib/3.x" is on a Cloudflare bot-rule blocklist at one of
+    # the relays in use, which answers every request with 403 error code 1010 -- that alone
+    # killed 478 of 728 arms in an earlier sweep while the product harness, whose SDK sends
+    # its own UA, sailed through. Only the string is checked; the TLS fingerprint is not.
     user_agent: str = "HarnessEval/0.1"
 
     @classmethod
@@ -42,8 +52,117 @@ class ApiConfig:
             max_output_tokens=int(raw_max) if raw_max else None,
             api_type=os.getenv("HARNESS_API_TYPE", "openai-completions").strip() or "openai-completions",
             api_auth=os.getenv("HARNESS_API_AUTH", "x-api-key").strip().lower() or "x-api-key",
-            user_agent=os.getenv("HARNESS_API_USER_AGENT", "HarnessEval/0.1").strip() or "HarnessEval/0.1",
+            reasoning_effort=os.getenv("HARNESS_REASONING_EFFORT", "").strip() or None,
+            stream=os.getenv("HARNESS_API_STREAM", "1").strip() not in {"0", "false", "no"},
+            user_agent=(
+                os.getenv("HARNESS_API_USER_AGENT", "").strip()
+                or os.getenv("HARNESS_USER_AGENT", "").strip()
+                or "HarnessEval/0.1"
+            ),
         )
+
+
+class StreamInterrupted(Exception):
+    """A stream that ended without a finish_reason, or carried an error frame instead.
+
+    Both look like success at the HTTP layer -- status 200, a well-formed but short body --
+    so without this the caller silently records an empty completion as the model's answer.
+    It joins the transport-retry budget because that is exactly the transient it is.
+    """
+
+
+def _chat_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate internal image tool results to Chat Completions content parts."""
+    rendered: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            rendered.append(message)
+            continue
+        parts: list[dict[str, Any]] = []
+        changed = False
+        for part in content:
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "image"
+                and isinstance(part.get("image"), ToolImage)
+            ):
+                image = part["image"]
+                parts.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image.data_uri, "detail": image.detail},
+                    }
+                )
+                changed = True
+            else:
+                parts.append(part)
+        rendered.append({**message, "content": parts} if changed else message)
+    return rendered
+
+
+def _reassemble_stream(response: Any) -> dict[str, Any]:
+    """Fold an SSE chat-completions stream back into the non-streaming response shape.
+
+    Streaming is not a feature here, it is the only way to place a long call. The relay sits
+    behind Cloudflare, which closes a request that has produced no bytes for ~100s with a 524;
+    at reasoning_effort=high that killed 3/3 non-streamed probes at 125s while the identical
+    streamed calls returned at 156s and 196s. The product harness streams, so a non-streaming
+    control also fails asymmetrically -- only the baseline arm loses its hard cases.
+
+    Callers read completion.raw["choices"][0]["message"], tool_calls included (tau_episode.py),
+    so the reassembled dict has to be that exact shape and not a stream-flavoured cousin.
+    """
+    content: list[str] = []
+    tool_calls: dict[int, dict[str, Any]] = {}
+    finish_reason: str | None = None
+    usage: dict[str, Any] = {}
+    envelope: dict[str, Any] = {}
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line.startswith("data:"):
+            continue
+        data = line[len("data:"):].strip()
+        if data == "[DONE]":
+            break
+        chunk = json.loads(data)
+        if chunk.get("error"):
+            raise StreamInterrupted(json.dumps(chunk["error"], ensure_ascii=False)[:400])
+        for key in ("id", "model", "created", "system_fingerprint"):
+            if chunk.get(key) is not None:
+                envelope[key] = chunk[key]
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+        for choice in chunk.get("choices") or []:
+            if choice.get("finish_reason"):
+                finish_reason = choice["finish_reason"]
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                content.append(delta["content"])
+            for call in delta.get("tool_calls") or []:
+                slot = tool_calls.setdefault(
+                    int(call.get("index") or 0),
+                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                if call.get("id"):
+                    slot["id"] = call["id"]
+                function = call.get("function") or {}
+                # Name arrives whole in the opening frame and empty thereafter, but a provider
+                # is allowed to split it, so append rather than assign.
+                slot["function"]["name"] += function.get("name") or ""
+                slot["function"]["arguments"] += function.get("arguments") or ""
+    if finish_reason is None:
+        raise StreamInterrupted("stream ended without a finish_reason")
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(content)}
+    if tool_calls:
+        message["tool_calls"] = [tool_calls[index] for index in sorted(tool_calls)]
+        message["content"] = message["content"] or None
+    return {
+        **envelope,
+        "object": "chat.completion",
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": usage,
+    }
 
 
 @dataclass(frozen=True)
@@ -89,7 +208,7 @@ class OpenAICompatibleClient:
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         temperature: float | None = None,
         json_mode: bool = False,
@@ -99,6 +218,32 @@ class OpenAICompatibleClient:
             messages,
             temperature=temperature,
             json_mode=json_mode,
+        )
+
+    def complete_sync(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        temperature: float | None = None,
+        json_mode: bool = False,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+    ) -> Completion:
+        """Blocking entry point for a caller that already has a thread of its own.
+
+        A benchmark-owned simulator drives the agent from its own worker thread and its hook
+        is an ordinary synchronous function. Reaching the async API from there costs an
+        asyncio.run() per call -- a fresh event loop, and a fresh default thread pool inside
+        it -- to end up running this very method, which blocks anyway. Nothing is gained and
+        the loop churn is exactly the shape that leaves asyncio primitives created on one
+        loop being awaited on another.
+        """
+        return self._complete_sync(
+            messages,
+            temperature=temperature,
+            json_mode=json_mode,
+            tools=tools,
+            tool_choice=tool_choice,
         )
 
     async def complete_native(
@@ -111,7 +256,7 @@ class OpenAICompatibleClient:
     ) -> Completion:
         """Preserve native chat/tool messages for benchmark-owned simulators."""
         return await asyncio.to_thread(
-            self._complete_sync,
+            self.complete_sync,
             messages,
             temperature=temperature,
             json_mode=False,
@@ -130,10 +275,26 @@ class OpenAICompatibleClient:
     ) -> Completion:
         payload: dict[str, Any] = {
             "model": self.config.model,
-            "messages": messages,
-            "temperature": self.config.temperature if temperature is None else temperature,
-            "stream": False,
+            "messages": _chat_messages(messages),
+            "stream": self.config.stream,
         }
+        if self.config.stream:
+            payload["stream_options"] = {"include_usage": True}
+        # A reasoning model rejects or ignores temperature; the product harness omits it for
+        # the same reason, so a matched control must omit it here too. That applies to the
+        # default, not to a profile that names a temperature itself: dylan passes 1.0 and lats
+        # passes lats_temperature because sampling diversity IS their published mechanism --
+        # DyLAN's agents have nothing to debate if they all answer identically, LATS has
+        # nothing to branch on -- and folding them into the same else-branch silently disabled
+        # the method under HARNESS_REASONING_EFFORT. The two parameters are not exclusive at
+        # the API: gpt-5.6-terra accepted reasoning_effort=high with temperature=1.0 and five
+        # such calls answered Octopus/Octopus/Otter/Elephant/Octopus, so the diversity is real.
+        if self.config.reasoning_effort:
+            payload["reasoning_effort"] = self.config.reasoning_effort
+        if temperature is not None:
+            payload["temperature"] = temperature
+        elif not self.config.reasoning_effort:
+            payload["temperature"] = self.config.temperature
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         if tools:
@@ -157,7 +318,11 @@ class OpenAICompatibleClient:
             )
             try:
                 with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
-                    body = response.read()
+                    raw = (
+                        _reassemble_stream(response)
+                        if self.config.stream
+                        else json.loads(response.read().decode("utf-8"))
+                    )
                 break
             except urllib.error.HTTPError as exc:
                 body = exc.read()
@@ -170,7 +335,13 @@ class OpenAICompatibleClient:
             # this handler and killed the episode outright. Large tool-schema payloads
             # (VitaBench cross-domain sends 66 schemas) make such transient disconnects
             # routine, which is precisely what the retry budget exists for.
-            except (TimeoutError, urllib.error.URLError, http.client.HTTPException, ConnectionError) as exc:
+            except (
+                TimeoutError,
+                urllib.error.URLError,
+                http.client.HTTPException,
+                ConnectionError,
+                StreamInterrupted,
+            ) as exc:
                 if retries >= self.config.transport_retries:
                     raise RuntimeError(
                         f"API transport failed after {retries} retries: {type(exc).__name__}: {exc}"
@@ -178,7 +349,6 @@ class OpenAICompatibleClient:
             retries += 1
             time.sleep(2 ** (retries - 1))
 
-        raw = json.loads(body.decode("utf-8"))
         message = raw["choices"][0]["message"]
         content = message.get("content") or ""
         if not isinstance(content, str):
