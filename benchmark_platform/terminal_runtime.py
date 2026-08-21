@@ -356,6 +356,7 @@ def run_shared_verifier(
     logs_dir.mkdir(parents=True, exist_ok=True)
     if max_attempts <= 0:
         raise ValueError("max_attempts must be positive")
+    deadline = time.monotonic() + timeout_sec
     tests_dir = task_dir / "tests"
     if not (tests_dir / "test.sh").is_file():
         return _infrastructure_result(
@@ -373,7 +374,10 @@ def run_shared_verifier(
             "-lc",
             "rm -rf /tests /logs/verifier && mkdir -p /tests /logs/verifier",
         ),
-        timeout_sec=30,
+        timeout_sec=min(
+            30.0,
+            max(0.001, deadline - time.monotonic()) + DOCKER_CLIENT_GRACE_SEC,
+        ),
     )
     _write_process_output(prepared, log, prefix=f"{prefix}setup ")
     if prepared.returncode != 0:
@@ -386,7 +390,10 @@ def run_shared_verifier(
 
     uploaded = run_captured(
         docker("cp", f"{tests_dir.resolve()}/.", f"{container}:/tests"),
-        timeout_sec=60,
+        timeout_sec=min(
+            60.0,
+            max(0.001, deadline - time.monotonic()) + DOCKER_CLIENT_GRACE_SEC,
+        ),
     )
     _write_process_output(uploaded, log, prefix=f"{prefix}upload ")
     if uploaded.returncode != 0:
@@ -397,7 +404,6 @@ def run_shared_verifier(
             attempts=0,
         )
 
-    deadline = time.monotonic() + timeout_sec
     attempts = 0
     checked = subprocess.CompletedProcess([], 1, "", "Verifier did not run")
     network_pattern: str | None = None

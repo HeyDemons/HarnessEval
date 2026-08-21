@@ -17,6 +17,9 @@ from benchmark_platform.engine import (
     docker_host_gateway_flags,
     docker_socket_source,
     terminal_agent_command,
+    terminal_phase_timeout_sec,
+    terminal_result_outcome,
+    terminal_verifier_reserve_sec,
 )
 from benchmark_platform.scorers.gaia import question_score
 from benchmark_platform.store import CaseStore
@@ -67,6 +70,56 @@ class PlatformTests(unittest.TestCase):
         self.assertEqual(args.benchmark, "gaia")
         self.assertEqual(args.case, "case-1")
         self.assertTrue(args.no_build)
+
+    def test_missing_terminal_verifier_measurement_dominates_agent_failure(self) -> None:
+        verifier = {
+            "status": "infra_failed",
+            "error": "failed to download verifier dependency",
+        }
+        self.assertEqual(
+            terminal_result_outcome(
+                verifier,
+                agent_failure_kind="agent_runtime",
+                agent_error="replan budget exhausted",
+            ),
+            (
+                "failed",
+                "verifier_infrastructure",
+                "failed to download verifier dependency",
+            ),
+        )
+        self.assertEqual(
+            terminal_result_outcome(
+                {"status": "completed"},
+                agent_failure_kind="agent_timeout",
+                agent_error="timed out",
+            ),
+            ("failed", "agent_timeout", "timed out"),
+        )
+        self.assertEqual(
+            terminal_result_outcome(
+                {"status": "infra_failed", "error": "verifier did not run"},
+                infrastructure_failure_kind="task_environment",
+                infrastructure_error="container did not start",
+            ),
+            ("failed", "task_environment", "container did not start"),
+        )
+
+    def test_terminal_arm_deadline_reserves_native_verifier_time(self) -> None:
+        with (
+            patch.dict(
+                os.environ,
+                {"TERMINAL_BENCH_VERIFIER_RESERVE_S": "120"},
+                clear=False,
+            ),
+            patch("benchmark_platform.engine.time.monotonic", return_value=100.0),
+        ):
+            reserve = terminal_verifier_reserve_sec(590.0)
+            effective = terminal_phase_timeout_sec(
+                900.0, 690.0, reserve_sec=reserve
+            )
+        self.assertEqual(reserve, 120.0)
+        self.assertEqual(effective, 470.0)
 
     def test_gaia_public_scorer_semantics(self) -> None:
         self.assertTrue(question_score("$1,234", "1234"))

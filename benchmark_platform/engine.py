@@ -114,6 +114,63 @@ def terminal_agent_command(command_override: list[str] | None, smoke: bool) -> s
     return None
 
 
+def terminal_result_outcome(
+    verifier_result: dict[str, Any],
+    *,
+    infrastructure_failure_kind: str | None = None,
+    infrastructure_error: str | None = None,
+    agent_failure_kind: str | None = None,
+    agent_error: str | None = None,
+) -> tuple[str, str | None, str | None]:
+    """Classify a task-container run without inventing a missing native score.
+
+    An agent can time out or crash after changing enough state to pass the verifier, so
+    those agent outcomes are only scoreable when the shared verifier itself completed.
+    If both happen, the missing verifier measurement is the retryable top-level failure;
+    the caller still records the agent result separately in its native artifacts.
+    Infrastructure that prevented a valid agent run remains the more specific root cause.
+    """
+
+    if infrastructure_failure_kind is not None:
+        return "failed", infrastructure_failure_kind, infrastructure_error
+    if verifier_result.get("status") != "completed":
+        return "failed", "verifier_infrastructure", verifier_result.get("error")
+    if agent_failure_kind is not None:
+        return "failed", agent_failure_kind, agent_error
+    return "completed", None, None
+
+
+def terminal_arm_timeout_sec() -> float | None:
+    raw = os.environ.get("HARNESS_ARM_TIMEOUT_S", "").strip()
+    if not raw:
+        return None
+    value = float(raw)
+    if value <= 0:
+        raise ValueError("HARNESS_ARM_TIMEOUT_S must be positive")
+    return value
+
+
+def terminal_phase_timeout_sec(
+    requested: float,
+    deadline: float | None,
+    *,
+    reserve_sec: float = 0.0,
+) -> float:
+    if deadline is None:
+        return requested
+    available = deadline - time.monotonic() - reserve_sec
+    return max(0.001, min(requested, available))
+
+
+def terminal_verifier_reserve_sec(arm_timeout_sec: float | None) -> float:
+    if arm_timeout_sec is None:
+        return 0.0
+    configured = float(os.environ.get("TERMINAL_BENCH_VERIFIER_RESERVE_S", "120"))
+    if configured < 0:
+        raise ValueError("TERMINAL_BENCH_VERIFIER_RESERVE_S must be non-negative")
+    return min(configured, arm_timeout_sec / 2)
+
+
 def _container_reachable_proxy(proxy: str) -> str:
     """Translate a macOS loopback proxy URL into Docker's host gateway name."""
     parsed = urlsplit(proxy)
@@ -1753,6 +1810,13 @@ class Platform:
             container=container_name,
             labels=["orch.benchmark-platform=1", "orch.task-container-agent=1"],
         )
+        arm_timeout_sec = terminal_arm_timeout_sec()
+        arm_deadline = (
+            time.monotonic() + arm_timeout_sec
+            if arm_timeout_sec is not None
+            else None
+        )
+        verifier_reserve_sec = terminal_verifier_reserve_sec(arm_timeout_sec)
         request = {
             "schema_version": 1,
             "benchmark": benchmark.id,
@@ -1767,8 +1831,17 @@ class Platform:
             "profile": adapter["profile"]["id"],
             "policy": adapter["policy"],
             "resume_identity": benchmark.raw["resume_identity"],
-            "agent_timeout_sec": settings.agent_timeout_sec,
-            "verifier_timeout_sec": settings.verifier_timeout_sec,
+            "agent_timeout_sec": terminal_phase_timeout_sec(
+                settings.agent_timeout_sec,
+                arm_deadline,
+                reserve_sec=verifier_reserve_sec,
+            ),
+            "verifier_timeout_sec": terminal_phase_timeout_sec(
+                settings.verifier_timeout_sec, arm_deadline
+            ),
+            "task_agent_timeout_sec": settings.agent_timeout_sec,
+            "task_verifier_timeout_sec": settings.verifier_timeout_sec,
+            "arm_timeout_sec": arm_timeout_sec,
             "resource_limits": settings.resource_limits,
             "verifier_mode": settings.verifier_mode,
         }
@@ -1803,6 +1876,12 @@ class Platform:
                     container_started = started_container.returncode == 0
                 if container_started:
                     native_workdir = container_workdir(self._docker, container_name)
+                    effective_agent_timeout = terminal_phase_timeout_sec(
+                        settings.agent_timeout_sec,
+                        arm_deadline,
+                        reserve_sec=verifier_reserve_sec,
+                    )
+                    request["agent_timeout_sec"] = effective_agent_timeout
                     request["container_workdir"] = native_workdir
                     atomic_json(attempt / "request.json", request)
                     harness_result = run_terminal_profile(
@@ -1813,15 +1892,20 @@ class Platform:
                         trace_path=attempt / "harness_trace.jsonl",
                         workspace_root="/",
                         default_workdir=native_workdir,
-                        timeout_sec=settings.agent_timeout_sec,
+                        timeout_sec=effective_agent_timeout,
                     )
                     atomic_json(attempt / "harness_result.json", harness_result)
+                    effective_verifier_timeout = terminal_phase_timeout_sec(
+                        settings.verifier_timeout_sec, arm_deadline
+                    )
+                    request["verifier_timeout_sec"] = effective_verifier_timeout
+                    atomic_json(attempt / "request.json", request)
                     verifier_result = run_shared_verifier(
                         docker=self._docker,
                         container=container_name,
                         task_dir=task_dir,
                         logs_dir=logs,
-                        timeout_sec=settings.verifier_timeout_sec,
+                        timeout_sec=effective_verifier_timeout,
                         log=terminal,
                         prefix=f"[{benchmark.id}:verifier] ",
                         verifier_env={
@@ -1870,21 +1954,32 @@ class Platform:
         }
         atomic_json(attempt / "payload.json", payload)
         harness_completed = harness_result.get("status") == "completed"
-        verifier_completed = verifier_result.get("status") == "completed"
-        if not harness_completed:
-            failure_kind = harness_result.get("failure_kind") or "agent_runtime"
-            error = harness_result.get("error")
-        elif not verifier_completed:
-            failure_kind = "verifier_infrastructure"
-            error = verifier_result.get("error")
-        else:
-            failure_kind = None
-            error = None
+        harness_failure_kind = (
+            None
+            if harness_completed
+            else harness_result.get("failure_kind") or "agent_runtime"
+        )
+        harness_infrastructure = harness_failure_kind in {
+            "task_environment",
+            "tool_bridge_infrastructure",
+            "provider_error",
+        }
+        status, failure_kind, error = terminal_result_outcome(
+            verifier_result,
+            infrastructure_failure_kind=(
+                harness_failure_kind if harness_infrastructure else None
+            ),
+            infrastructure_error=(
+                harness_result.get("error") if harness_infrastructure else None
+            ),
+            agent_failure_kind=(
+                harness_failure_kind if not harness_infrastructure else None
+            ),
+            agent_error=harness_result.get("error"),
+        )
         result = {
             **request,
-            "status": "completed"
-            if harness_completed and verifier_completed
-            else "failed",
+            "status": status,
             "failure_kind": failure_kind,
             "error": error,
             "finished_at": utc_now(),
@@ -1960,6 +2055,13 @@ class Platform:
             labels=["orch.benchmark-platform=1", f"orch.benchmark={benchmark.id}"],
             extra_flags=extra_flags,
         )
+        arm_timeout_sec = terminal_arm_timeout_sec()
+        arm_deadline = (
+            time.monotonic() + arm_timeout_sec
+            if arm_timeout_sec is not None
+            else None
+        )
+        verifier_reserve_sec = terminal_verifier_reserve_sec(arm_timeout_sec)
         request = {
             "schema_version": 1,
             "benchmark": benchmark.id,
@@ -1972,8 +2074,17 @@ class Platform:
             "smoke": smoke,
             "environment_names": [],
             "task_name": metadata["task"]["name"],
-            "agent_timeout_sec": settings.agent_timeout_sec,
-            "verifier_timeout_sec": settings.verifier_timeout_sec,
+            "agent_timeout_sec": terminal_phase_timeout_sec(
+                settings.agent_timeout_sec,
+                arm_deadline,
+                reserve_sec=verifier_reserve_sec,
+            ),
+            "verifier_timeout_sec": terminal_phase_timeout_sec(
+                settings.verifier_timeout_sec, arm_deadline
+            ),
+            "task_agent_timeout_sec": settings.agent_timeout_sec,
+            "task_verifier_timeout_sec": settings.verifier_timeout_sec,
+            "arm_timeout_sec": arm_timeout_sec,
             "resource_limits": settings.resource_limits,
             "verifier_mode": settings.verifier_mode,
         }
@@ -2018,6 +2129,12 @@ class Platform:
                         )
                 if container_started:
                     native_workdir = container_workdir(self._docker, container_name)
+                    effective_agent_timeout = terminal_phase_timeout_sec(
+                        settings.agent_timeout_sec,
+                        arm_deadline,
+                        reserve_sec=verifier_reserve_sec,
+                    )
+                    request["agent_timeout_sec"] = effective_agent_timeout
                     request["container_workdir"] = native_workdir
                     atomic_json(attempt / "request.json", request)
                     agent = run_captured(
@@ -2025,10 +2142,10 @@ class Platform:
                             self._docker,
                             container_name,
                             ["bash", "-lc", shell_command],
-                            timeout_sec=settings.agent_timeout_sec,
+                            timeout_sec=effective_agent_timeout,
                             user=metadata.get("agent", {}).get("user"),
                         ),
-                        timeout_sec=settings.agent_timeout_sec + 15,
+                        timeout_sec=effective_agent_timeout + 15,
                     )
                     agent_returncode = agent.returncode
                     agent_timed_out = agent.returncode == 124
@@ -2036,12 +2153,17 @@ class Platform:
                         terminal.write(f"[{benchmark.id}:agent] {agent.stdout}")
                     if agent.stderr:
                         terminal.write(f"[{benchmark.id}:agent:stderr] {agent.stderr}")
+                    effective_verifier_timeout = terminal_phase_timeout_sec(
+                        settings.verifier_timeout_sec, arm_deadline
+                    )
+                    request["verifier_timeout_sec"] = effective_verifier_timeout
+                    atomic_json(attempt / "request.json", request)
                     verifier_result = run_shared_verifier(
                         docker=self._docker,
                         container=container_name,
                         task_dir=task_dir,
                         logs_dir=logs,
-                        timeout_sec=settings.verifier_timeout_sec,
+                        timeout_sec=effective_verifier_timeout,
                         log=terminal,
                         prefix=f"[{benchmark.id}:verifier] ",
                         verifier_env={
@@ -2088,32 +2210,34 @@ class Platform:
             "oracle_smoke": smoke,
         }
         atomic_json(attempt / "payload.json", payload)
-        verifier_completed = verifier_result.get("status") == "completed"
         if environment_error is not None:
-            failure_kind = "task_environment"
-            error = environment_error
-        elif agent_timed_out:
-            failure_kind = "agent_timeout"
-            error = f"Agent exceeded its {settings.agent_timeout_sec:.1f}s wall-clock timeout"
-        elif agent_returncode != 0:
-            failure_kind = "agent_runtime"
-            error = f"Agent command exited with code {agent_returncode}"
-        elif not verifier_completed:
-            failure_kind = "verifier_infrastructure"
-            error = verifier_result.get("error")
+            infrastructure_failure_kind = "task_environment"
+            infrastructure_error = environment_error
         else:
-            failure_kind = None
-            error = None
+            infrastructure_failure_kind = None
+            infrastructure_error = None
+        if agent_timed_out:
+            agent_failure_kind = "agent_timeout"
+            agent_error = (
+                f"Agent exceeded its {request['agent_timeout_sec']:.1f}s wall-clock timeout"
+            )
+        elif agent_returncode != 0:
+            agent_failure_kind = "agent_runtime"
+            agent_error = f"Agent command exited with code {agent_returncode}"
+        else:
+            agent_failure_kind = None
+            agent_error = None
+        status, failure_kind, error = terminal_result_outcome(
+            verifier_result,
+            infrastructure_failure_kind=infrastructure_failure_kind,
+            infrastructure_error=infrastructure_error,
+            agent_failure_kind=agent_failure_kind,
+            agent_error=agent_error,
+        )
         result = {
             **request,
             # A valid reward of zero is a completed measurement, not an execution failure.
-            "status": (
-                "completed"
-                if agent_returncode == 0
-                and verifier_completed
-                and environment_error is None
-                else "failed"
-            ),
+            "status": status,
             "failure_kind": failure_kind,
             "error": error,
             "finished_at": utc_now(),
