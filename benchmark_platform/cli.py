@@ -9,6 +9,7 @@ from pathlib import Path
 from .engine import Platform
 from .compatibility import compatibility_rows
 from .harnesses import PROFILES
+from .products import run_claude_cli, run_codex_cli, run_pi_cli
 from .suites import SUITE_MODES, SuiteCatalog
 from .util import atomic_json, select
 
@@ -130,6 +131,55 @@ def build_parser() -> argparse.ArgumentParser:
     bridge_run.add_argument("--retry-failed", action="store_true")
     bridge_run.add_argument("--no-build", action="store_true")
     bridge_run.add_argument("--pass-env", action="append", default=[])
+
+    product_run = sub.add_parser(
+        "product-run",
+        help="Run a host-local product CLI through a benchmark-owned Docker tool bridge and native scorer.",
+    )
+    product_run.add_argument("product", choices=["pi", "codex", "claude"])
+    product_run.add_argument("benchmark")
+    product_run.add_argument("--case", required=True)
+    product_run.add_argument("--run-dir", type=Path, required=True)
+    product_run.add_argument("--executable")
+    product_run.add_argument("--provider")
+    product_run.add_argument("--base-url")
+    product_run.add_argument(
+        "--api-key-env",
+        help="Name of a custom Codex or Claude provider key variable; its value is never serialized.",
+    )
+    product_run.add_argument("--model")
+    product_run.add_argument(
+        "--thinking",
+        choices=["off", "minimal", "low", "medium", "high", "xhigh"],
+    )
+    product_run.add_argument("--policy", default="{}", help="JSON object for a native benchmark episode")
+    product_run.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    product_run.add_argument("--retry-failed", action="store_true")
+    product_run.add_argument("--no-build", action="store_true")
+    product_run.add_argument(
+        "--pass-env",
+        action="append",
+        default=[],
+        help="Pass one benchmark-allow-listed variable by name; its value is never serialized.",
+    )
+    product_run.add_argument(
+        "--pi-env",
+        action="append",
+        default=[],
+        help="Pass one variable by name only to the local Pi process, never to benchmark Docker.",
+    )
+    product_run.add_argument(
+        "--codex-env",
+        action="append",
+        default=[],
+        help="Pass one variable by name only to the local Codex process, never to benchmark Docker.",
+    )
+    product_run.add_argument(
+        "--claude-env",
+        action="append",
+        default=[],
+        help="Pass one variable by name only to the local Claude Code process, never to benchmark Docker.",
+    )
     return parser
 
 
@@ -305,6 +355,59 @@ def _main() -> None:
             build_missing=not args.no_build,
             pass_env=args.pass_env,
         )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        raise SystemExit(0 if result["status"] == "completed" else 1)
+    if args.action == "product-run":
+        try:
+            policy = json.loads(args.policy)
+        except json.JSONDecodeError as exc:
+            parser.error(f"--policy must be one complete JSON object: {exc}")
+        if not isinstance(policy, dict):
+            parser.error("--policy must decode to an object")
+        common = {
+            "platform": platform,
+            "benchmark": platform.catalog.get(args.benchmark),
+            "case_id": args.case,
+            "run_dir": args.run_dir,
+            "provider": args.provider,
+            "model": args.model,
+            "thinking": args.thinking,
+            "policy": policy,
+            "pass_env": args.pass_env,
+            "resume": args.resume,
+            "retry_failed": args.retry_failed,
+            "build_missing": not args.no_build,
+        }
+        if args.product == "pi":
+            if args.base_url or args.api_key_env or args.codex_env or args.claude_env:
+                parser.error(
+                    "--base-url, --api-key-env, --codex-env, and --claude-env do not apply to product-run pi"
+                )
+            result = run_pi_cli(
+                **common,
+                executable=args.executable or "pi",
+                pi_env=args.pi_env,
+            )
+        elif args.product == "codex":
+            if args.pi_env or args.claude_env:
+                parser.error("--pi-env and --claude-env do not apply to product-run codex")
+            result = run_codex_cli(
+                **common,
+                executable=args.executable,
+                base_url=args.base_url,
+                api_key_env=args.api_key_env,
+                codex_env=args.codex_env,
+            )
+        else:
+            if args.pi_env or args.codex_env:
+                parser.error("--pi-env and --codex-env do not apply to product-run claude")
+            result = run_claude_cli(
+                **common,
+                executable=args.executable,
+                base_url=args.base_url,
+                api_key_env=args.api_key_env,
+                claude_env=args.claude_env,
+            )
         print(json.dumps(result, ensure_ascii=False, indent=2))
         raise SystemExit(0 if result["status"] == "completed" else 1)
 

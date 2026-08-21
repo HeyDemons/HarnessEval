@@ -88,6 +88,13 @@ def _trajectory_tool(tool: dict[str, Any], catalog: Any) -> dict[str, Any]:
         "API name": definition["API name"],
         "required parameters": parameters("required parameters"),
         "optional parameters": parameters("optional parameters"),
+        "replay arguments": {
+            str(item.get("name")): item.get("value")
+            for label in ("required parameters", "optional parameters")
+            for item in tool.get(label, []) or []
+            if item.get("name") and "value" in item
+        },
+        "replay output": tool.get("executed_output"),
     }
 
 

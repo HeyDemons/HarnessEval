@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import ApiConfig, OpenAICompatibleClient
+from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
 
 from .episode import EpisodeBroker, FinalResponse, NativeTool
 
@@ -187,7 +187,7 @@ def _load_task(case_id: str):
     return task_set, matches[0]
 
 
-def _patch_tau_generation(client: OpenAICompatibleClient) -> None:
+def _patch_tau_generation(client: CompletionClient) -> None:
     from tau2.data_model.message import AssistantMessage, ToolCall
     from tau2.utils.llm_utils import to_litellm_messages
 
@@ -269,7 +269,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
 
     seed = int(policy.get("seed", 42))
     random.seed(seed)
-    client = OpenAICompatibleClient(ApiConfig.from_env())
+    client = completion_client_from_env()
     _patch_tau_generation(client)
     task_set, task = _load_task(case_id)
     domain = TASK_SET_DOMAINS.get(task_set, task_set)

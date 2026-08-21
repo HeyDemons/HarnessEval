@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from benchmark_platform.harnesses.api import ApiConfig, OpenAICompatibleClient
+from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 
@@ -95,7 +95,7 @@ class EpisodeBroker:
         tools: list[NativeTool],
         trace_path: Path,
         policy: dict[str, Any],
-        client: OpenAICompatibleClient | None = None,
+        client: CompletionClient | None = None,
     ):
         if any(tool.name == SEND_MESSAGE_TOOL for tool in tools):
             raise ValueError(f"Native benchmark already defines reserved tool {SEND_MESSAGE_TOOL}")
@@ -104,7 +104,7 @@ class EpisodeBroker:
         self.native_tools = tools
         self.trace = JsonlTrace(trace_path)
         self.policy = policy
-        self.client = client or OpenAICompatibleClient(ApiConfig.from_env())
+        self.client = client or completion_client_from_env()
         self._events: queue.Queue[ActionRequest | FinalResponse | EpisodeFailure] = queue.Queue()
         self._ready = threading.Event()
         self._pending: dict[str, ActionRequest] = {}

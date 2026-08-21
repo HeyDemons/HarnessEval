@@ -157,7 +157,11 @@ PROFILES = (
         source="https://github.com/billxbf/ReWOO",
         revision="9cd0283043ff4be0c9d614fda2789d143ca6ffd1",
         tool_contract="dynamic",
-        notes="Plans evidence calls before executing the benchmark toolset.",
+        notes=(
+            "Uses the source Plan/#E protocol: the Planner fixes all calls first, explicit sequential Evidence "
+            "Workers execute dynamic benchmark tools or the LLM worker with prior-evidence substitution, and the "
+            "Solver receives the complete worker log."
+        ),
     ),
     HarnessProfile(
         id="sa",

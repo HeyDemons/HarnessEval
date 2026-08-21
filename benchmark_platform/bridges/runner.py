@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import ApiConfig, OpenAICompatibleClient
+from benchmark_platform.harnesses.api import completion_client_from_env
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import get_profile
@@ -35,7 +35,7 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             path.chmod(path.stat().st_mode | (0o222 if path.is_file() else 0o333))
     bridge = load_case(benchmark, case_id, case_root)
     environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
-    context = RunContext(profile_id, bridge.prompt, OpenAICompatibleClient(ApiConfig.from_env()), environment, trace, policy)
+    context = RunContext(profile_id, bridge.prompt, completion_client_from_env(), environment, trace, policy)
     _write(job / "bridge_manifest.json", {"benchmark": benchmark, "case_id": case_id, "profile": profile_id, "tool_schemas": [tool.prompt_schema() for tool in bridge.tools], "metadata": bridge.metadata})
     started = time.perf_counter()
     try:

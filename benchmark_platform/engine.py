@@ -151,6 +151,58 @@ class Platform:
         flags.extend(["-e", f"NO_PROXY={no_proxy}", "-e", f"no_proxy={no_proxy}"])
         return flags
 
+    def _build_egress_args(self) -> list[str]:
+        """Mirror runtime proxy policy into Docker build steps.
+
+        Docker Desktop exposes its daemon proxy as implicit build arguments. An
+        explicit empty value is therefore required when the macOS host is using
+        direct egress. BENCHMARK_BUILD_PROXY may override the runtime policy for
+        package installation during image builds.
+        """
+        configured = os.environ.get("BENCHMARK_BUILD_PROXY")
+        if configured is None:
+            configured = os.environ.get("BENCHMARK_RUN_PROXY")
+        mode = configured.strip() if configured is not None else "auto"
+        if not mode:
+            mode = "auto"
+        if mode.lower() == "inherit":
+            return []
+        if mode.lower() == "auto":
+            proxy = local_proxy_url() or ""
+        elif mode.lower() == "direct":
+            proxy = ""
+        else:
+            proxy = _container_reachable_proxy(mode)
+            parsed = urlsplit(proxy)
+            if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+                raise ValueError(
+                    "BENCHMARK_BUILD_PROXY must be 'auto', 'inherit', 'direct', or a complete proxy URL"
+                )
+        no_proxy = (
+            (
+                os.environ.get("BENCHMARK_BUILD_NO_PROXY")
+                or os.environ.get("BENCHMARK_RUN_NO_PROXY")
+                or os.environ.get("NO_PROXY")
+                or os.environ.get("no_proxy")
+                or "localhost,127.0.0.1,::1,host.docker.internal"
+            ).strip()
+            if proxy
+            else "*"
+        )
+        arguments: list[str] = []
+        for name in (
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ):
+            arguments.extend(["--build-arg", f"{name}={proxy}"])
+        arguments.extend(["--build-arg", f"NO_PROXY={no_proxy}"])
+        arguments.extend(["--build-arg", f"no_proxy={no_proxy}"])
+        return arguments
+
     def image_exists(self, image: str) -> bool:
         return subprocess.run(
             self._docker("image", "inspect", image),
@@ -243,11 +295,7 @@ class Platform:
             command.extend(["--target", target])
         if fingerprint := self.adapter_fingerprint(adapter):
             command.extend(["--label", f"org.harnesseval.adapter-fingerprint={fingerprint}"])
-        if "BENCHMARK_BUILD_PROXY" in os.environ:
-            build_proxy = os.environ["BENCHMARK_BUILD_PROXY"]
-            build_proxy = "" if build_proxy == "direct" else build_proxy
-            command.extend(["--build-arg", f"HTTP_PROXY={build_proxy}"])
-            command.extend(["--build-arg", f"HTTPS_PROXY={build_proxy}"])
+        command.extend(self._build_egress_args())
         if pip_index := os.environ.get("BENCHMARK_PIP_INDEX_URL"):
             command.extend(["--build-arg", f"PIP_INDEX_URL={pip_index}"])
         if apt_mirror := os.environ.get("BENCHMARK_APT_MIRROR"):
@@ -380,6 +428,7 @@ class Platform:
         if base_failure := self._ensure_base_images(adapter, pull=pull):
             return {"benchmark": benchmark.id, **base_failure}
         command = self._docker("build")
+        command.extend(self._build_egress_args())
         if pull:
             command.append("--pull")
         if platform := adapter.get("platform"):
@@ -567,6 +616,9 @@ class Platform:
                 raise RuntimeError(f"Unable to pull harness runtime image: {image}")
         harness_env = [
             "HARNESS_API_BASE",
+            "HARNESS_API_TYPE",
+            "HARNESS_API_AUTH",
+            "HARNESS_API_USER_AGENT",
             "HARNESS_API_KEY",
             "HARNESS_MODEL",
             "HARNESS_TEMPERATURE",
@@ -706,6 +758,9 @@ class Platform:
         prepared = None if native_episode else self._prepare_bridge_case(benchmark, case_id, run_dir)
         harness_env = {
             "HARNESS_API_BASE",
+            "HARNESS_API_TYPE",
+            "HARNESS_API_AUTH",
+            "HARNESS_API_USER_AGENT",
             "HARNESS_API_KEY",
             "HARNESS_MODEL",
             "HARNESS_TEMPERATURE",
@@ -828,6 +883,9 @@ class Platform:
     ) -> dict[str, Any]:
         harness_env = {
             "HARNESS_API_BASE",
+            "HARNESS_API_TYPE",
+            "HARNESS_API_AUTH",
+            "HARNESS_API_USER_AGENT",
             "HARNESS_API_KEY",
             "HARNESS_MODEL",
             "HARNESS_TEMPERATURE",
@@ -902,6 +960,9 @@ class Platform:
     ) -> dict[str, Any]:
         harness_env = {
             "HARNESS_API_BASE",
+            "HARNESS_API_TYPE",
+            "HARNESS_API_AUTH",
+            "HARNESS_API_USER_AGENT",
             "HARNESS_API_KEY",
             "HARNESS_MODEL",
             "HARNESS_TEMPERATURE",

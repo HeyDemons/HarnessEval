@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import ApiConfig, OpenAICompatibleClient
+from benchmark_platform.harnesses.api import completion_client_from_env
 
 from .episode import SEND_MESSAGE_TOOL
 from .product_episode import PendingProductAction, ProductEpisodeBridge, serve
@@ -47,7 +47,7 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
     language = str(policy.get("language", "english"))
     seed = int(policy.get("seed", 42))
     random.seed(seed)
-    client = OpenAICompatibleClient(ApiConfig.from_env())
+    client = completion_client_from_env()
     _patch_vita_generation(client)
     task = _find_task(case_id, language)
     environment = _build_environment(task, language)
@@ -208,16 +208,29 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
             language=language,
         ).run()
         native_reward = None
+        native_score_error = None
         if policy.get("native_evaluate") is True:
-            native_reward = evaluate_simulation(
-                domain=str(task.domain),
-                task=task,
-                simulation=simulation,
-                evaluation_type=str(policy.get("evaluation_type", "trajectory")),
-                llm_evaluator="harnesseval-evaluator",
-                llm_args_evaluator={},
-                language=language,
-            ).model_dump(mode="json")
+            try:
+                native_reward = evaluate_simulation(
+                    domain=str(task.domain),
+                    task=task,
+                    simulation=simulation,
+                    evaluation_type=str(policy.get("evaluation_type", "trajectory")),
+                    llm_evaluator="harnesseval-evaluator",
+                    llm_args_evaluator={},
+                    language=language,
+                ).model_dump(mode="json")
+            except Exception as exc:
+                native_score_error = f"{type(exc).__name__}: {exc}"
+                from benchmark_platform.util import atomic_json
+
+                atomic_json(
+                    bridge.job / "native_evaluator_error.json",
+                    {
+                        "error": native_score_error,
+                        "traceback": traceback.format_exc(),
+                    },
+                )
         bridge.complete(
             {
                 "schema_version": 1,
@@ -230,7 +243,14 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
                 "messages": len(simulation.messages),
                 "native_reward": native_reward,
                 "native_score": native_reward.get("reward") if native_reward is not None else None,
-                "native_score_status": "completed" if native_reward is not None else "not_requested",
+                "native_score_status": (
+                    "completed"
+                    if native_reward is not None
+                    else "error"
+                    if native_score_error is not None
+                    else "not_requested"
+                ),
+                "native_score_error": native_score_error,
                 "simulation": simulation.model_dump(mode="json"),
                 "tool_contract": _tool_contract(environment.get_tools()),
             },

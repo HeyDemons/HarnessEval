@@ -3,6 +3,8 @@ __pycache__/
 .venv/
 .env
 runs/
+outputs/
+.artifact_work/
 .sources/
 .DS_Store
 build/

@@ -47,6 +47,12 @@ assume a proxy bound to macOS localhost is container-reachable.
 `BENCHMARK_PIP_INDEX_URL` selects an alternate Python package index for
 supported image builds.
 
+Build steps use the same default `auto` policy as runtime containers: mirror the
+active macOS proxy, or explicitly clear Docker's injected proxy when the host is
+using direct egress. `BENCHMARK_BUILD_PROXY` overrides that policy with
+`auto`, `inherit`, `direct`, or a complete proxy URL; when it is unset,
+`BENCHMARK_RUN_PROXY` applies to both build and runtime traffic.
+
 Runtime benchmark and model traffic uses a separate explicit control:
 
 ```bash

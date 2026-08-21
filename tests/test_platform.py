@@ -140,6 +140,30 @@ class PlatformTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 platform._egress_env("bridge")
 
+    def test_build_proxy_defaults_to_runtime_auto_policy(self) -> None:
+        platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("benchmark_platform.engine.local_proxy_url", return_value=None),
+        ):
+            direct = platform._build_egress_args()
+        direct_values = [direct[index + 1] for index in range(0, len(direct), 2)]
+        self.assertIn("HTTP_PROXY=", direct_values)
+        self.assertIn("ALL_PROXY=", direct_values)
+        self.assertIn("NO_PROXY=*", direct_values)
+
+        with patch.dict(
+            os.environ,
+            {"BENCHMARK_RUN_PROXY": "http://127.0.0.1:7890"},
+            clear=True,
+        ):
+            mirrored = platform._build_egress_args()
+        mirrored_values = [mirrored[index + 1] for index in range(0, len(mirrored), 2)]
+        self.assertIn("HTTPS_PROXY=http://host.docker.internal:7890", mirrored_values)
+
+        with patch.dict(os.environ, {"BENCHMARK_BUILD_PROXY": "inherit"}, clear=True):
+            self.assertEqual(platform._build_egress_args(), [])
+
     def test_pre_pull_uses_local_base_unless_refresh_is_explicit(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
         adapter = {"pre_pull": ["example/base:fixed"]}

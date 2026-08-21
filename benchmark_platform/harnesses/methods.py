@@ -248,9 +248,9 @@ async def run_profile(ctx: RunContext) -> str:
         run_magentic_one,
         run_memgpt,
         run_multi_persona,
-        run_rewoo,
         run_sa,
     )
+    from .rewoo import run_rewoo
 
     extended = {
         "aflow": run_aflow,
