@@ -187,15 +187,36 @@ def _extract_single_json_object(
     sources = fenced or [stripped]
     matches: list[dict[str, Any]] = []
     for source in sources:
-        try:
-            value, end = decoder.raw_decode(source)
-        except json.JSONDecodeError:
-            continue
-        if source[end:].strip() or not isinstance(value, dict):
-            continue
-        if root_key is not None and root_key not in value:
-            continue
-        matches.append(value)
+        starts: list[int] = []
+        in_string = False
+        escaped = False
+        for index, character in enumerate(source):
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+                continue
+            if character == '"':
+                in_string = True
+            elif character == "{":
+                starts.append(index)
+        decoded_through = 0
+        for start in starts:
+            if start < decoded_through:
+                continue
+            try:
+                value, end = decoder.raw_decode(source[start:])
+            except json.JSONDecodeError:
+                continue
+            decoded_through = max(decoded_through, start + end)
+            if not isinstance(value, dict):
+                continue
+            if root_key is not None and root_key not in value:
+                continue
+            matches.append(value)
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:

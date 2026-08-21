@@ -1337,6 +1337,58 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(plan["assignments"][0]["id"], "w1")
         self.assertEqual(len(client.messages), 1)
 
+    def test_strict_json_accepts_one_reasoning_wrapped_object(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                ['<think>check the DAG</think> {"action":"replan","feedback":"fix it"}']
+            )
+            context = RunContext(
+                "llmcompiler",
+                "compile",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"protocol_repairs": 0},
+            )
+            decision = asyncio.run(
+                context.complete_json(
+                    "joiner",
+                    [{"role": "user", "content": "join"}],
+                    required_root_key="action",
+                    strict_single_object=True,
+                )
+            )
+
+        self.assertEqual(decision["action"], "replan")
+
+    def test_strict_json_rejects_two_reasoning_wrapped_objects(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient(
+                [
+                    '<think>drafts</think> {"action":"replan","feedback":"one"}'
+                    '<think>second</think> {"action":"finish","answer":"two"}'
+                ]
+            )
+            context = RunContext(
+                "llmcompiler",
+                "compile",
+                client,
+                ToolEnvironment(tool_specs(), trace),
+                trace,
+                {"protocol_repairs": 0},
+            )
+            with self.assertRaisesRegex(ValueError, "multiple complete JSON objects"):
+                asyncio.run(
+                    context.complete_json(
+                        "joiner",
+                        [{"role": "user", "content": "join"}],
+                        required_root_key="action",
+                        strict_single_object=True,
+                    )
+                )
+
     def test_json_parser_preserves_large_complete_value(self) -> None:
         value = {"text": "x" * 200_000, "tail": [1, 2, 3]}
         self.assertEqual(extract_json(json.dumps(value)), value)
