@@ -21,6 +21,7 @@ from benchmark_platform.bridges.episode import NativeTool
 from benchmark_platform.bridges.product_episode import ProductEpisodeBridge
 from benchmark_platform.bridges.product_server import (
     PRODUCT_WORKSPACE_ROOT,
+    ProductBridge,
     translate_product_workspace_arguments,
 )
 from benchmark_platform.bridges.prepare import _trajectory_source_tools, _trajectory_tool
@@ -207,6 +208,25 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(bridge.metadata["messages"], messages)
         self.assertTrue(result["result"]["declaration_only"])
         self.assertEqual(result["result"]["execution"], "not_run")
+
+    def test_bfcl_product_does_not_prelaunch_declaration_only_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            job = root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            bridge = ProductBridge("bfcl", "case", source, job)
+            try:
+                manifest = bridge.manifest()
+            finally:
+                bridge.close()
+
+        self.assertEqual(
+            manifest["metadata"]["lifecycle"], "single_turn_declaration_only"
+        )
+        self.assertEqual(manifest["safe_tools"], [])
 
     def test_bfcl_runner_keeps_calls_when_only_profile_termination_fails(self) -> None:
         messages = [

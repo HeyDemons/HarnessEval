@@ -65,11 +65,21 @@ class ProductBridge:
         self.trace = JsonlTrace(job / "tool_trace.jsonl")
         self.environment = ToolEnvironment(bridge.tools, self.trace, bridge.handlers)
         self.tools = [tool.prompt_schema() for tool in bridge.tools]
-        self.safe_tools = [
-            tool.name
-            for tool in bridge.tools
-            if tool.read_only and tool.parallel
-        ]
+        # BFCL tools are answer declarations, not executable reads. Advertising them as
+        # safe for speculative prelaunch made PERSEUS call /execute before the actor had
+        # even committed a function call, which both violates BFCL's single-turn protocol
+        # and turns a bridge/network problem into model feedback. The agent-side extension
+        # acknowledges the actor's declared calls locally and terminates that first batch.
+        declaration_only = self.metadata.get("lifecycle") == "single_turn_declaration_only"
+        self.safe_tools = (
+            []
+            if declaration_only
+            else [
+                tool.name
+                for tool in bridge.tools
+                if tool.read_only and tool.parallel
+            ]
+        )
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if self.benchmark in {"gaia", "gdpval"}:

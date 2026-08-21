@@ -33,6 +33,112 @@ MODEL_NAME = "gpt-4.1-2025-04-14-FC"
 NEEDS_EXECUTION = ("multi_turn", "memory", "web_search")
 
 
+def _java_scalar_literal(value, source_type: str) -> str:
+    if source_type == "long":
+        return f"{value}L"
+    if source_type == "float":
+        return f"{value}f"
+    if source_type == "boolean":
+        return str(value).lower()
+    if source_type == "char":
+        return repr(value)
+    return str(value)
+
+
+def _java_collection_item(value, source_type: str, *, array: bool = False) -> str:
+    if source_type == "String":
+        # BFCL's Array converter passes entries directly to java_type_converter(String),
+        # which does not remove quotes; ArrayList has a separate quote-stripping path.
+        return str(value) if array else json.dumps(str(value), ensure_ascii=False)
+    return _java_scalar_literal(value, source_type)
+
+
+def _java_literal(value, schema: dict) -> str:
+    source_type = str(schema.get("type") or "any")
+    if isinstance(value, str):
+        return value
+    nested_type = str((schema.get("items") or {}).get("type") or "any")
+    if source_type == "Array" and isinstance(value, list):
+        elements = ", ".join(
+            _java_collection_item(item, nested_type, array=True) for item in value
+        )
+        component = {"integer": "int", "boolean": "boolean"}.get(
+            nested_type, nested_type
+        )
+        return f"new {component}[]{{{elements}}}"
+    if source_type == "ArrayList" and isinstance(value, list):
+        elements = ", ".join(
+            _java_collection_item(item, nested_type) for item in value
+        )
+        boxed = {
+            "integer": "Integer",
+            "long": "Long",
+            "float": "Float",
+            "double": "Double",
+            "boolean": "Boolean",
+        }.get(nested_type, nested_type)
+        return f"new ArrayList<{boxed}>(Arrays.asList({elements}))"
+    if source_type == "HashMap" and isinstance(value, dict):
+        entries = " ".join(
+            f"put({json.dumps(str(key), ensure_ascii=False)}, "
+            f"{json.dumps(item, ensure_ascii=False)});"
+            for key, item in value.items()
+        )
+        return f"new HashMap<String, Object>() {{{{ {entries} }}}}"
+    return _java_scalar_literal(value, source_type)
+
+
+def _javascript_literal(value, schema: dict) -> str:
+    source_type = str(schema.get("type") or "any")
+    if isinstance(value, str):
+        return value
+    if source_type == "Bigint":
+        return f"{value}n"
+    if source_type == "Boolean":
+        return str(value).lower()
+    if source_type in {"array", "dict"}:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def source_language_model_output(
+    func_description: list[dict], calls: list[dict], category: str
+) -> list[dict]:
+    """Adapt native JSON arguments to the source literals BFCL's AST checker expects.
+
+    BFCL's official FC compiler exposes Java/JavaScript values as OpenAPI JSON types, but
+    its AST checker accepts those categories only as strings containing source-language
+    literals. This boundary adapter reconciles the two official contracts without changing
+    Python/live behavior or teaching a model answer-key values.
+    """
+    if not category.endswith(("_java", "_javascript")):
+        return [{str(call["name"]): call.get("arguments") or {}} for call in calls]
+
+    descriptions = {
+        str(function.get("name") or "").replace(".", "_"): function
+        for function in func_description
+    }
+    convert = _java_literal if category.endswith("_java") else _javascript_literal
+    output = []
+    for call in calls:
+        name = str(call["name"])
+        arguments = call.get("arguments") or {}
+        function = descriptions.get(name)
+        properties = (
+            ((function or {}).get("parameters") or {}).get("properties") or {}
+        )
+        normalized = {
+            str(parameter): (
+                convert(value, properties[parameter])
+                if isinstance(properties.get(parameter), dict)
+                else value
+            )
+            for parameter, value in arguments.items()
+        }
+        output.append({name: normalized})
+    return output
+
+
 def language_for(category: str):
     from bfcl_eval.constants.enums import Language
 
@@ -67,7 +173,7 @@ def grade(case: dict, gold: dict, calls: list[dict]) -> dict:
     from bfcl_eval.eval_checker.ast_eval.ast_checker import ast_checker
 
     func_description = [item.get("function", item) for item in case.get("functions") or []]
-    model_output = [{str(call["name"]): call.get("arguments") or {}} for call in calls]
+    model_output = source_language_model_output(func_description, calls, category)
     try:
         result = ast_checker(func_description, model_output, ground_truth,
                              language_for(category), category, MODEL_NAME)
@@ -96,6 +202,27 @@ def self_check() -> int:
     for category in ("multi_turn_base", "memory", "web_search"):
         assert grade({}, gold(category), [])["score"] is None
     assert grade({}, gold("simple_python"), [])["score"] is None  # no ground_truth
+    java = [{"name": "f", "parameters": {"properties": {
+        "enabled": {"type": "boolean"},
+        "ids": {"type": "ArrayList", "items": {"type": "long"}},
+    }}}]
+    converted = source_language_model_output(
+        java,
+        [{"name": "f", "arguments": {"enabled": True, "ids": [1, 2]}}],
+        "simple_java",
+    )
+    assert converted == [{"f": {
+        "enabled": "true",
+        "ids": "new ArrayList<Long>(Arrays.asList(1L, 2L))",
+    }}]
+    javascript = [{"name": "f", "parameters": {"properties": {
+        "count": {"type": "integer"}, "options": {"type": "dict"},
+    }}}]
+    assert source_language_model_output(
+        javascript,
+        [{"name": "f", "arguments": {"count": 3, "options": {}}}],
+        "simple_javascript",
+    ) == [{"f": {"count": "3", "options": "{}"}}]
     print("OK")
     return 0
 
