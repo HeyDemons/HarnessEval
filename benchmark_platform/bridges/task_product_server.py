@@ -80,9 +80,11 @@ class TaskProductBridge:
             ),
         )
         self.tools = [tool.prompt_schema() for tool in tools]
-        self.safe_tools = [
+        intrinsic_safe_tools = [
             tool.name for tool in tools if tool.read_only and tool.parallel
         ]
+        self.intrinsic_safe_tools = set(intrinsic_safe_tools)
+        self.safe_tools = list(intrinsic_safe_tools)
         if self.snapshot_run_command:
             self.safe_tools.append("run_command")
             self.metadata["run_command_speculation"] = "docker_snapshot_diff_v1"
@@ -112,6 +114,8 @@ class TaskProductBridge:
         speculative: bool,
     ) -> dict[str, Any]:
         if not speculative:
+            return self.call(name, arguments)
+        if name in self.intrinsic_safe_tools:
             return self.call(name, arguments)
         if not self.snapshot_run_command or name != "run_command":
             return {

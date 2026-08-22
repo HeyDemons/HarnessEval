@@ -652,6 +652,32 @@ class BridgeMatrixTests(unittest.TestCase):
             finally:
                 bridge.close()
 
+    def test_task_product_bridge_keeps_intrinsic_reads_speculative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"HARNESSEVAL_ENABLE_SNAPSHOT_RUN_COMMAND_SPECULATION": "1"},
+        ):
+            bridge = TaskProductBridge(
+                benchmark="terminal-bench-2",
+                case_id="case",
+                prompt="Inspect the task workspace",
+                container="task-container",
+                workspace_root="/app",
+                job=Path(directory),
+            )
+            try:
+                expected = {"ok": True, "result": {"stdout": "contents"}}
+                with patch.object(bridge, "call", return_value=expected) as call:
+                    result = bridge.execute(
+                        "read_file",
+                        {"path": "/app/input.txt"},
+                        speculative=True,
+                    )
+                self.assertEqual(result, expected)
+                call.assert_called_once_with("read_file", {"path": "/app/input.txt"})
+            finally:
+                bridge.close()
+
     def test_task_product_bridge_snapshot_rejects_filesystem_changes(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(
             os.environ,
