@@ -171,10 +171,31 @@ def handler_for(bridge: ProductBridge):
                     arguments = payload.get("arguments")
                     if not isinstance(arguments, dict):
                         raise ValueError("arguments must be a JSON object")
+                    execute = getattr(bridge, "execute", None)
                     # Image bytes exist only on this response hop. Environment traces and
                     # final artifacts retain ToolImage's small metadata dictionary.
                     result = wire_tool_result(
-                        bridge.call(str(payload.get("tool") or ""), arguments)
+                        execute(
+                            str(payload.get("tool") or ""),
+                            arguments,
+                            speculative=payload.get("speculative") is True,
+                        )
+                        if callable(execute)
+                        else bridge.call(str(payload.get("tool") or ""), arguments)
+                    )
+                elif self.path == "/commit":
+                    commit = getattr(bridge, "commit", None)
+                    arguments = payload.get("arguments")
+                    if not callable(commit):
+                        raise ValueError("speculative_commit_unsupported")
+                    if not isinstance(arguments, dict):
+                        raise ValueError("arguments must be a JSON object")
+                    result = wire_tool_result(
+                        commit(
+                            str(payload.get("speculation_id") or ""),
+                            str(payload.get("tool") or ""),
+                            arguments,
+                        )
                     )
                 elif self.path == "/final":
                     result = bridge.finalize(payload)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -607,6 +608,83 @@ class BridgeMatrixTests(unittest.TestCase):
                     [tool["name"] for tool in manifest["tools"]],
                     ["read_file", "list_files", "write_file", "run_command"],
                 )
+            finally:
+                bridge.close()
+
+    def test_task_product_bridge_snapshot_run_command_is_opt_in_and_committable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"HARNESSEVAL_ENABLE_SNAPSHOT_RUN_COMMAND_SPECULATION": "1"},
+        ):
+            bridge = TaskProductBridge(
+                benchmark="terminal-bench-2",
+                case_id="case",
+                prompt="Inspect the task workspace",
+                container="task-container",
+                workspace_root="/app",
+                job=Path(directory),
+            )
+            try:
+                self.assertEqual(
+                    bridge.manifest()["safe_tools"],
+                    ["read_file", "list_files", "run_command"],
+                )
+                cached = {
+                    "ok": True,
+                    "result": {"returncode": 0, "stdout": "ok\n", "stderr": ""},
+                }
+                with patch.object(bridge, "_snapshot_run_command", return_value=cached):
+                    speculative = bridge.execute(
+                        "run_command",
+                        {"argv": ["python3", "benchmark.py"], "cwd": "/app"},
+                        speculative=True,
+                    )
+                speculation_id = speculative["_harnesseval_speculation_id"]
+                committed = bridge.commit(
+                    speculation_id,
+                    "run_command",
+                    {"argv": ["python3", "benchmark.py"], "cwd": "/app"},
+                )
+                self.assertEqual(committed, cached)
+                finalized = bridge.finalize({"profile": "perseus", "answer": "done"})
+                self.assertEqual(finalized["environment_tool_calls"], 1)
+                self.assertTrue(finalized["environment_calls"][0]["replayed_speculation"])
+            finally:
+                bridge.close()
+
+    def test_task_product_bridge_snapshot_rejects_filesystem_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"HARNESSEVAL_ENABLE_SNAPSHOT_RUN_COMMAND_SPECULATION": "1"},
+        ):
+            bridge = TaskProductBridge(
+                benchmark="terminal-bench-2",
+                case_id="case",
+                prompt="Inspect the task workspace",
+                container="task-container",
+                workspace_root="/app",
+                job=Path(directory),
+            )
+
+            def completed(argv, **_kwargs):
+                if argv[:2] == ["docker", "start"]:
+                    return subprocess.CompletedProcess(argv, 0, "output\n", "")
+                if argv[:2] == ["docker", "diff"]:
+                    return subprocess.CompletedProcess(argv, 0, "C /app/output.txt\n", "")
+                return subprocess.CompletedProcess(argv, 0, "", "")
+
+            try:
+                with patch(
+                    "benchmark_platform.bridges.task_product_server.subprocess.run",
+                    side_effect=completed,
+                ):
+                    result = bridge._snapshot_run_command(
+                        {"argv": ["python3", "benchmark.py"], "cwd": "/app"}
+                    )
+                self.assertFalse(result["ok"])
+                self.assertTrue(result["_harnesseval_speculation_rejected"])
+                self.assertEqual(result["error"], "snapshot_filesystem_changed")
+                self.assertEqual(result["details"]["changed_paths"], 1)
             finally:
                 bridge.close()
 
