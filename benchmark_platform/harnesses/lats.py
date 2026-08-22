@@ -113,7 +113,7 @@ class _Node:
     thought: str = ""
     action: dict[str, Any] | None = None
     observation: dict[str, Any] | None = None
-    call_record: dict[str, Any] | None = None
+    call_records: list[dict[str, Any]] = field(default_factory=list)
     children: list[_Node] = field(default_factory=list)
     visits: int = 0
     value: float = 0.0
@@ -186,6 +186,23 @@ def _candidate_key(candidate: dict[str, Any]) -> str:
     return json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
+def _observation_terminates(observation: dict[str, Any]) -> bool:
+    values = [observation]
+    if isinstance(observation.get("result"), dict):
+        values.append(observation["result"])
+    return any(value.get("terminate") is True or value.get("done") is True for value in values)
+
+
+def _collect_nodes(root: _Node) -> list[_Node]:
+    nodes: list[_Node] = []
+    pending = list(root.children)
+    while pending:
+        node = pending.pop()
+        nodes.append(node)
+        pending.extend(node.children)
+    return nodes
+
+
 async def _reflect(
     ctx: RunContext,
     budget: _LatsBudget,
@@ -216,11 +233,22 @@ async def _propose(
     reflections: list[str],
     temperature: float,
 ) -> list[dict[str, Any]]:
+    if ctx.environment.declaration_only:
+        action_contract = (
+            'Return JSON only: {"thought":"...","calls":['
+            '{"tool":"name","arguments":{}}]} or {"thought":"...","calls":[]} '
+            "when no function is relevant. The calls array is the complete single assistant "
+            "response and must contain every parallel call needed for the answer."
+        )
+    else:
+        action_contract = (
+            'Return JSON only: {"thought":"...","tool":"name","arguments":{}} or '
+            '{"thought":"...","final":"answer"}.'
+        )
     prompt = (
         "Generate one next LATS thought/action candidate for this trajectory. Do not invent an observation.\n"
         f"Available tools: {ctx.environment.schema}\n"
-        'Return JSON only: {"thought":"...","tool":"name","arguments":{}} or '
-        '{"thought":"...","final":"answer"}.\n'
+        f"{action_contract}\n"
         f"{node.trajectory(ctx.prompt)}\n"
         f"Failed trajectories: {json.dumps(failures, ensure_ascii=False)}\n"
         f"Reflections: {json.dumps(reflections, ensure_ascii=False)}"
@@ -244,6 +272,31 @@ async def _propose(
             raise ValueError("LATS proposal omitted thought")
         if "final" in candidate:
             normalized = {"thought": thought, "final": str(candidate["final"])}
+        elif ctx.environment.declaration_only:
+            calls = candidate.get("calls")
+            if calls is None and "tool" in candidate:
+                calls = [
+                    {
+                        "tool": candidate.get("tool"),
+                        "arguments": candidate.get("arguments"),
+                    }
+                ]
+            if not isinstance(calls, list):
+                raise ValueError("LATS declaration proposal must contain a calls array")
+            normalized_calls: list[dict[str, Any]] = []
+            for call in calls:
+                if not isinstance(call, dict):
+                    raise ValueError("LATS declaration calls must be objects")
+                arguments = call.get("arguments")
+                tool = call.get("tool")
+                if not isinstance(arguments, dict) or tool not in ctx.environment.names:
+                    raise ValueError(
+                        "LATS declaration call must contain a declared tool and object arguments"
+                    )
+                normalized_calls.append(
+                    {"tool": str(tool), "arguments": arguments}
+                )
+            normalized = {"thought": thought, "calls": normalized_calls}
         else:
             arguments = candidate.get("arguments")
             if not isinstance(arguments, dict) or candidate.get("tool") not in ctx.environment.names:
@@ -325,6 +378,27 @@ async def _expand(
                 terminal=True,
                 answer=candidate["final"],
             )
+        elif "calls" in candidate:
+            observations: list[dict[str, Any]] = []
+            call_records: list[dict[str, Any]] = []
+            for call in candidate["calls"]:
+                observation, call_record = await ctx.environment.call_isolated(
+                    call["tool"], call["arguments"]
+                )
+                observations.append(observation)
+                call_records.append(call_record)
+            child = _Node(
+                parent=node,
+                thought=candidate["thought"],
+                action={"calls": candidate["calls"]},
+                observation={
+                    "declaration_only": True,
+                    "calls": observations,
+                    "terminate": True,
+                },
+                call_records=call_records,
+                terminal=True,
+            )
         else:
             action = {"tool": candidate["tool"], "arguments": candidate["arguments"]}
             observation, call_record = await ctx.environment.call_isolated(
@@ -335,7 +409,8 @@ async def _expand(
                 thought=candidate["thought"],
                 action=action,
                 observation=observation,
-                call_record=call_record,
+                call_records=[call_record],
+                terminal=_observation_terminates(observation),
             )
         child.value, success, feedback = await _evaluate(
             ctx,
@@ -364,7 +439,7 @@ async def _expand(
 
 
 async def _commit_path(ctx: RunContext, node: _Node) -> None:
-    records = [item.call_record for item in node.path() if item.call_record is not None]
+    records = [record for item in node.path() for record in item.call_records]
     await ctx.environment.commit_isolated_calls(records)
     await ctx.trace.emit(
         "lats_path_committed",
@@ -461,7 +536,7 @@ async def run_lats(ctx: RunContext) -> str:
             if success is not None:
                 _backpropagate(success, success.reward)
                 await _commit_path(ctx, success)
-                return str(success.answer)
+                return success.answer or ""
             if not children:
                 selected.exhausted = True
                 continue
@@ -492,7 +567,7 @@ async def run_lats(ctx: RunContext) -> str:
                 if rollout.terminal and rollout.reward == 1:
                     _backpropagate(rollout, rollout.reward)
                     await _commit_path(ctx, rollout)
-                    return str(rollout.answer)
+                    return rollout.answer or ""
             _backpropagate(
                 rollout, rollout.reward if rollout.terminal else rollout.value
             )
@@ -509,13 +584,17 @@ async def run_lats(ctx: RunContext) -> str:
             detail=str(exc),
         )
 
-    if not terminal_nodes:
+    explored = _collect_nodes(root)
+    if not terminal_nodes and not explored:
         raise RuntimeError(
             f"LATS search produced no terminal answer within {budget.used}/{budget.max_calls} "
             "LLM calls"
         )
-    best = max(terminal_nodes, key=lambda node: (node.reward, node.value))
-    if best.answer is None:
-        raise RuntimeError("LATS terminal node omitted an answer")
+    # The official implementation returns the best explored state after exhausting its
+    # search iterations, even when no reward-1 terminal was found. Preserve that fallback
+    # for a bounded call budget instead of turning a usable action into an arm failure.
+    best = max(explored, key=lambda node: (node.reward, node.value))
+    if best.answer is None and not best.call_records and "calls" not in (best.action or {}):
+        raise RuntimeError("LATS best explored node omitted an answer or action")
     await _commit_path(ctx, best)
-    return best.answer
+    return best.answer or ""

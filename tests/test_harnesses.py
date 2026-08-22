@@ -679,22 +679,99 @@ class HarnessTests(unittest.TestCase):
                     "lats_max_llm_calls": 4,
                 },
             )
-            with self.assertRaisesRegex(RuntimeError, "no terminal answer within 4/4"):
-                asyncio.run(run_profile(context))
+            answer = asyncio.run(run_profile(context))
             events = [
                 json.loads(line)
                 for line in trace.path.read_text(encoding="utf-8").splitlines()
             ]
 
+        self.assertEqual(answer, "")
         self.assertEqual(context.llm_calls, 4)
         self.assertEqual(len(client.messages), 4)
-        self.assertEqual(environment.calls, [])
+        self.assertEqual(
+            [call["arguments"] for call in environment.calls], [{"key": "alpha"}]
+        )
         self.assertEqual(
             len([event for event in events if event["event"] == "llm_request"]), 4
         )
         self.assertEqual(
             len([event for event in events if event["event"] == "lats_budget_exhausted"]),
             1,
+        )
+
+    def test_lats_declaration_only_selects_and_commits_one_complete_batch(self) -> None:
+        async def declaration(arguments):
+            return {
+                "recorded_function_call": "lookup",
+                "arguments": arguments,
+                "declaration_only": True,
+                "execution": "not_run",
+                "terminate": True,
+            }
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            tools = tool_specs()
+            environment = ToolEnvironment(
+                tools,
+                trace,
+                {tool.name: declaration for tool in tools},
+                declaration_only=True,
+            )
+            client = ScriptedClient(
+                [
+                    '{"thought":"complete batch","calls":['
+                    '{"tool":"lookup","arguments":{"key":"alpha"}},'
+                    '{"tool":"lookup","arguments":{"key":"beta"}}]}',
+                    '{"thought":"weaker batch one","calls":['
+                    '{"tool":"lookup","arguments":{"key":"other"}}]}',
+                    '{"thought":"weaker batch two","calls":[]}',
+                    '{"thought":"legacy single call","tool":"lookup",'
+                    '"arguments":{"key":"legacy"}}',
+                    '{"thought":"weaker batch four","calls":[]}',
+                    '{"score":1.0,"success":true,"feedback":"complete"}',
+                    '{"score":0.1,"success":false,"feedback":"wrong"}',
+                    '{"score":0.1,"success":false,"feedback":"wrong"}',
+                    '{"score":0.1,"success":false,"feedback":"wrong"}',
+                    '{"score":0.1,"success":false,"feedback":"wrong"}',
+                ]
+            )
+            context = RunContext(
+                "lats",
+                "retrieve alpha and beta",
+                client,
+                environment,
+                trace,
+                {
+                    "lats_iterations": 1,
+                    "lats_value_samples": 1,
+                    "lats_rollout_width": 1,
+                    "lats_tree_depth": 2,
+                    "lats_rollout_depth": 2,
+                    "lats_max_parallel": 1,
+                },
+            )
+            answer = asyncio.run(run_profile(context))
+            events = [
+                json.loads(line)
+                for line in trace.path.read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(answer, "")
+        self.assertEqual(
+            environment.committed_calls,
+            [
+                {"name": "lookup", "arguments": {"key": "alpha"}},
+                {"name": "lookup", "arguments": {"key": "beta"}},
+            ],
+        )
+        self.assertEqual(context.llm_calls, 10)
+        nodes = [event for event in events if event["event"] == "lats_node"]
+        self.assertEqual(len(nodes), 5)
+        self.assertTrue(all(event["terminal"] for event in nodes))
+        self.assertEqual(
+            [event["arguments"] for event in events if event["event"] == "tool_request"],
+            [{"key": "alpha"}, {"key": "beta"}],
         )
 
     def test_lats_rejects_non_snapshotable_mutating_tools(self) -> None:

@@ -493,6 +493,60 @@ class BridgeMatrixTests(unittest.TestCase):
                 self.assertEqual(result["committed_calls"], expected)
                 self.assertEqual(len(client.requests), len(responses))
 
+    def test_bfcl_lats_commits_one_selected_complete_declaration_batch(self) -> None:
+        responses = [
+            '{"thought":"complete batch","calls":['
+            '{"tool":"lookup_item","arguments":{"id":"a"}},'
+            '{"tool":"lookup_item","arguments":{"id":"b"}}]}',
+            '{"thought":"weaker batch","calls":['
+            '{"tool":"lookup_item","arguments":{"id":"other"}}]}',
+            '{"score":1.0,"success":true,"feedback":"complete"}',
+            '{"score":0.1,"success":false,"feedback":"wrong"}',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "input"
+            job = root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = RecordingClient(responses)
+            with patch.object(
+                bridge_runner,
+                "completion_client_from_env",
+                return_value=client,
+            ):
+                result = asyncio.run(
+                    bridge_runner.execute(
+                        "bfcl",
+                        "lats",
+                        "case",
+                        source,
+                        job,
+                        {
+                            "lats_iterations": 1,
+                            "lats_generate_samples": 2,
+                            "lats_value_samples": 1,
+                            "lats_rollout_width": 1,
+                            "lats_tree_depth": 2,
+                            "lats_rollout_depth": 2,
+                            "lats_max_parallel": 1,
+                            "lats_max_llm_calls": 4,
+                        },
+                    )
+                )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["tool_calls"], 2)
+        self.assertEqual(
+            result["committed_calls"],
+            [
+                {"name": "lookup_item", "arguments": {"id": "a"}},
+                {"name": "lookup_item", "arguments": {"id": "b"}},
+            ],
+        )
+        self.assertEqual(len(client.requests), 4)
+
     def test_vita_visible_history_structures_tool_calls_without_runtime_timestamp(self) -> None:
         class ToolCall:
             id = "call-1"
