@@ -569,7 +569,7 @@ class HarnessTests(unittest.TestCase):
             [{"key": "alpha"}, {"key": "beta"}],
         )
 
-    def test_lats_limits_proposal_parallelism(self) -> None:
+    def test_lats_samples_proposals_sequentially(self) -> None:
         class ConcurrencyClient:
             def __init__(self) -> None:
                 self.active = 0
@@ -614,92 +614,17 @@ class HarnessTests(unittest.TestCase):
                     "lats_rollout_width": 1,
                     "lats_tree_depth": 1,
                     "lats_rollout_depth": 1,
-                    "lats_max_parallel": 2,
-                    "lats_max_llm_calls": 10,
-                },
-            )
-            asyncio.run(run_profile(context))
-
-        self.assertEqual(client.max_active, 2)
-        self.assertEqual(context.llm_calls, 10)
-
-    def test_lats_reserves_sampling_wave_before_spending_call_budget(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            client = ScriptedClient([])
-            context = RunContext(
-                "lats",
-                "do not start a partial wave",
-                client,
-                ToolEnvironment(tool_specs(), trace),
-                trace,
-                {
-                    "lats_iterations": 1,
-                    "lats_generate_samples": 2,
-                    "lats_value_samples": 1,
-                    "lats_rollout_width": 1,
-                    "lats_tree_depth": 1,
-                    "lats_rollout_depth": 1,
-                    "lats_max_parallel": 1,
-                    "lats_max_llm_calls": 1,
-                },
-            )
-            with self.assertRaisesRegex(RuntimeError, "no terminal answer within 0/1"):
-                asyncio.run(run_profile(context))
-
-        self.assertEqual(context.llm_calls, 0)
-        self.assertEqual(client.messages, [])
-
-    def test_lats_stops_dispatching_at_the_total_llm_call_budget(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            client = ScriptedClient(
-                [
-                    '{"thought":"alpha","tool":"lookup","arguments":{"key":"alpha"}}',
-                    '{"thought":"beta","tool":"lookup","arguments":{"key":"beta"}}',
-                    '{"score":0.8,"success":false,"feedback":"continue"}',
-                    '{"score":0.7,"success":false,"feedback":"continue"}',
-                ]
-            )
-            environment = ToolEnvironment(tool_specs(), trace)
-            context = RunContext(
-                "lats",
-                "stay within budget",
-                client,
-                environment,
-                trace,
-                {
-                    "lats_iterations": 3,
-                    "lats_generate_samples": 2,
-                    "lats_value_samples": 1,
-                    "lats_rollout_width": 1,
-                    "lats_tree_depth": 3,
-                    "lats_rollout_depth": 3,
-                    "lats_max_parallel": 1,
-                    "lats_max_llm_calls": 4,
                 },
             )
             answer = asyncio.run(run_profile(context))
-            events = [
-                json.loads(line)
-                for line in trace.path.read_text(encoding="utf-8").splitlines()
-            ]
 
-        self.assertEqual(answer, "")
-        self.assertEqual(context.llm_calls, 4)
-        self.assertEqual(len(client.messages), 4)
-        self.assertEqual(
-            [call["arguments"] for call in environment.calls], [{"key": "alpha"}]
-        )
-        self.assertEqual(
-            len([event for event in events if event["event"] == "llm_request"]), 4
-        )
-        self.assertEqual(
-            len([event for event in events if event["event"] == "lats_budget_exhausted"]),
-            1,
-        )
+        # The source samples n choices in one request; a one-choice API samples them one at
+        # a time so tree width never silently becomes provider concurrency.
+        self.assertEqual(answer, "1")
+        self.assertEqual(client.max_active, 1)
+        self.assertEqual(context.llm_calls, 10)
 
-    def test_lats_declaration_only_selects_and_commits_one_complete_batch(self) -> None:
+    def test_lats_declaration_only_commits_the_winning_path_as_one_batch(self) -> None:
         async def declaration(arguments):
             return {
                 "recorded_function_call": "lookup",
@@ -720,35 +645,27 @@ class HarnessTests(unittest.TestCase):
             )
             client = ScriptedClient(
                 [
-                    '{"thought":"complete batch","calls":['
-                    '{"tool":"lookup","arguments":{"key":"alpha"}},'
-                    '{"tool":"lookup","arguments":{"key":"beta"}}]}',
-                    '{"thought":"weaker batch one","calls":['
-                    '{"tool":"lookup","arguments":{"key":"other"}}]}',
-                    '{"thought":"weaker batch two","calls":[]}',
-                    '{"thought":"legacy single call","tool":"lookup",'
-                    '"arguments":{"key":"legacy"}}',
-                    '{"thought":"weaker batch four","calls":[]}',
+                    '{"thought":"declare alpha","tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"score":0.8,"success":false,"feedback":"continue"}',
+                    '{"thought":"declare beta","tool":"lookup","arguments":{"key":"beta"}}',
+                    '{"score":0.9,"success":false,"feedback":"finish"}',
+                    '{"thought":"answer","final":"42"}',
                     '{"score":1.0,"success":true,"feedback":"complete"}',
-                    '{"score":0.1,"success":false,"feedback":"wrong"}',
-                    '{"score":0.1,"success":false,"feedback":"wrong"}',
-                    '{"score":0.1,"success":false,"feedback":"wrong"}',
-                    '{"score":0.1,"success":false,"feedback":"wrong"}',
                 ]
             )
             context = RunContext(
                 "lats",
-                "retrieve alpha and beta",
+                "declare alpha and beta",
                 client,
                 environment,
                 trace,
                 {
                     "lats_iterations": 1,
+                    "lats_generate_samples": 1,
                     "lats_value_samples": 1,
                     "lats_rollout_width": 1,
-                    "lats_tree_depth": 2,
-                    "lats_rollout_depth": 2,
-                    "lats_max_parallel": 1,
+                    "lats_tree_depth": 3,
+                    "lats_rollout_depth": 3,
                 },
             )
             answer = asyncio.run(run_profile(context))
@@ -757,7 +674,10 @@ class HarnessTests(unittest.TestCase):
                 for line in trace.path.read_text(encoding="utf-8").splitlines()
             ]
 
-        self.assertEqual(answer, "")
+        # BFCL scores one assistant response's call batch. The calls on the winning
+        # trajectory were proposed by different responses, so committing them must not stop
+        # at the first response-id change.
+        self.assertEqual(answer, "42")
         self.assertEqual(
             environment.committed_calls,
             [
@@ -765,10 +685,6 @@ class HarnessTests(unittest.TestCase):
                 {"name": "lookup", "arguments": {"key": "beta"}},
             ],
         )
-        self.assertEqual(context.llm_calls, 10)
-        nodes = [event for event in events if event["event"] == "lats_node"]
-        self.assertEqual(len(nodes), 5)
-        self.assertTrue(all(event["terminal"] for event in nodes))
         self.assertEqual(
             [event["arguments"] for event in events if event["event"] == "tool_request"],
             [{"key": "alpha"}, {"key": "beta"}],

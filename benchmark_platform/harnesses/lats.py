@@ -1,110 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from .core import RunContext, extract_json
-
-
-class _LatsBudgetExhausted(RuntimeError):
-    pass
-
-
-class _LatsBudget:
-    """Bound LATS' own HTTP fan-out independently from case-level concurrency."""
-
-    def __init__(self, ctx: RunContext, *, max_calls: int, max_parallel: int):
-        self.ctx = ctx
-        self.max_calls = max_calls
-        self.used = 0
-        self._lock = asyncio.Lock()
-        self._semaphore = asyncio.Semaphore(max_parallel)
-
-    async def reserve(self, count: int) -> None:
-        """Atomically reserve a complete sampling wave before dispatching any request."""
-
-        async with self._lock:
-            if self.used + count > self.max_calls:
-                raise _LatsBudgetExhausted(
-                    f"LATS LLM-call budget exhausted ({self.used}/{self.max_calls}); "
-                    f"next wave requires {count}"
-                )
-            self.used += count
-
-    async def complete(
-        self,
-        role: str,
-        messages: list[dict[str, Any]],
-        *,
-        json_mode: bool = False,
-        temperature: float | None = None,
-        reserved: bool = False,
-    ) -> str:
-        if not reserved:
-            await self.reserve(1)
-        async with self._semaphore:
-            return await self.ctx.complete(
-                role,
-                messages,
-                json_mode=json_mode,
-                temperature=temperature,
-            )
-
-    async def complete_json(
-        self,
-        role: str,
-        messages: list[dict[str, Any]],
-        *,
-        temperature: float,
-        reserved: bool = False,
-    ) -> dict[str, Any]:
-        """Run the normal JSON repair protocol while charging every HTTP request."""
-
-        conversation = list(messages)
-        protocol_repairs = int(self.ctx.policy.get("protocol_repairs", 1))
-        for attempt in range(protocol_repairs + 1):
-            raw = await self.complete(
-                role,
-                conversation,
-                json_mode=True,
-                temperature=temperature,
-                reserved=reserved and attempt == 0,
-            )
-            try:
-                return extract_json(raw, expected_type=dict)
-            except ValueError:
-                if attempt >= protocol_repairs:
-                    raise
-                conversation.extend(
-                    [
-                        {"role": "assistant", "content": raw},
-                        {
-                            "role": "user",
-                            "content": (
-                                "Return one complete JSON object matching the requested schema. "
-                                "Preserve every field and argument."
-                            ),
-                        },
-                    ]
-                )
-        raise AssertionError("unreachable")
-
-
-async def _gather_wave(*coroutines: Any) -> list[Any]:
-    """Cancel and drain sibling requests if any member of a sampling wave fails."""
-
-    tasks = [asyncio.create_task(coroutine) for coroutine in coroutines]
-    try:
-        return list(await asyncio.gather(*tasks))
-    except BaseException:
-        for task in tasks:
-            if not task.done():
-                task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        raise
+from .core import RunContext
 
 
 @dataclass
@@ -127,6 +28,8 @@ class _Node:
         return 0 if self.parent is None else self.parent.depth + 1
 
     def uct(self) -> float:
+        # Follow the HotPotQA source tree policy instead of substituting a
+        # generic MCTS implementation.
         if self.visits == 0:
             return self.value
         parent_visits = self.parent.visits if self.parent is not None else 0
@@ -156,6 +59,14 @@ class _Node:
         return f"Task: {task}\nTrajectory: {json.dumps(records, ensure_ascii=False)}"
 
 
+@dataclass
+class _SearchMemory:
+    failures: list[str] = field(default_factory=list)
+    failure_answers: set[str] = field(default_factory=set)
+    reflections: list[dict[str, str]] = field(default_factory=list)
+    value_cache: dict[str, tuple[float, str]] = field(default_factory=dict)
+
+
 def _select_node(root: _Node) -> _Node | None:
     node: _Node | None = root
     while node is not None and node.children:
@@ -174,10 +85,7 @@ def _backpropagate(node: _Node, reward: float) -> None:
     current: _Node | None = node
     while current is not None:
         current.visits += 1
-        if current.terminal and current.reward == 0:
-            update = -1.0
-        else:
-            update = reward
+        update = -1.0 if current.terminal and current.reward == 0 else reward
         current.value = (current.value * (current.visits - 1) + update) / current.visits
         current = current.parent
 
@@ -186,117 +94,80 @@ def _candidate_key(candidate: dict[str, Any]) -> str:
     return json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _observation_terminates(observation: dict[str, Any]) -> bool:
-    values = [observation]
-    if isinstance(observation.get("result"), dict):
-        values.append(observation["result"])
-    return any(value.get("terminate") is True or value.get("done") is True for value in values)
+def _unique_failures(memory: _SearchMemory, limit: int) -> list[str]:
+    return list(dict.fromkeys(memory.failures))[:limit]
 
 
-def _collect_nodes(root: _Node) -> list[_Node]:
-    nodes: list[_Node] = []
-    pending = list(root.children)
-    while pending:
-        node = pending.pop()
-        nodes.append(node)
-        pending.extend(node.children)
-    return nodes
-
-
-async def _reflect(
-    ctx: RunContext,
-    budget: _LatsBudget,
-    failures: list[str],
-    temperature: float,
-) -> str:
-    return await budget.complete(
+async def _reflect(ctx: RunContext, failure: str, temperature: float) -> dict[str, str]:
+    reflection = await ctx.complete(
         "lats_reflection",
         [
             {
                 "role": "user",
                 "content": (
-                    "Reflect on the failed trajectories and identify a concrete correction for the next search.\n"
-                    f"Task: {ctx.prompt}\nFailed trajectories: {json.dumps(failures, ensure_ascii=False)}"
+                    "Reflect on this failed trajectory and identify a concrete correction for the next search.\n"
+                    f"Task: {ctx.prompt}\nFailed trajectory: {failure}"
                 ),
             }
         ],
         temperature=temperature,
     )
+    return {"trajectory": failure, "reflection": reflection}
+
+
+async def _maybe_reflect(
+    ctx: RunContext,
+    memory: _SearchMemory,
+    failure_memory: int,
+    reflection_limit: int,
+    temperature: float,
+) -> None:
+    failures = _unique_failures(memory, failure_memory)
+    reflected_failures = failures[:reflection_limit]
+    # The source refreshes reflection memory for one to three distinct failed
+    # trajectories. It reflects on each trajectory separately and replaces the
+    # complete map; four or more do not trigger another refresh.
+    if len(reflected_failures) > len(memory.reflections) and len(failures) < 4:
+        refreshed: list[dict[str, str]] = []
+        for failure in reflected_failures:
+            refreshed.append(await _reflect(ctx, failure, temperature))
+        memory.reflections = refreshed
 
 
 async def _propose(
     ctx: RunContext,
-    budget: _LatsBudget,
     node: _Node,
     count: int,
-    failures: list[str],
-    reflections: list[str],
+    memory: _SearchMemory,
+    failure_memory: int,
+    reflection_limit: int,
     temperature: float,
 ) -> list[dict[str, Any]]:
-    if ctx.environment.declaration_only:
-        action_contract = (
-            'Return JSON only: {"thought":"...","calls":['
-            '{"tool":"name","arguments":{}}]} or {"thought":"...","calls":[]} '
-            "when no function is relevant. The calls array is the complete single assistant "
-            "response and must contain every parallel call needed for the answer."
-        )
-    else:
-        action_contract = (
-            'Return JSON only: {"thought":"...","tool":"name","arguments":{}} or '
-            '{"thought":"...","final":"answer"}.'
-        )
+    await _maybe_reflect(ctx, memory, failure_memory, reflection_limit, temperature)
     prompt = (
         "Generate one next LATS thought/action candidate for this trajectory. Do not invent an observation.\n"
         f"Available tools: {ctx.environment.schema}\n"
-        f"{action_contract}\n"
+        'Return JSON only: {"thought":"...","tool":"name","arguments":{}} or '
+        '{"thought":"...","final":"answer"}.\n'
         f"{node.trajectory(ctx.prompt)}\n"
-        f"Failed trajectories: {json.dumps(failures, ensure_ascii=False)}\n"
-        f"Reflections: {json.dumps(reflections, ensure_ascii=False)}"
+        f"Failed trajectories: {json.dumps(_unique_failures(memory, failure_memory), ensure_ascii=False)}\n"
+        f"Reflections: {json.dumps(memory.reflections, ensure_ascii=False)}"
     )
-    await budget.reserve(count)
-    candidates = await _gather_wave(
-        *(
-            budget.complete_json(
-                "lats_proposal",
-                [{"role": "user", "content": prompt}],
-                temperature=temperature,
-                reserved=True,
-            )
-            for _ in range(count)
+
+    # The source samples n choices in one request. The portable one-choice API
+    # samples them sequentially so tree width never becomes HTTP concurrency.
+    candidates: list[dict[str, Any]] = []
+    for sample_index in range(count):
+        candidate = await ctx.complete_json(
+            "lats_proposal",
+            [{"role": "user", "content": prompt}],
+            temperature=temperature,
         )
-    )
-    unique: dict[str, dict[str, Any]] = {}
-    for candidate in candidates:
         thought = candidate.get("thought")
         if not isinstance(thought, str):
             raise ValueError("LATS proposal omitted thought")
         if "final" in candidate:
             normalized = {"thought": thought, "final": str(candidate["final"])}
-        elif ctx.environment.declaration_only:
-            calls = candidate.get("calls")
-            if calls is None and "tool" in candidate:
-                calls = [
-                    {
-                        "tool": candidate.get("tool"),
-                        "arguments": candidate.get("arguments"),
-                    }
-                ]
-            if not isinstance(calls, list):
-                raise ValueError("LATS declaration proposal must contain a calls array")
-            normalized_calls: list[dict[str, Any]] = []
-            for call in calls:
-                if not isinstance(call, dict):
-                    raise ValueError("LATS declaration calls must be objects")
-                arguments = call.get("arguments")
-                tool = call.get("tool")
-                if not isinstance(arguments, dict) or tool not in ctx.environment.names:
-                    raise ValueError(
-                        "LATS declaration call must contain a declared tool and object arguments"
-                    )
-                normalized_calls.append(
-                    {"tool": str(tool), "arguments": arguments}
-                )
-            normalized = {"thought": thought, "calls": normalized_calls}
         else:
             arguments = candidate.get("arguments")
             if not isinstance(arguments, dict) or candidate.get("tool") not in ctx.environment.names:
@@ -306,68 +177,92 @@ async def _propose(
                 "tool": str(candidate["tool"]),
                 "arguments": arguments,
             }
-        unique.setdefault(_candidate_key(normalized), normalized)
+        candidates.append(normalized)
+        await ctx.trace.emit(
+            "lats_sample",
+            depth=node.depth,
+            sample_index=sample_index + 1,
+            sample_count=count,
+            candidate=normalized,
+        )
+
+    unique: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        unique.setdefault(_candidate_key(candidate), candidate)
     return list(unique.values())
 
 
-async def _evaluate(
+async def _value(
     ctx: RunContext,
-    budget: _LatsBudget,
     node: _Node,
     samples: int,
+    memory: _SearchMemory,
     temperature: float,
-    *,
-    reserved: bool = False,
 ) -> tuple[float, bool, str]:
+    trajectory = node.trajectory(ctx.prompt)
+    if trajectory in memory.value_cache:
+        score, feedback = memory.value_cache[trajectory]
+        return score, False, feedback
     prompt = (
         "Evaluate this LATS trajectory. Judge whether a final answer, if present, fully solves the task and score "
         "the trajectory's progress from 0 to 1.\n"
         'Return JSON only: {"score":0.0,"success":false,"feedback":"..."}.\n'
-        f"{node.trajectory(ctx.prompt)}"
-    )
-    if not reserved:
-        await budget.reserve(samples)
-    evaluations = await _gather_wave(
-        *(
-            budget.complete_json(
-                "lats_value",
-                [{"role": "user", "content": prompt}],
-                temperature=temperature,
-                reserved=True,
-            )
-            for _ in range(samples)
-        )
+        f"{trajectory}"
     )
     scores: list[float] = []
     successes = 0
     feedback: list[str] = []
-    for evaluation in evaluations:
+    for _ in range(samples):
+        evaluation = await ctx.complete_json(
+            "lats_value",
+            [{"role": "user", "content": prompt}],
+            temperature=temperature,
+        )
         score = float(evaluation.get("score"))
         if not 0.0 <= score <= 1.0:
             raise ValueError("LATS value score must be between 0 and 1")
         scores.append(score)
         successes += evaluation.get("success") is True
         feedback.append(str(evaluation.get("feedback", "")))
-    return sum(scores) / len(scores), successes > len(evaluations) / 2, "\n".join(feedback)
+    mean_score = sum(scores) / len(scores)
+    joined_feedback = "\n".join(feedback)
+    memory.value_cache[trajectory] = (mean_score, joined_feedback)
+    return mean_score, successes > len(scores) / 2, joined_feedback
+
+
+def _remember_failure(ctx: RunContext, node: _Node, feedback: str, memory: _SearchMemory) -> None:
+    answer = node.answer or ""
+    if answer in memory.failure_answers:
+        return
+    memory.failure_answers.add(answer)
+    memory.failures.append(node.trajectory(ctx.prompt) + "\nEvaluator feedback: " + feedback)
 
 
 async def _expand(
     ctx: RunContext,
-    budget: _LatsBudget,
     node: _Node,
     count: int,
     value_samples: int,
-    failures: list[str],
-    reflections: list[str],
+    memory: _SearchMemory,
+    failure_memory: int,
+    reflection_limit: int,
+    tree_depth: int,
     temperature: float,
 ) -> list[_Node]:
+    if node.depth >= tree_depth:
+        node.exhausted = True
+        await ctx.trace.emit("lats_depth_limit", depth=node.depth, tree_depth=tree_depth)
+        return []
+
     candidates = await _propose(
-        ctx, budget, node, count, failures, reflections, temperature
+        ctx,
+        node,
+        count,
+        memory,
+        failure_memory,
+        reflection_limit,
+        temperature,
     )
-    # Reserve the whole value-estimation wave before executing even the first
-    # candidate.  Otherwise the budget could run out halfway through a sibling set,
-    # leaving the tree biased toward whichever proposal happened to be listed first.
-    await budget.reserve(len(candidates) * value_samples)
     children: list[_Node] = []
     for candidate in candidates:
         if "final" in candidate:
@@ -378,29 +273,30 @@ async def _expand(
                 terminal=True,
                 answer=candidate["final"],
             )
-        elif "calls" in candidate:
-            observations: list[dict[str, Any]] = []
-            call_records: list[dict[str, Any]] = []
-            for call in candidate["calls"]:
-                observation, call_record = await ctx.environment.call_isolated(
-                    call["tool"], call["arguments"]
-                )
-                observations.append(observation)
-                call_records.append(call_record)
-            child = _Node(
-                parent=node,
-                thought=candidate["thought"],
-                action={"calls": candidate["calls"]},
-                observation={
-                    "declaration_only": True,
-                    "calls": observations,
-                    "terminate": True,
-                },
-                call_records=call_records,
-                terminal=True,
+            terminal_reward = await ctx.evaluate_terminal(child.answer)
+            if terminal_reward is None:
+                _, success, feedback = await _value(ctx, child, value_samples, memory, temperature)
+                child.reward = 1.0 if success else 0.0
+                reward_source = "value_model_fallback"
+            else:
+                child.reward = terminal_reward
+                success = terminal_reward == 1.0
+                feedback = f"Candidate scorer reward: {terminal_reward}"
+                reward_source = "candidate_scorer"
+            child.value = child.reward
+            await ctx.trace.emit(
+                "lats_terminal_reward",
+                depth=child.depth,
+                reward=child.reward,
+                source=reward_source,
             )
+            if not success:
+                _remember_failure(ctx, child, feedback, memory)
         else:
             action = {"tool": candidate["tool"], "arguments": candidate["arguments"]}
+            # Exploration must not publish. A benchmark that scores the agent's tool calls
+            # (BFCL) would otherwise score every candidate the search went on to reject.
+            # Only the returned trajectory is published, by _commit_path.
             observation, call_record = await ctx.environment.call_isolated(
                 action["tool"], action["arguments"]
             )
@@ -410,20 +306,7 @@ async def _expand(
                 action=action,
                 observation=observation,
                 call_records=[call_record],
-                terminal=_observation_terminates(observation),
             )
-        child.value, success, feedback = await _evaluate(
-            ctx,
-            budget,
-            child,
-            value_samples,
-            temperature,
-            reserved=True,
-        )
-        if child.terminal:
-            child.reward = 1.0 if success else 0.0
-            if not success:
-                failures.append(child.trajectory(ctx.prompt) + "\nEvaluator feedback: " + feedback)
         node.children.append(child)
         children.append(child)
         await ctx.trace.emit(
@@ -439,26 +322,77 @@ async def _expand(
 
 
 async def _commit_path(ctx: RunContext, node: _Node) -> None:
+    """Publish the returned trajectory's already-executed calls as the profile's answer."""
+
     records = [record for item in node.path() for record in item.call_records]
     await ctx.environment.commit_isolated_calls(records)
-    await ctx.trace.emit(
-        "lats_path_committed",
-        depth=node.depth,
-        tool_calls=len(records),
-    )
+    await ctx.trace.emit("lats_path_committed", depth=node.depth, tool_calls=len(records))
+
+
+async def _evaluate_children(
+    ctx: RunContext,
+    node: _Node,
+    value_samples: int,
+    memory: _SearchMemory,
+    temperature: float,
+) -> None:
+    # Source LATS evaluates children one at a time after expansion. Terminal
+    # children already carry their environment-equivalent reward.
+    for child in node.children:
+        if child.terminal:
+            continue
+        child.value, _, _ = await _value(ctx, child, value_samples, memory, temperature)
+
+
+async def _rollout(
+    ctx: RunContext,
+    node: _Node,
+    rollout_width: int,
+    value_samples: int,
+    memory: _SearchMemory,
+    failure_memory: int,
+    reflection_limit: int,
+    tree_depth: int,
+    rollout_depth: int,
+    temperature: float,
+) -> tuple[float, _Node, list[_Node]]:
+    depth = node.depth
+    rewards = [0.0]
+    terminal_nodes: list[_Node] = []
+    while not node.terminal and not node.exhausted and depth < rollout_depth:
+        children = await _expand(
+            ctx,
+            node,
+            rollout_width,
+            value_samples,
+            memory,
+            failure_memory,
+            reflection_limit,
+            tree_depth,
+            temperature,
+        )
+        terminal_nodes.extend(child for child in children if child.terminal)
+        if not children:
+            node.exhausted = True
+            return -1.0, node, terminal_nodes
+
+        # Official rollout stops as soon as expansion reaches a terminal state,
+        # before scoring the remaining non-terminal children.
+        terminal = next((child for child in children if child.terminal), None)
+        if terminal is not None:
+            return terminal.reward, terminal, terminal_nodes
+
+        await _evaluate_children(ctx, node, value_samples, memory, temperature)
+        node = max(children, key=lambda child: child.value)
+        rewards.append(node.value)
+        depth += 1
+        if depth == rollout_depth:
+            return -1.0, node, terminal_nodes
+    return sum(rewards) / len(rewards), node, terminal_nodes
 
 
 async def run_lats(ctx: RunContext) -> str:
-    """LATS MCTS with proposal, value, reflection, rollout, and backpropagation."""
-    branch_safe = ctx.policy.get("branch_safe_tools")
-    if isinstance(branch_safe, list):
-        verified = {str(name) for name in branch_safe}
-        unverified = sorted(set(ctx.environment.names) - verified)
-        if unverified:
-            raise ValueError(
-                "LATS requires a verified branch-safe tool contract; unverified tools: "
-                f"{unverified}"
-            )
+    """Source-aligned LATS MCTS for branch-safe benchmark tools."""
     mutable = [tool.name for tool in ctx.environment.tools.values() if not tool.read_only]
     if mutable:
         raise ValueError(
@@ -475,8 +409,6 @@ async def run_lats(ctx: RunContext) -> str:
     failure_memory = int(ctx.policy.get("lats_failure_memory", 5))
     reflection_limit = int(ctx.policy.get("lats_reflection_limit", 3))
     temperature = float(ctx.policy.get("lats_temperature", 1.0))
-    max_parallel = int(ctx.policy.get("lats_max_parallel", 1))
-    max_llm_calls = int(ctx.policy.get("lats_max_llm_calls", 16))
     if min(
         iterations,
         generate_samples,
@@ -486,115 +418,87 @@ async def run_lats(ctx: RunContext) -> str:
         rollout_depth,
         failure_memory,
         reflection_limit,
-        max_parallel,
-        max_llm_calls,
     ) < 1:
         raise ValueError("LATS policy values must be positive")
 
-    budget = _LatsBudget(
-        ctx,
-        max_calls=max_llm_calls,
-        max_parallel=max_parallel,
-    )
     root = _Node(parent=None)
-    failures: list[str] = []
-    reflections: list[str] = []
+    memory = _SearchMemory()
     terminal_nodes: list[_Node] = []
-    try:
-        for iteration in range(iterations):
-            unique_failures = list(dict.fromkeys(failures))
-            remembered_failures = unique_failures[:failure_memory]
-            if len(unique_failures) > len(reflections) and len(reflections) < reflection_limit:
-                reflections.append(
-                    await _reflect(ctx, budget, remembered_failures, temperature)
-                )
+    await ctx.trace.emit(
+        "lats_search_started",
+        iterations=iterations,
+        generate_samples=generate_samples,
+        value_samples=value_samples,
+        rollout_width=rollout_width,
+        tree_depth=tree_depth,
+        rollout_depth=rollout_depth,
+        request_concurrency=1,
+    )
 
+    for iteration in range(iterations):
+        selected = _select_node(root)
+        while selected is not None and selected.depth >= tree_depth:
+            selected.exhausted = True
             selected = _select_node(root)
-            if selected is None:
-                break
-            if selected.depth >= tree_depth:
-                selected.terminal = True
-                selected.reward = 0.0
-                _backpropagate(selected, 0.0)
-                continue
+        if selected is None:
+            break
 
-            children = await _expand(
-                ctx,
-                budget,
-                selected,
-                generate_samples,
-                value_samples,
-                remembered_failures,
-                reflections,
-                temperature,
-            )
-            terminal_nodes.extend(child for child in children if child.terminal)
-            success = next(
-                (child for child in children if child.terminal and child.reward == 1),
-                None,
-            )
-            if success is not None:
-                _backpropagate(success, success.reward)
-                await _commit_path(ctx, success)
-                return success.answer or ""
-            if not children:
-                selected.exhausted = True
-                continue
+        children = await _expand(
+            ctx,
+            selected,
+            generate_samples,
+            value_samples,
+            memory,
+            failure_memory,
+            reflection_limit,
+            tree_depth,
+            temperature,
+        )
+        terminal_nodes.extend(child for child in children if child.terminal)
+        success = next((child for child in children if child.terminal and child.reward == 1), None)
+        if success is not None:
+            _backpropagate(success, success.reward)
+            await _commit_path(ctx, success)
+            return str(success.answer)
+        if not children:
+            selected.exhausted = True
+            continue
 
-            rollout = max(children, key=lambda child: child.value)
-            while (
-                not rollout.terminal
-                and rollout.depth < rollout_depth
-                and rollout.depth < tree_depth
-            ):
-                rollout_children = await _expand(
-                    ctx,
-                    budget,
-                    rollout,
-                    rollout_width,
-                    value_samples,
-                    list(dict.fromkeys(failures))[:failure_memory],
-                    reflections,
-                    temperature,
-                )
-                terminal_nodes.extend(
-                    child for child in rollout_children if child.terminal
-                )
-                if not rollout_children:
-                    rollout.exhausted = True
-                    break
-                rollout = max(rollout_children, key=lambda child: child.value)
-                if rollout.terminal and rollout.reward == 1:
-                    _backpropagate(rollout, rollout.reward)
-                    await _commit_path(ctx, rollout)
-                    return rollout.answer or ""
-            _backpropagate(
-                rollout, rollout.reward if rollout.terminal else rollout.value
-            )
-            await ctx.trace.emit(
-                "lats_iteration",
-                iteration=iteration + 1,
-                selected_depth=selected.depth,
-            )
-    except _LatsBudgetExhausted as exc:
+        await _evaluate_children(ctx, selected, value_samples, memory, temperature)
+        rollout_start = max(children, key=lambda child: child.value)
+        rollout_reward, rollout_end, rollout_terminals = await _rollout(
+            ctx,
+            rollout_start,
+            rollout_width,
+            value_samples,
+            memory,
+            failure_memory,
+            reflection_limit,
+            tree_depth,
+            rollout_depth,
+            temperature,
+        )
+        terminal_nodes.extend(rollout_terminals)
+        if rollout_end.terminal and rollout_end.reward == 1:
+            _backpropagate(rollout_end, rollout_end.reward)
+            await _commit_path(ctx, rollout_end)
+            return str(rollout_end.answer)
+
+        _backpropagate(rollout_end, rollout_reward)
         await ctx.trace.emit(
-            "lats_budget_exhausted",
-            used=budget.used,
-            limit=budget.max_calls,
-            detail=str(exc),
+            "lats_iteration",
+            iteration=iteration + 1,
+            selected_depth=selected.depth,
+            rollout_end_depth=rollout_end.depth,
+            rollout_reward=rollout_reward,
+            failures=len(memory.failure_answers),
+            reflections=len(memory.reflections),
         )
 
-    explored = _collect_nodes(root)
-    if not terminal_nodes and not explored:
-        raise RuntimeError(
-            f"LATS search produced no terminal answer within {budget.used}/{budget.max_calls} "
-            "LLM calls"
-        )
-    # The official implementation returns the best explored state after exhausting its
-    # search iterations, even when no reward-1 terminal was found. Preserve that fallback
-    # for a bounded call budget instead of turning a usable action into an arm failure.
-    best = max(explored, key=lambda node: (node.reward, node.value))
-    if best.answer is None and not best.call_records and "calls" not in (best.action or {}):
-        raise RuntimeError("LATS best explored node omitted an answer or action")
+    if not terminal_nodes:
+        raise RuntimeError("LATS search produced no terminal answer")
+    best = max(terminal_nodes, key=lambda node: (node.reward, node.value))
+    if best.answer is None:
+        raise RuntimeError("LATS terminal node omitted an answer")
     await _commit_path(ctx, best)
-    return best.answer or ""
+    return best.answer

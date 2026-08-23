@@ -528,15 +528,19 @@ class BridgeMatrixTests(unittest.TestCase):
                 self.assertEqual(result["committed_calls"], expected)
                 self.assertEqual(len(client.requests), len(responses))
 
-    def test_bfcl_lats_commits_one_selected_complete_declaration_batch(self) -> None:
+    def test_bfcl_lats_commits_the_winning_trajectory_as_one_declaration_batch(self) -> None:
+        # LATS explores with isolated calls, so the branches it rejects never reach BFCL,
+        # and the calls it keeps come from separate proposal responses -- BFCL still scores
+        # them as the one assistant batch the profile answered with.
         responses = [
-            '{"thought":"complete batch","calls":['
-            '{"tool":"lookup_item","arguments":{"id":"a"}},'
-            '{"tool":"lookup_item","arguments":{"id":"b"}}]}',
-            '{"thought":"weaker batch","calls":['
-            '{"tool":"lookup_item","arguments":{"id":"other"}}]}',
+            '{"thought":"declare a","tool":"lookup_item","arguments":{"id":"a"}}',
+            '{"thought":"declare other","tool":"lookup_item","arguments":{"id":"other"}}',
+            '{"score":0.9,"success":false,"feedback":"continue"}',
+            '{"score":0.1,"success":false,"feedback":"wrong branch"}',
+            '{"thought":"declare b","tool":"lookup_item","arguments":{"id":"b"}}',
+            '{"score":0.9,"success":false,"feedback":"finish"}',
+            '{"thought":"answer","final":"done"}',
             '{"score":1.0,"success":true,"feedback":"complete"}',
-            '{"score":0.1,"success":false,"feedback":"wrong"}',
         ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -563,15 +567,14 @@ class BridgeMatrixTests(unittest.TestCase):
                             "lats_generate_samples": 2,
                             "lats_value_samples": 1,
                             "lats_rollout_width": 1,
-                            "lats_tree_depth": 2,
-                            "lats_rollout_depth": 2,
-                            "lats_max_parallel": 1,
-                            "lats_max_llm_calls": 4,
+                            "lats_tree_depth": 3,
+                            "lats_rollout_depth": 3,
                         },
                     )
                 )
 
         self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["final_answer"], "done")
         self.assertEqual(result["tool_calls"], 2)
         self.assertEqual(
             result["committed_calls"],
@@ -580,7 +583,7 @@ class BridgeMatrixTests(unittest.TestCase):
                 {"name": "lookup_item", "arguments": {"id": "b"}},
             ],
         )
-        self.assertEqual(len(client.requests), 4)
+        self.assertEqual(len(client.requests), len(responses))
 
     def test_vita_visible_history_structures_tool_calls_without_runtime_timestamp(self) -> None:
         class ToolCall:

@@ -530,15 +530,23 @@ class ToolEnvironment:
         return record["result"], record
 
     async def commit_isolated_calls(self, records: list[dict[str, Any]]) -> None:
-        """Publish already-executed read-only calls in selected-trajectory order."""
+        """Publish already-executed read-only calls as one selected assistant response.
 
+        A tree search picks its trajectory after the fact, so the winning path's calls were
+        proposed by different assistant responses.  BFCL scores one response's call batch,
+        so the selected trajectory is republished under a single response boundary -- the
+        first record's -- instead of being truncated at the first id change.
+        """
+
+        batch_id = records[0].get("assistant_response_id") if records else None
         for record in records:
             name = str(record["name"])
             arguments = record["arguments"]
             tool = self.tools.get(name)
             if tool is None or not tool.read_only:
                 raise ValueError(f"Cannot commit non-isolated tool record {name!r}")
-            response_id = record.get("assistant_response_id")
+            record = {**record, "assistant_response_id": batch_id}
+            response_id = batch_id
             if not self._accept_declaration_call(response_id):
                 await self.trace.emit(
                     "declaration_call_ignored",
@@ -709,6 +717,16 @@ class RunContext:
         if parsed < 1:
             raise ValueError("policy.max_parallel must be positive when set")
         return parsed
+
+    async def evaluate_terminal(self, answer: str | None) -> float | None:
+        """The environment's own reward for a terminal answer, or None when it has none.
+
+        LATS' published loop reads an environment reward at a terminal state. No bridge here
+        exposes one to the agent: BFCL's answer key stays on the host and is graded only
+        after the arm exits, so a caller must fall back to its own value model.
+        """
+
+        return None
 
     async def complete(
         self,
