@@ -10,7 +10,7 @@ from typing import Any
 
 from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
 
-from .episode import EpisodeBroker, FinalResponse, NativeTool
+from .episode import EpisodeBroker, FinalResponse, NativeTool, visible_text
 
 
 TASK_SET_DOMAINS = {
@@ -228,7 +228,10 @@ def _patch_tau_generation(client: CompletionClient) -> None:
             )
         return AssistantMessage(
             role="assistant",
-            content=raw_message.get("content"),
+            # The relay may inline the model's reasoning as <think>...</think>. Tau2's
+            # native evaluator expects a bare JSON object, so hidden user/evaluator
+            # reasoning must not be fed back into its parser or graded transcript.
+            content=visible_text(raw_message.get("content")),
             tool_calls=parsed_calls or None,
             cost=0.0,
             usage={

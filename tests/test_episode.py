@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
+from benchmark_platform.bridges import tau_episode
 from benchmark_platform.bridges.episode import (
     SEND_MESSAGE_TOOL,
     EpisodeBroker,
@@ -529,6 +530,92 @@ class TauTurnLifecycleTests(unittest.TestCase):
                     self.assertIn("user: second detail", created[1].prompt)
                     self.assertEqual(result["llm_calls"], 2)
                     self.assertEqual(result["tool_calls"], 6)
+
+
+class TauGenerationTests(unittest.TestCase):
+    def test_tau_generation_hides_inline_reasoning_from_native_evaluator(self) -> None:
+        class AssistantMessage:
+            def __init__(self, *, role, content=None, tool_calls=None, **kwargs):
+                self.role = role
+                self.content = content
+                self.tool_calls = tool_calls
+
+        class ToolCall:
+            def __init__(self, *, id, name, arguments, requestor):
+                self.id = id
+                self.name = name
+                self.arguments = arguments
+                self.requestor = requestor
+
+        class Client:
+            def complete_sync(self, *args, **kwargs):
+                return Completion(
+                    '<think>internal evaluator reasoning</think>{"results":[]}',
+                    3,
+                    2,
+                    0.1,
+                    0,
+                    {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": '<think>internal evaluator reasoning</think>{"results":[]}',
+                                }
+                            }
+                        ]
+                    },
+                )
+
+        def module(name: str, **attributes: object) -> ModuleType:
+            value = ModuleType(name)
+            value.__dict__.update(attributes)
+            if name in {"tau2", "tau2.agent", "tau2.evaluator", "tau2.user", "tau2.utils"}:
+                value.__path__ = []
+            return value
+
+        fake_modules = {
+            "tau2": module("tau2"),
+            "tau2.agent": module("tau2.agent"),
+            "tau2.agent.llm_agent": module("tau2.agent.llm_agent", generate=None),
+            "tau2.environment": module("tau2.environment"),
+            "tau2.environment.utils": module("tau2.environment.utils"),
+            "tau2.environment.utils.interface_agent": module(
+                "tau2.environment.utils.interface_agent", generate=None
+            ),
+            "tau2.evaluator": module("tau2.evaluator"),
+            "tau2.evaluator.auth_classifier": module(
+                "tau2.evaluator.auth_classifier", generate=None
+            ),
+            "tau2.evaluator.evaluator_nl_assertions": module(
+                "tau2.evaluator.evaluator_nl_assertions", generate=None
+            ),
+            "tau2.evaluator.hallucination_reviewer": module(
+                "tau2.evaluator.hallucination_reviewer", generate=None
+            ),
+            "tau2.evaluator.review_llm_judge": module(
+                "tau2.evaluator.review_llm_judge", generate=None
+            ),
+            "tau2.evaluator.review_llm_judge_user_only": module(
+                "tau2.evaluator.review_llm_judge_user_only", generate=None
+            ),
+            "tau2.user": module("tau2.user"),
+            "tau2.user.user_simulator": module("tau2.user.user_simulator", generate=None),
+            "tau2.data_model": module("tau2.data_model"),
+            "tau2.data_model.message": module(
+                "tau2.data_model.message", AssistantMessage=AssistantMessage, ToolCall=ToolCall
+            ),
+            "tau2.utils": module("tau2.utils"),
+            "tau2.utils.llm_utils": module(
+                "tau2.utils.llm_utils", to_litellm_messages=lambda messages: messages
+            ),
+        }
+        with patch.dict(sys.modules, fake_modules):
+            tau_episode._patch_tau_generation(Client())
+            result = fake_modules["tau2.evaluator.evaluator_nl_assertions"].generate(
+                model="evaluator", messages=[]
+            )
+
+        self.assertEqual(result.content, '{"results":[]}')
 
 
 if __name__ == "__main__":
