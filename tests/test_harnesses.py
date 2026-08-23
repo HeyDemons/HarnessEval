@@ -1214,28 +1214,31 @@ class HarnessTests(unittest.TestCase):
                 '#E1 = lookup[{"key":"beta"}]'
             )
 
-    def test_rewoo_repairs_concatenated_planner_drafts_before_execution(self) -> None:
+    def test_rewoo_does_not_retry_a_malformed_planner_response(self) -> None:
         malformed = (
             "Plan: retrieve alpha\n"
-            '#E1 = lookup[{"key":"alpha"}]'
+            '#E1 = lookup[{"key":"alpha"}]\n'
             "Plan: retrieve alpha again\n"
             '#E1 = lookup[{"key":"alpha"}]'
         )
-        answer, environment = self.run_profile(
-            "rewoo",
-            [
-                malformed,
-                'Plan: retrieve alpha\n#E1 = lookup[{"key":"alpha"}]',
-                "6",
-            ],
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            client = ScriptedClient([malformed])
+            environment = ToolEnvironment(tool_specs(), trace)
+            context = RunContext(
+                "rewoo",
+                "retrieve alpha",
+                client,
+                environment,
+                trace,
+                {"max_turns": 8, "protocol_repairs": 5},
+            )
+            with self.assertRaisesRegex(ValueError, "expected E2, got E1"):
+                asyncio.run(run_profile(context))
 
-        self.assertEqual(answer, "6")
-        self.assertEqual([call["name"] for call in environment.calls], ["lookup"])
-        self.assertEqual(len(self.last_client.messages), 3)
-        repair_prompt = self.last_client.messages[1][-1]["content"]
-        self.assertIn("Protocol error:", repair_prompt)
-        self.assertIn("Do not include commentary", repair_prompt)
+        self.assertEqual(context.llm_calls, 1)
+        self.assertEqual(len(client.messages), 1)
+        self.assertEqual(environment.calls, [])
 
     def test_sa_exact_action_cache_hit(self) -> None:
         answer, environment = self.run_profile(
