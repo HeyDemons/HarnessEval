@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -20,6 +21,7 @@ from benchmark_platform.engine import (
     terminal_phase_timeout_sec,
     terminal_result_outcome,
     terminal_verifier_reserve_sec,
+    required_path_check,
 )
 from benchmark_platform.scorers.gaia import question_score
 from benchmark_platform.store import CaseStore
@@ -30,6 +32,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PlatformTests(unittest.TestCase):
+    def test_required_path_sha256_is_fail_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "snapshot.parquet"
+            path.write_bytes(b"current snapshot")
+            expected = required_path_check(
+                {
+                    "name": "snapshot",
+                    "path": str(path),
+                    "type": "file",
+                    "sha256": "0" * 64,
+                }
+            )
+            actual = required_path_check(
+                {
+                    "name": "snapshot",
+                    "path": str(path),
+                    "type": "file",
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        self.assertFalse(expected["ok"])
+        self.assertTrue(actual["ok"])
+
     def test_catalog_is_unique_and_has_no_inspect_adapter(self) -> None:
         catalog = Catalog(ROOT / "catalog" / "benchmarks.json", ROOT, ROOT.parent)
         self.assertEqual(len(catalog.ids()), len(set(catalog.ids())))

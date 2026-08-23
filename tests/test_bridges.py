@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from benchmark_platform.bridges import base, runner as bridge_runner
+from benchmark_platform.bridges import base, prepare as bridge_prepare, runner as bridge_runner
 from benchmark_platform.bridges.adapters import load_case
 from benchmark_platform.bridges.bfcl import (
     noncanonical_schema_types,
@@ -139,6 +139,36 @@ def make_case(root: Path, benchmark: str) -> None:
 
 
 class BridgeMatrixTests(unittest.TestCase):
+    def test_gdpval_prepare_requires_the_complete_v2_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "gdpval"
+            reference = root / "reference_files" / "hash" / "source.xlsx"
+            deliverable = root / "deliverable_files" / "gold" / "answer.pdf"
+            reference.parent.mkdir(parents=True)
+            deliverable.parent.mkdir(parents=True)
+            reference.write_bytes(b"reference")
+            deliverable.write_bytes(b"gold")
+            row = {
+                "task_id": "case",
+                "prompt": "Create the requested deliverable.",
+                "reference_files": [str(reference.relative_to(root))],
+                "deliverable_files": [str(deliverable.relative_to(root))],
+                "rubric_json": '[{"score":2,"criterion":"complete"}]',
+            }
+            output = Path(directory) / "prepared"
+            with (
+                patch.object(bridge_prepare, "GDPVAL_DATA_ROOT", root),
+                patch.object(bridge_prepare, "_parquet_row", return_value=row),
+            ):
+                bridge_prepare.prepare_gdpval("case", output)
+                case = json.loads((output / "input" / "case.json").read_text())
+                gold = json.loads((output / "authority" / "gold.json").read_text())
+                self.assertEqual(case["reference_files"], ["source.xlsx"])
+                self.assertEqual(gold["deliverable_files"], ["deliverable_files/gold/answer.pdf"])
+                reference.unlink()
+                with self.assertRaisesRegex(FileNotFoundError, "source.xlsx"):
+                    bridge_prepare.prepare_gdpval("case", Path(directory) / "missing")
+
     def test_bfcl_uses_official_type_mapping_and_declaration_only_results(self) -> None:
         parameters = normalize_bfcl_parameters(
             {

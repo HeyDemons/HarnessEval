@@ -33,10 +33,15 @@ def artifact_text(path: Path) -> str:
 
 
 def rubric_items(raw: Any) -> list[dict[str, Any]]:
+    if raw is None:
+        raise ValueError("GDPVal rubric is missing")
     if isinstance(raw, str):
         raw = json.loads(raw)
     if isinstance(raw, list):
-        return [item if isinstance(item, dict) else {"criterion": str(item)} for item in raw]
+        items = [item if isinstance(item, dict) else {"criterion": str(item)} for item in raw]
+        if not items:
+            raise ValueError("GDPVal rubric is empty")
+        return items
     if isinstance(raw, dict):
         for key in ("rubrics", "criteria", "items"):
             if isinstance(raw.get(key), list):

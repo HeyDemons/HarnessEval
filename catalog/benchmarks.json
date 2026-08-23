@@ -42,7 +42,8 @@
       "name": "GDPval",
       "source": {
         "grading": "https://evals.openai.com/gdpval/grading",
-        "local_snapshot": "${ORCH_ROOT}/gdpval"
+        "local_snapshot": "${ORCH_ROOT}/gdpval",
+        "revision": "11e7900cdcac61bc4daf59e65feb238acda98fbf"
       },
       "adapter": {
         "kind": "docker-image",
@@ -55,7 +56,10 @@
         "read_only": true
       },
       "required_paths": [
-        {"name": "GDPval dataset", "path": "${ORCH_ROOT}/gdpval", "type": "directory"}
+        {"name": "GDPval dataset", "path": "${ORCH_ROOT}/gdpval", "type": "directory"},
+        {"name": "GDPval v2 parquet", "path": "${ORCH_ROOT}/gdpval/data/train-00000-of-00001.parquet", "type": "file", "sha256": "f8422fab9b21d90c0ee5f0659842ab666d418cb8940842918f9f4b0df7ae0202"},
+        {"name": "GDPval reference files", "path": "${ORCH_ROOT}/gdpval/reference_files", "type": "directory"},
+        {"name": "GDPval gold deliverables", "path": "${ORCH_ROOT}/gdpval/deliverable_files", "type": "directory"}
       ],
       "mounts": [
         {"host": "${ORCH_ROOT}/gdpval", "container": "/data", "mode": "ro"}

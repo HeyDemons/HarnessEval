@@ -246,6 +246,51 @@ HARNESS_ENV = frozenset({
 })
 
 
+def required_path_check(required: dict[str, Any]) -> dict[str, Any]:
+    path = Path(required["path"])
+    if required.get("type") == "file":
+        ok = path.is_file()
+    else:
+        ok = path.is_dir()
+    check: dict[str, Any] = {
+        "name": required.get("name", str(path)),
+        "ok": ok,
+        "path": str(path),
+    }
+    expected_sha256 = required.get("sha256")
+    if ok and expected_sha256:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        actual_sha256 = digest.hexdigest()
+        check.update(
+            {
+                "ok": actual_sha256 == expected_sha256,
+                "expected_sha256": expected_sha256,
+                "actual_sha256": actual_sha256,
+            }
+        )
+    if ok and required.get("git_revision"):
+        actual = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        actual_revision = actual.stdout.strip()
+        check.update(
+            {
+                "ok": check["ok"]
+                and actual.returncode == 0
+                and actual_revision == required["git_revision"],
+                "expected_revision": required["git_revision"],
+                "actual_revision": actual_revision or None,
+            }
+        )
+    return check
+
+
 class Platform:
     def __init__(self, root: Path, orch_root: Path, catalog_path: Path):
         self.root = root.resolve()
@@ -797,28 +842,7 @@ class Platform:
                 }
             )
         for required in benchmark.raw.get("required_paths", []):
-            path = Path(required["path"])
-            if required.get("type") == "file":
-                ok = path.is_file()
-            else:
-                ok = path.is_dir()
-            check = {"name": required.get("name", str(path)), "ok": ok, "path": str(path)}
-            if ok and required.get("git_revision"):
-                actual = subprocess.run(
-                    ["git", "-C", str(path), "rev-parse", "HEAD"],
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                actual_revision = actual.stdout.strip()
-                check.update(
-                    {
-                        "ok": actual.returncode == 0 and actual_revision == required["git_revision"],
-                        "expected_revision": required["git_revision"],
-                        "actual_revision": actual_revision or None,
-                    }
-                )
-            checks.append(check)
+            checks.append(required_path_check(required))
         runtime_images_ok = True
         for required in adapter.get("runtime_images", []):
             inspect = subprocess.run(
@@ -873,10 +897,60 @@ class Platform:
                     "observed_labels": {name: observed_labels.get(name) for name in expected_labels},
                 }
             )
+        gdpval_snapshot_ok = True
+        if benchmark.id == "gdpval" and image_ok:
+            suite = self.root / "catalog" / "suites" / "light" / "gdpval.json"
+            completed = subprocess.run(
+                self._docker(
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    "-v",
+                    f"{self.orch_root / 'gdpval'}:/data:ro",
+                    "-v",
+                    f"{self.root / 'drivers' / 'portable_smoke.py'}:/opt/platform/portable_smoke.py:ro",
+                    "-v",
+                    f"{suite}:/suite.json:ro",
+                    image,
+                    "python",
+                    "/opt/platform/portable_smoke.py",
+                    "gdpval",
+                    "/data",
+                    "/tmp/gdpval-integrity.json",
+                    "--suite",
+                    "/suite.json",
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            payload: dict[str, Any] = {}
+            try:
+                payload = json.loads(completed.stdout)
+            except json.JSONDecodeError:
+                pass
+            gdpval_snapshot_ok = completed.returncode == 0 and (
+                (payload.get("scores") or {}).get("dataset_integrity") == 1.0
+            )
+            checks.append(
+                {
+                    "name": "GDPval v2 snapshot integrity",
+                    "ok": gdpval_snapshot_ok,
+                    "returncode": completed.returncode,
+                    "details": payload,
+                    "stderr": completed.stderr[-400:],
+                }
+            )
         if adapter["kind"] == "external-vm":
             checks.append({"name": "local_provider", "ok": False, "reason": adapter["blocker"]})
         buildable = prerequisites_ok and adapter["kind"] in {"docker-image", "terminal-task"}
-        ready = prerequisites_ok and runtime_images_ok and bool(image and image_ok)
+        ready = (
+            prerequisites_ok
+            and runtime_images_ok
+            and bool(image and image_ok)
+            and gdpval_snapshot_ok
+        )
         if adapter["kind"] == "external-vm":
             ready = False
             buildable = False

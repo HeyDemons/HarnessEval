@@ -143,24 +143,66 @@ def prepare_gaia(case_id: str, output: Path) -> None:
     _write(output / "authority" / "gold.json", {"answer": row.get("Final answer"), "level": row.get("Level")})
 
 
+GDPVAL_DATA_ROOT = Path("/data")
+
+
+def _gdpval_file_list(row: dict[str, Any], field: str) -> list[str]:
+    raw = row.get(field)
+    if raw is None:
+        raise ValueError(f"GDPVal snapshot is missing required field {field}")
+    values = ast.literal_eval(raw) if isinstance(raw, str) else raw
+    if not isinstance(values, (list, tuple)):
+        raise ValueError(f"GDPVal {field} must be a list")
+    normalized = [str(value) for value in values]
+    for value in normalized:
+        path = Path(value)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"GDPVal {field} contains an unsafe path: {value}")
+    return normalized
+
+
 def prepare_gdpval(case_id: str, output: Path) -> None:
-    row = _parquet_row(Path("/data/data/train-00000-of-00001.parquet"), case_id, "task_id")
+    row = _parquet_row(
+        GDPVAL_DATA_ROOT / "data" / "train-00000-of-00001.parquet",
+        case_id,
+        "task_id",
+    )
     workspace = output / "input" / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
-    raw_references = row.get("reference_files") or []
-    references = ast.literal_eval(raw_references) if isinstance(raw_references, str) else raw_references
-    copied = []
+    references = _gdpval_file_list(row, "reference_files")
+    deliverables = _gdpval_file_list(row, "deliverable_files")
+    rubric = row.get("rubric_json")
+    if not isinstance(rubric, str) or not rubric.strip():
+        raise ValueError("GDPVal snapshot is missing rubric_json")
+    parsed_rubric = json.loads(rubric)
+    if not isinstance(parsed_rubric, list) or not parsed_rubric:
+        raise ValueError("GDPVal rubric_json must contain a non-empty list")
+    missing = [
+        relative
+        for relative in [*references, *deliverables]
+        if not (GDPVAL_DATA_ROOT / relative).is_file()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "GDPVal snapshot is missing referenced assets: " + ", ".join(missing)
+        )
+    basenames = [Path(relative).name for relative in references]
+    if len(basenames) != len(set(basenames)):
+        raise ValueError("GDPVal reference files have colliding basenames")
+    copied: list[str] = []
     for relative in references:
-        source = Path("/data") / relative
-        if source.is_file():
-            target = workspace / source.name
-            shutil.copy2(source, target)
-            copied.append(target.name)
+        source = GDPVAL_DATA_ROOT / relative
+        target = workspace / source.name
+        shutil.copy2(source, target)
+        copied.append(target.name)
     prompt = str(row["prompt"])
     if copied:
         prompt += "\n\nReference files in the isolated workspace: " + ", ".join(copied)
     _write(output / "input" / "case.json", {"benchmark": "gdpval", "case_id": case_id, "prompt": prompt, "reference_files": copied})
-    _write(output / "authority" / "gold.json", {"rubric_json": row.get("rubric_json"), "deliverable_files": row.get("deliverable_files")})
+    _write(
+        output / "authority" / "gold.json",
+        {"rubric_json": rubric, "deliverable_files": deliverables},
+    )
 
 
 def prepare_trajectory(case_id: str, output: Path) -> None:

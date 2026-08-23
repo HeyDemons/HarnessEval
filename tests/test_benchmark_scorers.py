@@ -1,12 +1,73 @@
 from __future__ import annotations
 
+import hashlib
+import json
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from drivers.gdpval_score import rubric_items
+from drivers.portable_smoke import gdpval
 from drivers.trajectory_score import grade, tool_name
 
 
 class BenchmarkScorerTests(unittest.TestCase):
+    def test_gdpval_snapshot_probe_checks_assets_and_frozen_sha(self) -> None:
+        class Frame:
+            columns = [
+                "task_id",
+                "prompt",
+                "reference_files",
+                "deliverable_files",
+                "rubric_json",
+            ]
+
+            def __len__(self) -> int:
+                return 1
+
+            def to_dict(self, *, orient: str):
+                if orient != "records":
+                    raise AssertionError(f"unexpected orient: {orient}")
+                return [row]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parquet = root / "data.parquet"
+            parquet.write_bytes(b"frozen parquet")
+            reference = root / "reference_files" / "hash" / "source.xlsx"
+            deliverable = root / "deliverable_files" / "gold" / "answer.pdf"
+            reference.parent.mkdir(parents=True)
+            deliverable.parent.mkdir(parents=True)
+            reference.write_bytes(b"reference")
+            deliverable.write_bytes(b"gold")
+            row = {
+                "task_id": "case",
+                "prompt": "create",
+                "reference_files": [str(reference.relative_to(root))],
+                "deliverable_files": [str(deliverable.relative_to(root))],
+                "rubric_json": '[{"score":1,"criterion":"complete"}]',
+            }
+            suite = root / "suite.json"
+            suite.write_text(
+                json.dumps(
+                    {
+                        "source": {
+                            "parquet_sha256": hashlib.sha256(parquet.read_bytes()).hexdigest()
+                        },
+                        "cases": [{"id": "case", "reference_count": 1}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with patch(
+                "drivers.portable_smoke.parquet_probe",
+                return_value=(parquet, Frame()),
+            ):
+                self.assertEqual(gdpval(root, suite)["scores"]["dataset_integrity"], 1.0)
+                reference.unlink()
+                self.assertEqual(gdpval(root, suite)["scores"]["dataset_integrity"], 0.0)
+
     def test_trajectory_parallel_exact_ignores_order(self) -> None:
         case = {"tools": [{"tool name": "Weather.Now"}, {"tool name": "Maps.Route"}]}
         gold = {
@@ -65,6 +126,10 @@ class BenchmarkScorerTests(unittest.TestCase):
     def test_gdpval_rubric_shapes_are_normalized(self) -> None:
         self.assertEqual(len(rubric_items('[{"criterion":"a"}]')), 1)
         self.assertEqual(len(rubric_items({"criteria": ["a", "b"]})), 2)
+        with self.assertRaisesRegex(ValueError, "missing"):
+            rubric_items(None)
+        with self.assertRaisesRegex(ValueError, "empty"):
+            rubric_items([])
 
 
 if __name__ == "__main__":
