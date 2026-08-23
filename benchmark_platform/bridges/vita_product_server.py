@@ -14,8 +14,12 @@ from benchmark_platform.harnesses.api import completion_client_from_env
 from .episode import SEND_MESSAGE_TOOL
 from .product_episode import PendingProductAction, ProductEpisodeBridge, serve
 from .vita_episode import (
+    _LANGUAGE_DIRECTIVES,
+    _actor_language_directive,
     _build_environment,
+    _domain,
     _find_task,
+    _language,
     _native_tools,
     _patch_vita_generation,
     _render_domain_policy,
@@ -40,17 +44,26 @@ def decode_result(content: Any, error: bool) -> dict[str, Any]:
 def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[str, Any]) -> None:
     from vita.agent.base import BaseAgent
     from vita.data_model.message import AssistantMessage, ToolCall, ToolMessage
+    from vita.config import DEFAULT_LANGUAGE, DEFAULT_SEED
     from vita.evaluator.evaluator import evaluate_simulation
     from vita.orchestrator.orchestrator import Orchestrator
     from vita.user.user_simulator import UserSimulator
 
-    language = str(policy.get("language", "english"))
-    seed = int(policy.get("seed", 42))
+    language = _language(policy)
+    # vita.config.DEFAULT_SEED, so the recorded value matches an official run -- but it is
+    # inert on this path and must not be read as a reproducibility guarantee. Upstream uses a
+    # seed for two things: deriving per-trial seeds in run.py (we construct the Orchestrator
+    # directly, so that code never runs) and pushing llm_args["seed"] to the provider (our
+    # generate hook forwards only temperature, so it is dropped before the request). Nothing
+    # in vita's episode path uses Python's random either. Wiring it through would still leave
+    # the actor unseeded on both arms, so it would buy a reproducibility claim we cannot make.
+    seed = int(policy.get("seed", DEFAULT_SEED))
     random.seed(seed)
     client = completion_client_from_env()
-    _patch_vita_generation(client)
-    task = _find_task(case_id, language)
-    environment = _build_environment(task, language)
+    harness_usage = _patch_vita_generation(client, language)
+    task, task_set = _find_task(case_id, language)
+    domain = _domain(task, task_set)
+    environment = _build_environment(task, language, domain)
     domain_policy, system_time = _render_domain_policy(environment, language)
     native_tools = _native_tools(environment.get_tools())
     safe_tools = {tool.name for tool in native_tools if tool.read_only and tool.parallel}
@@ -140,6 +153,7 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
                 metadata={
                     "native_lifecycle": True,
                     "system_time": system_time,
+                    "actor_language_directive": _actor_language_directive(language),
                     "tool_contract": _tool_contract(environment.get_tools()),
                     "speculation_policy": "benchmark_declared_read_tools_with_native_commit_replay",
                     "requires_speculative_commit": True,
@@ -197,12 +211,15 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
             language=language,
         )
         simulation = Orchestrator(
-            domain=str(task.domain),
+            domain=domain,
             agent=agent,
             user=user,
             environment=environment,
             task=task,
-            max_steps=int(policy.get("native_max_steps", 100)),
+            # vita/cli.py passes DEFAULT_MAX_STEPS = 300; Orchestrator's class default of
+            # 100 is never what an official run uses, and reaching it flattens the case to
+            # 0.0 with no rubric grading (see vita_episode for the full note).
+            max_steps=int(policy.get("native_max_steps", 300)),
             max_errors=int(policy.get("native_max_errors", 10)),
             seed=seed,
             language=language,
@@ -212,7 +229,7 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
         if policy.get("native_evaluate") is True:
             try:
                 native_reward = evaluate_simulation(
-                    domain=str(task.domain),
+                    domain=domain,
                     task=task,
                     simulation=simulation,
                     evaluation_type=str(policy.get("evaluation_type", "trajectory")),
@@ -237,6 +254,10 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
                 "status": "completed",
                 "benchmark": "vitabench",
                 "case_id": case_id,
+                "language": language or DEFAULT_LANGUAGE,
+                "harness_usage": {name: meter.as_dict() for name, meter in harness_usage.items()},
+                "actor_language_directive": _actor_language_directive(language),
+                "user_simulator_language_directive": _LANGUAGE_DIRECTIVES.get(language or "chinese"),
                 "native_lifecycle": True,
                 "termination_reason": simulation.termination_reason,
                 "duration": simulation.duration,
@@ -265,6 +286,31 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
                 "error": f"{type(exc).__name__}: {exc}",
                 "traceback": traceback.format_exc(),
             },
+        )
+        # Publish what the episode did measure before failing -- the same contract the
+        # baseline bridge keeps. bridge.fail only records the error and releases pending
+        # actions, so an episode-level exception discarded the hidden user simulator's and
+        # the evaluator's token usage along with the language and tool contract the arm ran
+        # under. Those roles run inside the benchmark rather than inside the agent, so
+        # nothing recovers their spend from the trace the way the actor's is recovered.
+        bridge.complete(
+            {
+                "schema_version": 1,
+                "status": "failed",
+                "benchmark": "vitabench",
+                "case_id": case_id,
+                "native_lifecycle": True,
+                "language": language or DEFAULT_LANGUAGE,
+                "harness_usage": {
+                    name: meter.as_dict() for name, meter in harness_usage.items()
+                },
+                "actor_language_directive": _actor_language_directive(language),
+                "user_simulator_language_directive": _LANGUAGE_DIRECTIVES.get(
+                    language or "chinese"
+                ),
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            final_pending,
         )
         bridge.fail(exc, final_pending)
 

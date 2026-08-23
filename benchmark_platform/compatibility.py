@@ -48,6 +48,32 @@ def compatibility_rows(
                 # mislabel an inapplicable lifecycle as weak task performance.
                 runnable = False
                 baseline_requirement = "gdpval_requires_workspace_artifact_tools"
+            if profile.tool_contract == "no-external-tools" and benchmark.id == "vitabench":
+                # Checked against the suite, not assumed: all 60 light cases carry evaluation
+                # criteria, and every one of them requires at least one order to be created --
+                # none is scoreable by talking. A published text-only method has no tool loop,
+                # so it cannot score at all here, and 60 structural zeros read as a weak method
+                # rather than an inapplicable one.
+                #
+                # Deliberately not extended to the other native conversation, tau2: its light
+                # suite contains at least one task with no evaluation criteria at all
+                # (airline:9), where evaluate_simulation returns a flat 1.0 and a method that
+                # called nothing scored full marks. Until that rate is measured there, the same
+                # reasoning is not established for it.
+                runnable = False
+                baseline_requirement = "vitabench_rubrics_all_require_a_tool_mediated_order"
+            if profile.id == "llmcompiler" and lifecycle == "native-conversation":
+                # LLMCompiler's premise is planning one parallel DAG of calls up front, which a
+                # conversation cannot supply: every user turn invalidates the plan, so each turn
+                # costs a replan. On tau2, the other native conversation, it failed 28 of 30
+                # cases with "replan budget exhausted after 2 replans" -- the same 28 errors,
+                # while rewoo completed 26/30 and cmas 17/23 on that suite. The budget is a
+                # harness default (llmcompiler_max_replans) and could be raised, but a value
+                # large enough for a 14-32 turn episode turns the method into a very expensive
+                # ReAct -- planner, scheduler and joiner calls every turn -- which is no longer
+                # the published method. Inapplicable lifecycle, not a weak method.
+                runnable = False
+                baseline_requirement = "dag_planner_cannot_replan_per_conversation_turn"
             rows.append(
                 {
                     "baseline": profile.id,

@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import queue
+import re
 import threading
 import time
 import uuid
@@ -17,6 +18,53 @@ from benchmark_platform.harnesses.methods import run_profile
 
 
 SEND_MESSAGE_TOOL = "send_message_to_user"
+
+_REASONING_BLOCK = re.compile(r"<think>.*?</think>", flags=re.DOTALL | re.IGNORECASE)
+
+
+def visible_text(content: str | None) -> str:
+    """The part of a completion a benchmark participant is allowed to see.
+
+    The relay in use returns reasoning summaries inline, wrapped in <think>...</think>,
+    instead of in a separate field. That is fine for the agent -- it is the baseline's own
+    output -- but the hidden user simulator's deliberation reached the agent verbatim as if
+    the user had said it ("<think>**Determining suitable hotel location**</think> 我想住..."),
+    and the same text then landed inside the transcript the rubric evaluator grades. Both
+    are hidden state escaping into a measurement.
+
+    A completion that is nothing but a reasoning block is returned unchanged: an empty user
+    turn would break the episode, and a visible artefact beats a silent one.
+    """
+    stripped = _REASONING_BLOCK.sub("", content or "").strip()
+    return stripped or (content or "")
+
+
+class UsageMeter:
+    """Tokens spent by calls the broker's trace never sees.
+
+    The hidden user simulator and the native evaluator run inside the benchmark, not inside
+    a baseline, so nothing writes them to harness_trace.jsonl and the reported totals were
+    the actor's alone. They are the same cost for every arm and so do not belong in the
+    comparison total, but a run that cannot say what it spent is not auditable.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.input = 0
+        self.output = 0
+
+    def add(self, completion: Any) -> None:
+        self.calls += 1
+        self.input += int(getattr(completion, "prompt_tokens", 0) or 0)
+        self.output += int(getattr(completion, "completion_tokens", 0) or 0)
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "calls": self.calls,
+            "input": self.input,
+            "output": self.output,
+            "total": self.input + self.output,
+        }
 
 # Bound on either side of the native handshake. The adapter is allowed to stop asking for
 # the next wave with requests still pending -- its step budget runs out, its episode ends,

@@ -4,12 +4,13 @@ import argparse
 import asyncio
 import json
 import random
+import traceback
 from pathlib import Path
 from typing import Any
 
 from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
 
-from .episode import ActionRequest, EpisodeBroker, FinalResponse, NativeTool
+from .episode import ActionRequest, EpisodeBroker, FinalResponse, NativeTool, UsageMeter, visible_text
 
 
 def _write(path: Path, value: Any) -> None:
@@ -82,6 +83,45 @@ def _tool_contract(tools: list[Any]) -> dict[str, Any]:
     }
 
 
+def _language(policy: dict[str, Any]) -> str | None:
+    """Leave the default language to VitaBench itself; None means "whatever upstream says".
+
+    The environment is keyed by language and answers a lookup made in any other one with an
+    empty result rather than an error, so a default that disagrees with upstream stays
+    invisible until every name-based tool call has already missed -- an English environment
+    under a Chinese-speaking model returned "No trains found" for 12 of 13 calls. Holding a
+    copy of the constant here would reintroduce exactly that risk on a revision bump, and
+    every call site this bridge touches (task loader, environment constructor, get_weekday,
+    get_prompts) already falls back to vita.config.DEFAULT_LANGUAGE on None. The resolved
+    value is recorded in the result so a run is never ambiguous about which one it used.
+    """
+    language = policy.get("language")
+    return str(language) if language is not None else None
+
+
+# VitaBench's English database matches natural-language entities in English. A model that
+# answers an otherwise English episode in Chinese therefore gets plausible-looking empty
+# search results instead of an explicit language error. Keep this instruction at the task
+# policy boundary: every baseline Actor receives it, and the product manifest carries the
+# same prompt into both the authoritative PERSEUS Actor and its Speculator context.
+_ACTOR_LANGUAGE_DIRECTIVES = {
+    "english": (
+        "Respond to the user in English. Use English for every natural-language string "
+        "passed to tools, including place, product, store, hotel, attraction, station, and "
+        "city names. Do not translate English entity names into Chinese. Preserve opaque "
+        "identifiers, dates, numbers, and enum values verbatim."
+    )
+}
+
+
+def _actor_language_directive(language: str | None) -> str | None:
+    if language is None:
+        from vita.config import DEFAULT_LANGUAGE
+
+        language = DEFAULT_LANGUAGE
+    return _ACTOR_LANGUAGE_DIRECTIVES.get(str(language))
+
+
 def _message_text(message: Any) -> str:
     content = getattr(message, "content", None)
     if content is not None:
@@ -120,7 +160,7 @@ def _visible_history(messages: list[Any]) -> str:
     return "\n".join(rows)
 
 
-def _task_clock(environment: Any, language: str) -> tuple[str, str]:
+def _task_clock(environment: Any, language: str | None) -> tuple[str, str]:
     """Return the benchmark database time and the official policy rendering value."""
     from vita.utils.utils import get_weekday
 
@@ -128,60 +168,125 @@ def _task_clock(environment: Any, language: str) -> tuple[str, str]:
     return system_time, f"{system_time} {get_weekday(system_time, language)}"
 
 
-def _render_domain_policy(environment: Any, language: str) -> tuple[str, str]:
+def _render_domain_policy(environment: Any, language: str | None) -> tuple[str, str]:
     system_time, policy_time = _task_clock(environment, language)
-    return environment.get_policy().format(time=policy_time), system_time
+    policy = environment.get_policy().format(time=policy_time)
+    if directive := _actor_language_directive(language):
+        policy = f"{policy}\n\n# Language\n- {directive}"
+    return policy, system_time
 
 
-def _patch_vita_generation(client: CompletionClient) -> None:
+# Upstream's user-simulator prompt carries no language directive at all -- neither version
+# does. It relies on the template's own language being the cue, which holds for the Chinese
+# primary dataset and breaks on the English translation: the romanised Chinese entity names
+# and the Meituan-style scenario outweigh it, and the simulator opened in Chinese 8 times out
+# of 8 on an English prompt containing zero Chinese characters. The agent then mirrors the
+# user, queries the English-keyed database with Chinese strings, and 12 of 13 lookups come
+# back empty -- so an English run measures translation luck rather than agent skill.
+#
+# One appended line restores it (8/8 English, measured; a longer, firmer wording bought
+# nothing). It is added as a separate message so the official template stays byte-identical,
+# and only for the language that needs it -- under Chinese the cue already works and this
+# would be a gratuitous deviation. The Actor has its own policy-level directive above because
+# the measured product Actor still switched to Chinese despite an all-English visible user.
+# Both deviations are recorded per run.
+_LANGUAGE_DIRECTIVES = {"english": "Write every message in English."}
+
+
+def _patch_vita_generation(client: CompletionClient, language: str | None = None) -> dict[str, UsageMeter]:
+    """Route VitaBench's own LLM roles through the harness client, metered and de-leaked."""
     from vita.data_model.message import AssistantMessage
     from vita.utils.llm_utils import format_messages
 
-    def generate(*, model: str, messages: list[Any], tools=None, tool_choice=None, enable_think=False, **kwargs):
-        if tools:
-            raise RuntimeError("HarnessEval's hidden-user bridge does not expose assistant tools to the user simulator")
-        formatted = format_messages(messages)
-        compatible = [
-            {"role": str(item["role"]), "content": str(item.get("content") or "")}
-            for item in formatted
-            if item.get("role") in {"system", "user", "assistant"}
-        ]
-        # Same reasoning as tau_episode: this hook is synchronous and already off the loop.
-        completion = client.complete_sync(compatible, temperature=kwargs.get("temperature"))
-        return AssistantMessage(
-            role="assistant",
-            content=completion.content,
-            cost=0.0,
-            usage={
-                "prompt_tokens": completion.prompt_tokens,
-                "completion_tokens": completion.completion_tokens,
-            },
-            raw_data=completion.raw,
-        )
+    from vita.config import DEFAULT_LANGUAGE
+
+    directive = _LANGUAGE_DIRECTIVES.get(language or DEFAULT_LANGUAGE)
+
+    def build(meter: UsageMeter, extra_system: str | None = None):
+        def generate(*, model: str, messages: list[Any], tools=None, tool_choice=None, enable_think=False, **kwargs):
+            if tools:
+                raise RuntimeError("HarnessEval's hidden-user bridge does not expose assistant tools to the user simulator")
+            formatted = format_messages(messages)
+            compatible = [
+                {"role": str(item["role"]), "content": str(item.get("content") or "")}
+                for item in formatted
+                if item.get("role") in {"system", "user", "assistant"}
+            ]
+            if extra_system:
+                # After the official system block, before the conversation: the shape the
+                # 8/8 measurement used.
+                index = 0
+                while index < len(compatible) and compatible[index]["role"] == "system":
+                    index += 1
+                compatible.insert(index, {"role": "system", "content": extra_system})
+            # Same reasoning as tau_episode: this hook is synchronous and already off the loop.
+            completion = client.complete_sync(compatible, temperature=kwargs.get("temperature"))
+            meter.add(completion)
+            return AssistantMessage(
+                role="assistant",
+                content=visible_text(completion.content),
+                cost=0.0,
+                usage={
+                    "prompt_tokens": completion.prompt_tokens,
+                    "completion_tokens": completion.completion_tokens,
+                },
+                raw_data=completion.raw,
+            )
+
+        return generate
 
     import vita.evaluator.evaluator_traj as evaluator_traj
     import vita.user.user_simulator as user_simulator
 
-    user_simulator.generate = generate
-    evaluator_traj.generate = generate
+    meters = {"user_simulator": UsageMeter(), "evaluator": UsageMeter()}
+    # Only the simulator: the evaluator emits structured verdicts, and its prompt is the one
+    # the relays reject, so it gets nothing added.
+    user_simulator.generate = build(meters["user_simulator"], directive)
+    evaluator_traj.generate = build(meters["evaluator"])
+    return meters
 
 
 def _find_task(case_id: str, language: str):
+    """Return the task and the task set it came from; the set is needed to repair _domain."""
     from vita.registry import registry
 
     for task_set in registry.get_task_sets():
         tasks = registry.get_tasks_loader(task_set)(language=language)
         for task in tasks:
             if str(task.id) == case_id:
-                return task
+                return task, task_set
     raise KeyError(f"VitaBench case not found: {case_id}")
 
 
-def _build_environment(task: Any, language: str):
+def _domain(task: Any, task_set: str) -> str:
+    """The registry key for this task's environment, repaired when the dataset translated it.
+
+    tasks_en.json translated the domain field itself on part of the in-store set: 25 of its
+    100 tasks say "in-store consumption" and 2 say "in-store", where the registry key is
+    "instore". get_env_constructor raises KeyError on all 27, which is 4 of the 60 cases in
+    the light suite. The Chinese dataset is clean on all 400, so this is a defect in the
+    English translation, not a naming convention we should be following.
+
+    The task set carries the same fact the field is meant to carry, and the three
+    single-domain sets are named exactly like the domains -- so fall back to it, and only
+    when the field itself does not resolve. Cross-domain tasks say "delivery,ota,instore",
+    which resolves, so they never take this path.
+    """
+    from vita.registry import registry
+
+    known = set(registry.get_domains())
+    declared = str(task.domain)
+    if all(part.strip() in known for part in declared.split(",")):
+        return declared
+    if task_set in known:
+        return task_set
+    raise KeyError(f"VitaBench task {task.id} declares an unresolvable domain: {declared!r}")
+
+
+def _build_environment(task: Any, language: str, domain: str):
     from vita.environment.environment import get_cross_environment
     from vita.registry import registry
 
-    domain = str(task.domain)
     if "," in domain:
         return get_cross_environment(domain, task.environment, language)
     return registry.get_env_constructor(domain)(task.environment, language)
@@ -211,17 +316,26 @@ def _user_message(message: Any) -> str | None:
 def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -> dict[str, Any]:
     from vita.agent.base import BaseAgent
     from vita.data_model.message import AssistantMessage, ToolCall
+    from vita.config import DEFAULT_LANGUAGE, DEFAULT_SEED
     from vita.evaluator.evaluator import evaluate_simulation
     from vita.orchestrator.orchestrator import Orchestrator
     from vita.user.user_simulator import UserSimulator
 
-    language = str(policy.get("language", "english"))
-    seed = int(policy.get("seed", 42))
+    language = _language(policy)
+    # vita.config.DEFAULT_SEED, so the recorded value matches an official run -- but it is
+    # inert on this path and must not be read as a reproducibility guarantee. Upstream uses a
+    # seed for two things: deriving per-trial seeds in run.py (we construct the Orchestrator
+    # directly, so that code never runs) and pushing llm_args["seed"] to the provider (our
+    # generate hook forwards only temperature, so it is dropped before the request). Nothing
+    # in vita's episode path uses Python's random either. Wiring it through would still leave
+    # the actor unseeded on both arms, so it would buy a reproducibility claim we cannot make.
+    seed = int(policy.get("seed", DEFAULT_SEED))
     random.seed(seed)
     client = completion_client_from_env()
-    _patch_vita_generation(client)
-    task = _find_task(case_id, language)
-    environment = _build_environment(task, language)
+    harness_usage = _patch_vita_generation(client, language)
+    task, task_set = _find_task(case_id, language)
+    domain = _domain(task, task_set)
+    environment = _build_environment(task, language, domain)
     domain_policy, _system_time = _render_domain_policy(environment, language)
 
     class HarnessAgent(BaseAgent[dict[str, Any]]):
@@ -287,46 +401,94 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         llm_args={},
         language=language,
     )
-    simulation = Orchestrator(
-        domain=str(task.domain),
+
+    def measured(**outcome: Any) -> dict[str, Any]:
+        """What the episode measured, whether or not it reached its own end.
+
+        An exhausted baseline turn budget raises out of the orchestrator, and that used to
+        land in main()'s except branch, which writes a six-field failure result: the tokens
+        the arm burned, the tool contract it ran under and the language it ran in were all
+        discarded. bench_runtime recovers the actor's own tokens from the trace, but nothing
+        records the hidden user simulator's -- so every truncated arm was invisible in the
+        cost accounting, and those are exactly the long, expensive ones. The agent-side
+        numbers exist either way; only the simulation and its score do not.
+        """
+        return {
+            "schema_version": 1,
+            "benchmark": "vitabench",
+            "case_id": case_id,
+            "profile": profile,
+            "native_lifecycle": True,
+            "language": language or DEFAULT_LANGUAGE,
+            "harness_usage": {name: meter.as_dict() for name, meter in harness_usage.items()},
+            "actor_language_directive": _actor_language_directive(language),
+            "user_simulator_language_directive": _LANGUAGE_DIRECTIVES.get(language or "chinese"),
+            "tool_contract": _tool_contract(environment.get_tools()),
+            **(agent.broker.metrics() if agent.broker else {}),
+            **outcome,
+        }
+
+    orchestrator = Orchestrator(
+        domain=domain,
         agent=agent,
         user=user,
         environment=environment,
         task=task,
-        max_steps=int(policy.get("native_max_steps", 100)),
+        # Orchestrator's own class default is 100, but no official entry point uses it:
+        # vita/cli.py passes DEFAULT_MAX_STEPS = 300. The gap matters because reaching the
+        # ceiling sets TerminationReason.MAX_STEPS, which evaluate_simulation turns into a
+        # flat 0.0 with no rubric grading at all -- a harness budget silently overwriting the
+        # benchmark's verdict. A 40-turn agent already produces ~90 orchestrator steps.
+        max_steps=int(policy.get("native_max_steps", 300)),
         max_errors=int(policy.get("native_max_errors", 10)),
         seed=seed,
         language=language,
-    ).run()
+    )
+    try:
+        simulation = orchestrator.run()
+    except Exception as exc:
+        _write(job / "episode_error.json",
+               {"error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()})
+        return measured(status="failed", error=f"{type(exc).__name__}: {exc}")
     native_reward = None
+    native_score_error = None
     if policy.get("native_evaluate") is True:
-        native_reward = evaluate_simulation(
-            domain=str(task.domain),
-            task=task,
-            simulation=simulation,
-            evaluation_type=str(policy.get("evaluation_type", "trajectory")),
-            llm_evaluator="harnesseval-evaluator",
-            llm_args_evaluator={},
-            language=language,
-        ).model_dump(mode="json")
-    broker_metrics = agent.broker.metrics() if agent.broker else {}
-    return {
-        "schema_version": 1,
-        "status": "completed",
-        "benchmark": "vitabench",
-        "tool_contract": _tool_contract(environment.get_tools()),
-        "case_id": case_id,
-        "profile": profile,
-        "native_lifecycle": True,
-        "termination_reason": simulation.termination_reason,
-        "duration": simulation.duration,
-        "messages": len(simulation.messages),
-        "native_reward": native_reward,
-        "native_score": native_reward.get("reward") if native_reward is not None else None,
-        "native_score_status": "completed" if native_reward is not None else "not_requested",
-        "simulation": simulation.model_dump(mode="json"),
-        **broker_metrics,
-    }
+        # The scorer failing must not destroy the episode that already ran. Raising here sent
+        # run_episode down main()'s except branch, which writes a six-field failure result --
+        # tokens, tool contract, language and the whole simulation gone, over a provider fault
+        # in grading. The product bridge already keeps the episode and reports the scorer
+        # fault separately; this is the same contract on the baseline side.
+        try:
+            native_reward = evaluate_simulation(
+                domain=domain,
+                task=task,
+                simulation=simulation,
+                evaluation_type=str(policy.get("evaluation_type", "trajectory")),
+                llm_evaluator="harnesseval-evaluator",
+                llm_args_evaluator={},
+                language=language,
+            ).model_dump(mode="json")
+        except Exception as exc:
+            native_score_error = f"{type(exc).__name__}: {exc}"
+            _write(job / "native_evaluator_error.json",
+                   {"error": native_score_error, "traceback": traceback.format_exc()})
+    return measured(
+        status="completed",
+        termination_reason=simulation.termination_reason,
+        duration=simulation.duration,
+        messages=len(simulation.messages),
+        native_reward=native_reward,
+        native_score=native_reward.get("reward") if native_reward is not None else None,
+        native_score_status=(
+            "completed"
+            if native_reward is not None
+            else "error"
+            if native_score_error is not None
+            else "not_requested"
+        ),
+        native_score_error=native_score_error,
+        simulation=simulation.model_dump(mode="json"),
+    )
 
 
 def main() -> None:

@@ -26,7 +26,12 @@ from benchmark_platform.bridges.product_server import (
 )
 from benchmark_platform.bridges.prepare import _trajectory_source_tools, _trajectory_tool
 from benchmark_platform.bridges.tau_episode import _visible_history as _tau_visible_history
-from benchmark_platform.bridges.vita_episode import _message_text, _visible_history
+from benchmark_platform.bridges.vita_episode import (
+    _actor_language_directive,
+    _message_text,
+    _render_domain_policy,
+    _visible_history,
+)
 from benchmark_platform.bridges.task_product_server import TaskProductBridge
 from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment, ToolImage
@@ -598,6 +603,28 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertNotIn("timestamp", rendered)
         self.assertNotIn("20260817", rendered)
         self.assertEqual(json.loads(_message_text(Message()))[0]["arguments"], {"key": "value"})
+
+    def test_vita_actor_language_directive_is_english_only(self) -> None:
+        class Environment:
+            @staticmethod
+            def get_policy() -> str:
+                return "Official policy at {time}"
+
+        with patch(
+            "benchmark_platform.bridges.vita_episode._task_clock",
+            return_value=("2026-08-23 00:00:00", "rendered clock"),
+        ):
+            english, _ = _render_domain_policy(Environment(), "english")
+            chinese, _ = _render_domain_policy(Environment(), "chinese")
+
+        directive = _actor_language_directive("english")
+        self.assertIsNotNone(directive)
+        self.assertIn("Official policy at rendered clock", english)
+        self.assertIn("# Language", english)
+        self.assertIn(str(directive), english)
+        self.assertIn("Do not translate English entity names into Chinese", english)
+        self.assertEqual(chinese, "Official policy at rendered clock")
+        self.assertIsNone(_actor_language_directive("chinese"))
 
     def test_tau_visible_history_structures_tool_calls_without_runtime_timestamp(self) -> None:
         class ToolCall:
