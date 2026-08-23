@@ -300,30 +300,61 @@ def _worker_log(records: list[ReWOOEvidence]) -> str:
 
 
 async def run_rewoo(ctx: RunContext) -> str:
-    planner_output = await ctx.complete(
-        "rewoo_planner",
-        [
-            {
-                "role": "user",
-                "content": (
-                    "For the following task, make plans that solve it step by step. For each Plan, select one "
-                    "worker and provide its complete input to retrieve evidence. Store evidence in sequential "
-                    "variables #E1, #E2, ... that later workers may reference. Plan every worker call before any "
-                    "worker executes. Each Plan must be followed by exactly one evidence assignment in this format:\n"
-                    "Plan: rich description of this step\n"
-                    "#E1 = Worker[input]\n\n"
-                    "For a benchmark worker, input must be one complete JSON object matching its parameter schema. "
-                    "References may be bare #E variables; append a field path such as #E1.value when a structured "
-                    "evidence object must supply one scalar JSON field. For LLM, input is a plain-text instruction. "
-                    "Do not solve the task or invent evidence in the plan.\n\n"
-                    f"Workers:\n{_worker_descriptions(ctx)}\n\n"
-                    f"Task: {ctx.prompt}"
-                ),
-            }
-        ],
-        temperature=0.0,
-    )
-    steps = parse_rewoo_plan(planner_output)
+    planner_conversation = [
+        {
+            "role": "user",
+            "content": (
+                "For the following task, make plans that solve it step by step. For each Plan, select one "
+                "worker and provide its complete input to retrieve evidence. Store evidence in sequential "
+                "variables #E1, #E2, ... that later workers may reference. Plan every worker call before any "
+                "worker executes. Each Plan must be followed by exactly one evidence assignment in this format:\n"
+                "Plan: rich description of this step\n"
+                "#E1 = Worker[input]\n\n"
+                "For a benchmark worker, input must be one complete JSON object matching its parameter schema. "
+                "References may be bare #E variables; append a field path such as #E1.value when a structured "
+                "evidence object must supply one scalar JSON field. For LLM, input is a plain-text instruction. "
+                "Do not solve the task or invent evidence in the plan.\n\n"
+                f"Workers:\n{_worker_descriptions(ctx)}\n\n"
+                f"Task: {ctx.prompt}"
+            ),
+        }
+    ]
+    protocol_repairs = int(ctx.policy.get("protocol_repairs", 1))
+    if protocol_repairs < 0:
+        raise ValueError("protocol_repairs must be non-negative")
+    for attempt in range(protocol_repairs + 1):
+        planner_output = await ctx.complete(
+            "rewoo_planner",
+            planner_conversation,
+            temperature=0.0,
+        )
+        try:
+            steps = parse_rewoo_plan(planner_output)
+            break
+        except ValueError as exc:
+            if attempt >= protocol_repairs:
+                raise
+            await ctx.trace.emit(
+                "rewoo_plan_protocol_repair",
+                attempt=attempt + 1,
+                error=str(exc),
+            )
+            planner_conversation.extend(
+                [
+                    {"role": "assistant", "content": planner_output},
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Protocol error: {exc}. Return one corrected ReWOO plan only. "
+                            "Start at #E1, use each evidence id exactly once in sequential order, and place "
+                            "exactly one complete `#E = Worker[input]` line immediately after each `Plan:` "
+                            "line. Do not include commentary, tool results, or a second draft."
+                        ),
+                    },
+                ]
+            )
+    else:
+        raise AssertionError("unreachable")
     await ctx.trace.emit(
         "rewoo_plan_parsed",
         planner_output=planner_output,
