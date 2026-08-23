@@ -41,6 +41,13 @@ def compatibility_rows(
             runnable = bridge_status.startswith("implemented")
             if profile.id == "lats":
                 runnable = runnable and benchmark.id == "bfcl"
+            if profile.tool_contract == "no-external-tools" and benchmark.id == "gdpval":
+                # GDPVal grades files created in the writable attempt workspace. The
+                # published DyLAN and Multi-Persona profiles only exchange text between
+                # LLM roles, so they cannot submit a deliverable. Structural zeros would
+                # mislabel an inapplicable lifecycle as weak task performance.
+                runnable = False
+                baseline_requirement = "gdpval_requires_workspace_artifact_tools"
             rows.append(
                 {
                     "baseline": profile.id,

@@ -423,6 +423,18 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertFalse(lats_gaia["runnable"])
         self.assertEqual(lats_gaia["baseline_requirement"], "branch_snapshot_or_all_tools_read_only")
+        gdpval_text_only = [
+            row
+            for row in rows
+            if row["benchmark"] == "gdpval"
+            and row["baseline"] in {"dylan", "multi-persona"}
+        ]
+        self.assertEqual(len(gdpval_text_only), 2)
+        self.assertTrue(all(not row["runnable"] for row in gdpval_text_only))
+        self.assertEqual(
+            {row["baseline_requirement"] for row in gdpval_text_only},
+            {"gdpval_requires_workspace_artifact_tools"},
+        )
 
     def test_adapter_fingerprint_is_content_based(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
