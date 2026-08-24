@@ -126,16 +126,12 @@ PROFILES = (
     HarnessProfile(
         id="magentic-one",
         name="Magentic-One",
-        topology="official task/progress ledgers -> one selected participant response -> synthesis",
+        topology="orchestrator ledgers -> specialist turns -> synthesis",
         provenance="protocol-reproduction",
         source="https://github.com/microsoft/autogen",
         revision="bd5a24ba72ba01c4ec7509f027caaa7454b5f6d0",
         tool_contract="dynamic",
-        notes=(
-            "Pins AutoGen's task/progress prompts, validated selected-speaker, stall/replan, "
-            "one-response participant boundary and max-round finalization. Dynamic benchmark "
-            "tools replace the upstream browser/file/terminal implementations."
-        ),
+        notes="Preserves the ledger, selected-speaker, stall, and replan topology with dynamic benchmark tools.",
     ),
     HarnessProfile(
         id="multi-persona",

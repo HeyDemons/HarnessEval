@@ -18,31 +18,10 @@ class RecordingClient:
     def __init__(self, responses: list[str]):
         self.responses = iter(responses)
         self.requests: list[list[dict[str, str]]] = []
-        self.native_tools: list[list[dict]] = []
 
     async def complete(self, messages, *, temperature=None, json_mode=False):
         self.requests.append(messages)
         return Completion(next(self.responses), 1, 1, 0.0, 0, {})
-
-    async def complete_native(
-        self,
-        messages,
-        *,
-        tools=None,
-        tool_choice=None,
-        temperature=None,
-    ):
-        self.requests.append(messages)
-        self.native_tools.append(tools or [])
-        content = next(self.responses)
-        return Completion(
-            content,
-            1,
-            1,
-            0.0,
-            0,
-            {"choices": [{"message": {"role": "assistant", "content": content}}]},
-        )
 
 
 def handlers():
@@ -84,10 +63,7 @@ class TaskProfileMatrixTests(unittest.TestCase):
                         answer, client, schema = asyncio.run(exercise(root, benchmark, profile.id))
                         self.assertTrue(answer)
                         tool_name = json.loads(schema)[0]["name"]
-                        transcript = json.dumps(
-                            {"requests": client.requests, "native_tools": client.native_tools},
-                            ensure_ascii=False,
-                        )
+                        transcript = json.dumps(client.requests, ensure_ascii=False)
                         if profile.tool_contract == "no-external-tools":
                             self.assertNotIn(tool_name, transcript)
                         else:

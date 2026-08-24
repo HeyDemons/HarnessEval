@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
 
 from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import (
@@ -27,80 +25,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class ScriptedClient:
-    def __init__(self, responses: list[Any]):
+    def __init__(self, responses: list[str]):
         self.responses = iter(responses)
         self.messages = []
         self.json_modes = []
-        self.native_tools = []
 
     async def complete(self, messages, *, temperature=None, json_mode=False):
         self.messages.append(messages)
         self.json_modes.append(json_mode)
         content = next(self.responses)
         return Completion(content, 1, 1, 0.0, 0, {"choices": [{"message": {"content": content}}]})
-
-    async def complete_native(
-        self,
-        messages,
-        *,
-        tools=None,
-        tool_choice=None,
-        temperature=None,
-    ):
-        self.messages.append(messages)
-        self.json_modes.append(False)
-        self.native_tools.append(tools or [])
-        response = next(self.responses)
-        message = (
-            response
-            if isinstance(response, dict)
-            else {"role": "assistant", "content": response}
-        )
-        content = message.get("content") or ""
-        return Completion(
-            content,
-            1,
-            1,
-            0.0,
-            0,
-            {"choices": [{"message": message, "finish_reason": "tool_calls" if message.get("tool_calls") else "stop"}]},
-        )
-
-
-def magentic_ledger(
-    *,
-    satisfied: bool,
-    speaker: str = "Executor",
-    instruction: str = "continue",
-    progress: bool = True,
-    in_loop: bool = False,
-) -> str:
-    return json.dumps(
-        {
-            "is_request_satisfied": {"reason": "test", "answer": satisfied},
-            "is_progress_being_made": {"reason": "test", "answer": progress},
-            "is_in_loop": {"reason": "test", "answer": in_loop},
-            "instruction_or_question": {"reason": "test", "answer": instruction},
-            "next_speaker": {"reason": "test", "answer": speaker},
-        }
-    )
-
-
-def native_tool_call(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "role": "assistant",
-        "content": None,
-        "tool_calls": [
-            {
-                "id": "call-1",
-                "type": "function",
-                "function": {
-                    "name": name,
-                    "arguments": json.dumps(arguments),
-                },
-            }
-        ],
-    }
 
 
 def tool_specs() -> list[ToolSpec]:
@@ -139,7 +73,7 @@ class HarnessTests(unittest.TestCase):
     def run_profile(
         self,
         profile: str,
-        responses: list[Any],
+        responses: list[str],
         *,
         policy: dict | None = None,
     ) -> tuple[str, ToolEnvironment]:
@@ -282,67 +216,32 @@ class HarnessTests(unittest.TestCase):
         no retrieval tool behind it -- two calls at reasoning_effort=high each, for a worker
         holding the same toolset as everyone else. GAIA keeps the full roster, so its recorded
         arms stay comparable."""
-        from benchmark_platform.harnesses.magentic_one import _magentic_team
+        from benchmark_platform.harnesses.paper_methods import _magentic_team
 
         self.assertEqual(
             list(_magentic_team({"list_files", "read_file", "run_command", "web_search"})),
-            ["FileSurfer", "WebSurfer", "Coder", "Executor"],
+            ["web_surfer", "file_surfer", "coder", "executor"],
         )
         self.assertEqual(
             list(_magentic_team({"read_file", "list_files", "write_file", "run_command"})),
-            ["FileSurfer", "Coder", "Executor"],
+            ["file_surfer", "coder", "executor"],
         )
         # Domain-action benchmarks staff the catch-all alone rather than an empty team.
-        self.assertEqual(list(_magentic_team({"get_order_details", "calculate"})), ["Executor"])
+        self.assertEqual(list(_magentic_team({"get_order_details", "calculate"})), ["executor"])
 
-        from benchmark_platform.harnesses.magentic_one import _magentic_worker_tools
-
-        names = {"web_search", "read_file", "list_files", "write_file", "run_command"}
-        self.assertEqual(_magentic_worker_tools("WebSurfer", names), ["web_search"])
-        self.assertEqual(
-            _magentic_worker_tools("FileSurfer", names),
-            ["list_files", "read_file"],
-        )
-        self.assertEqual(_magentic_worker_tools("Coder", names), [])
-        self.assertEqual(_magentic_worker_tools("Executor", names), sorted(names))
-
-    def test_magentic_orchestrator_prompts_match_pinned_autogen_revision(self) -> None:
-        from benchmark_platform.harnesses import magentic_one
-
-        names = (
-            "ORCHESTRATOR_TASK_LEDGER_FACTS_PROMPT",
-            "ORCHESTRATOR_TASK_LEDGER_PLAN_PROMPT",
-            "ORCHESTRATOR_TASK_LEDGER_FULL_PROMPT",
-            "ORCHESTRATOR_PROGRESS_LEDGER_PROMPT",
-            "ORCHESTRATOR_TASK_LEDGER_FACTS_UPDATE_PROMPT",
-            "ORCHESTRATOR_TASK_LEDGER_PLAN_UPDATE_PROMPT",
-            "ORCHESTRATOR_FINAL_ANSWER_PROMPT",
-        )
-        payload = json.dumps(
-            {name: getattr(magentic_one, name) for name in names},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        self.assertEqual(
-            hashlib.sha256(payload.encode("utf-8")).hexdigest(),
-            "569ecea527bd61c0d44cb8420fe395f52bb911e5daf62c21b289a56b428de4d9",
-        )
-
-    def test_magentic_single_participant_deterministically_overrides_speaker(self) -> None:
-        """The pinned orchestrator replaces next_speaker for a one-participant team."""
+    def test_magentic_off_roster_speaker_falls_back_instead_of_killing_the_arm(self) -> None:
+        """A smaller roster makes the model likelier to name the canonical team anyway, and
+        `selected unknown worker` used to end the arm with score None."""
         answer, environment = self.run_profile(
             "magentic-one",
             [
                 "facts",
                 "plan",
-                magentic_ledger(
-                    satisfied=False,
-                    speaker="WebSurfer",
-                    instruction="look it up",
-                ),
-                "no retrieval tool here",
-                magentic_ledger(satisfied=True),
+                '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"web_surfer",'
+                '"instruction":"look it up"}',
+                '{"report":"no retrieval tool here"}',
+                '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor",'
+                '"instruction":"finish"}',
                 "42",
             ],
         )
@@ -1003,41 +902,29 @@ class HarnessTests(unittest.TestCase):
             [
                 "Known facts",
                 "Use the executor",
-                magentic_ledger(
-                    satisfied=False,
-                    speaker="Executor",
-                    instruction="look up alpha",
-                ),
-                native_tool_call("lookup", {"key": "alpha"}),
-                magentic_ledger(satisfied=True),
+                '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"look up alpha"}',
+                '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"report":"alpha is 6"}',
+                '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"deliver"}',
                 "6",
             ],
         )
         self.assertEqual(answer, "6")
         self.assertEqual(len(environment.calls), 1)
-        self.assertEqual(
-            self.last_client.native_tools[0][0]["function"]["name"],
-            "lookup",
-        )
 
-    def test_magentic_one_returns_to_ledger_after_each_participant_response(self) -> None:
+    def test_magentic_one_worker_keeps_private_and_group_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
             client = ScriptedClient(
                 [
                     "Known facts",
                     "Use the executor",
-                    magentic_ledger(
-                        satisfied=False,
-                        instruction="retrieve alpha",
-                    ),
-                    native_tool_call("lookup", {"key": "alpha"}),
-                    magentic_ledger(
-                        satisfied=False,
-                        instruction="verify prior work",
-                    ),
-                    "verified alpha is 6",
-                    magentic_ledger(satisfied=True),
+                    '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"retrieve alpha"}',
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                    '{"report":"alpha is 6"}',
+                    '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"verify prior work"}',
+                    '{"report":"verified alpha is 6"}',
+                    '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"finish"}',
                     "6",
                 ]
             )
@@ -1050,292 +937,12 @@ class HarnessTests(unittest.TestCase):
                 {"max_turns": 8},
             )
             answer = asyncio.run(run_profile(context))
-            events = [
-                json.loads(line)
-                for line in trace.path.read_text(encoding="utf-8").splitlines()
-            ]
 
         self.assertEqual(answer, "6")
-        roles = [event.get("role") for event in events if event["event"] == "llm_request"]
-        self.assertEqual(
-            roles,
-            [
-                "orchestrator_facts",
-                "orchestrator_plan",
-                "orchestrator_ledger",
-                "Executor",
-                "orchestrator_ledger",
-                "Executor",
-                "orchestrator_ledger",
-                "orchestrator_final",
-            ],
-        )
-        second_ledger = client.messages[4]
-        transcript = json.dumps(second_ledger, ensure_ascii=False)
-        self.assertIn("lookup", transcript)
-        self.assertIn("alpha", transcript)
-
-    def test_magentic_invalid_speaker_retries_the_official_ledger(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            environment = ToolEnvironment(
-                [
-                    ToolSpec(
-                        "run_command",
-                        "run a command",
-                        {"type": "object"},
-                        ("/bin/false",),
-                    )
-                ],
-                trace,
-            )
-            client = ScriptedClient(
-                [
-                    "facts",
-                    "plan",
-                    magentic_ledger(
-                        satisfied=False,
-                        speaker="WebSurfer",
-                        instruction="invalid dispatch",
-                    ),
-                    magentic_ledger(
-                        satisfied=False,
-                        speaker="Executor",
-                        instruction="valid dispatch",
-                    ),
-                    "completed one participant turn",
-                    magentic_ledger(satisfied=True),
-                    "done",
-                ]
-            )
-            context = RunContext(
-                "magentic-one",
-                "complete the task",
-                client,
-                environment,
-                trace,
-                {"magentic_json_retries": 2},
-            )
-            answer = asyncio.run(run_profile(context))
-            events = [
-                json.loads(line)
-                for line in trace.path.read_text(encoding="utf-8").splitlines()
-            ]
-
-        self.assertEqual(answer, "done")
-        retries = [event for event in events if event["event"] == "magentic_ledger_retry"]
-        self.assertEqual(len(retries), 1)
-        self.assertIn("invalid next speaker", retries[0]["error"])
-        self.assertFalse(any(event["event"] == "magentic_unknown_worker" for event in events))
-
-    def test_magentic_round_limit_synthesizes_instead_of_failing(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            client = ScriptedClient(
-                [
-                    "facts",
-                    "plan",
-                    magentic_ledger(satisfied=False, instruction="first"),
-                    "first result",
-                    magentic_ledger(satisfied=False, instruction="second"),
-                    "second result",
-                    "bounded final answer",
-                ]
-            )
-            context = RunContext(
-                "magentic-one",
-                "complete the task",
-                client,
-                ToolEnvironment(tool_specs(), trace),
-                trace,
-                {"magentic_max_rounds": 2},
-            )
-            answer = asyncio.run(run_profile(context))
-            events = [
-                json.loads(line)
-                for line in trace.path.read_text(encoding="utf-8").splitlines()
-            ]
-
-        self.assertEqual(answer, "bounded final answer")
-        termination = [event for event in events if event["event"] == "magentic_termination"]
-        self.assertEqual(termination[-1]["reason"], "Max rounds reached.")
-        self.assertEqual(
-            sum(event["event"] == "magentic_dispatch" for event in events),
-            2,
-        )
-
-    def test_magentic_replan_updates_ledgers_and_resets_message_thread(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            client = ScriptedClient(
-                [
-                    "initial facts",
-                    "initial plan",
-                    magentic_ledger(
-                        satisfied=False,
-                        instruction="first attempt",
-                        progress=False,
-                        in_loop=True,
-                    ),
-                    "stalled participant result",
-                    magentic_ledger(
-                        satisfied=False,
-                        instruction="would repeat",
-                        progress=False,
-                        in_loop=True,
-                    ),
-                    "updated facts",
-                    "updated plan",
-                    magentic_ledger(
-                        satisfied=False,
-                        instruction="new attempt",
-                        progress=True,
-                    ),
-                    "new participant result",
-                    magentic_ledger(satisfied=True),
-                    "done",
-                ]
-            )
-            context = RunContext(
-                "magentic-one",
-                "complete the task",
-                client,
-                ToolEnvironment(tool_specs(), trace),
-                trace,
-                {"magentic_max_rounds": 4, "magentic_max_stalls": 2},
-            )
-            answer = asyncio.run(run_profile(context))
-            events = [
-                json.loads(line)
-                for line in trace.path.read_text(encoding="utf-8").splitlines()
-            ]
-
-        self.assertEqual(answer, "done")
-        replans = [event for event in events if event["event"] == "magentic_replan"]
-        self.assertEqual(len(replans), 1)
-        self.assertEqual(replans[0]["facts"], "updated facts")
-        self.assertEqual(replans[0]["plan"], "updated plan")
-        post_replan_ledger = json.dumps(client.messages[7], ensure_ascii=False)
-        self.assertIn("updated facts", post_replan_ledger)
-        self.assertIn("updated plan", post_replan_ledger)
-        self.assertNotIn("stalled participant result", post_replan_ledger)
-        stall_states = [event for event in events if event["event"] == "magentic_stall_state"]
-        self.assertEqual(
-            [(item["previous"], item["current"]) for item in stall_states],
-            [(0, 1), (1, 2), (2, 1)],
-        )
-
-    def test_magentic_invalid_native_arguments_become_a_tool_summary(self) -> None:
-        malformed_call = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "bad-call",
-                    "type": "function",
-                    "function": {"name": "lookup", "arguments": "{bad"},
-                }
-            ],
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            environment = ToolEnvironment(tool_specs(), trace)
-            client = ScriptedClient(
-                [
-                    "facts",
-                    "plan",
-                    magentic_ledger(satisfied=False, instruction="look up alpha"),
-                    malformed_call,
-                    magentic_ledger(satisfied=True),
-                    "done",
-                ]
-            )
-            context = RunContext(
-                "magentic-one",
-                "complete the task",
-                client,
-                environment,
-                trace,
-                {},
-            )
-            answer = asyncio.run(run_profile(context))
-
-        self.assertEqual(answer, "done")
-        self.assertEqual(environment.calls, [])
-        second_ledger = json.dumps(client.messages[4], ensure_ascii=False)
-        self.assertIn("invalid_tool_arguments_json", second_ledger)
-
-    def test_magentic_rejects_mixed_user_message_batch_before_side_effects(self) -> None:
-        async def handler(arguments):
-            return {"ok": True, "result": arguments}
-
-        message_schema = {
-            "type": "object",
-            "properties": {"content": {"type": "string"}},
-            "required": ["content"],
-        }
-        mixed_call = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "message-call",
-                    "type": "function",
-                    "function": {
-                        "name": "send_message_to_user",
-                        "arguments": '{"content":"question"}',
-                    },
-                },
-                {
-                    "id": "lookup-call",
-                    "type": "function",
-                    "function": {
-                        "name": "lookup",
-                        "arguments": '{"key":"alpha"}',
-                    },
-                },
-            ],
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            tools = [
-                ToolSpec(
-                    "send_message_to_user",
-                    "send a visible message",
-                    message_schema,
-                    ("/bin/false",),
-                ),
-                tool_specs()[0],
-            ]
-            environment = ToolEnvironment(
-                tools,
-                trace,
-                {"send_message_to_user": handler, "lookup": handler},
-            )
-            client = ScriptedClient(
-                [
-                    "facts",
-                    "plan",
-                    magentic_ledger(satisfied=False, instruction="ask and look up"),
-                    mixed_call,
-                    magentic_ledger(satisfied=True),
-                    "done",
-                ]
-            )
-            context = RunContext(
-                "magentic-one",
-                "complete the task",
-                client,
-                environment,
-                trace,
-                {},
-            )
-            answer = asyncio.run(run_profile(context))
-
-        self.assertEqual(answer, "done")
-        self.assertEqual(environment.calls, [])
-        second_ledger = json.dumps(client.messages[4], ensure_ascii=False)
-        self.assertIn("must be the only tool call", second_ledger)
+        second_dispatch = client.messages[6][0]["content"]
+        self.assertIn("alpha is 6", second_dispatch)
+        self.assertIn("Your private history", second_dispatch)
+        self.assertIn("Group message thread", second_dispatch)
 
     def test_llmcompiler_dependency_ready_wave(self) -> None:
         answer, environment = self.run_profile(

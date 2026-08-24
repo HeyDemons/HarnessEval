@@ -60,25 +60,9 @@ PROFILE_RESPONSES = {
     "magentic-one": [
         "facts",
         "plan",
-        json.dumps(
-            {
-                "is_request_satisfied": {"reason": "test", "answer": False},
-                "is_progress_being_made": {"reason": "test", "answer": True},
-                "is_in_loop": {"reason": "test", "answer": False},
-                "instruction_or_question": {"reason": "test", "answer": "inspect"},
-                "next_speaker": {"reason": "test", "answer": "Executor"},
-            }
-        ),
-        "inspection complete",
-        json.dumps(
-            {
-                "is_request_satisfied": {"reason": "test", "answer": True},
-                "is_progress_being_made": {"reason": "test", "answer": True},
-                "is_in_loop": {"reason": "test", "answer": False},
-                "instruction_or_question": {"reason": "test", "answer": "deliver"},
-                "next_speaker": {"reason": "test", "answer": "Executor"},
-            }
-        ),
+        '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"inspect"}',
+        '{"report":"inspection complete"}',
+        '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"deliver"}',
         "ok",
     ],
     "multi-persona": ["Final answer: ok"],
@@ -93,40 +77,13 @@ PROFILE_RESPONSES = {
 
 
 class ScriptedClient:
-    def __init__(self, responses: list[object]):
+    def __init__(self, responses: list[str]):
         self.responses = iter(responses)
         self.requests: list[list[dict[str, str]]] = []
-        self.native_tools: list[list[dict]] = []
 
     async def complete(self, messages, *, temperature=None, json_mode=False):
         self.requests.append(messages)
         return Completion(next(self.responses), 1, 1, 0.0, 0, {})
-
-    async def complete_native(
-        self,
-        messages,
-        *,
-        tools=None,
-        tool_choice=None,
-        temperature=None,
-    ):
-        self.requests.append(messages)
-        self.native_tools.append(tools or [])
-        response = next(self.responses)
-        message = (
-            response
-            if isinstance(response, dict)
-            else {"role": "assistant", "content": response}
-        )
-        content = message.get("content") or ""
-        return Completion(
-            content,
-            1,
-            1,
-            0.0,
-            0,
-            {"choices": [{"message": message}]},
-        )
 
 
 class EpisodeBrokerTests(unittest.TestCase):
@@ -173,89 +130,11 @@ class EpisodeBrokerTests(unittest.TestCase):
                             self.assertEqual([item.name for item in result], [SEND_MESSAGE_TOOL])
                             continue
                         self.assertIsInstance(result, FinalResponse)
-                        transcript = json.dumps(
-                            {"requests": client.requests, "native_tools": client.native_tools},
-                            ensure_ascii=False,
-                        )
+                        transcript = json.dumps(client.requests, ensure_ascii=False)
                         if profile.tool_contract == "no-external-tools":
                             self.assertNotIn("native_lookup", transcript)
                         else:
                             self.assertIn("native_lookup", transcript)
-
-    def test_magentic_user_reply_returns_to_progress_ledger(self) -> None:
-        def ledger(satisfied: bool, instruction: str) -> str:
-            return json.dumps(
-                {
-                    "is_request_satisfied": {"reason": "test", "answer": satisfied},
-                    "is_progress_being_made": {"reason": "test", "answer": True},
-                    "is_in_loop": {"reason": "test", "answer": False},
-                    "instruction_or_question": {
-                        "reason": "test",
-                        "answer": instruction,
-                    },
-                    "next_speaker": {"reason": "test", "answer": "Executor"},
-                }
-            )
-        message_call = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": "message-call",
-                    "type": "function",
-                    "function": {
-                        "name": SEND_MESSAGE_TOOL,
-                        "arguments": '{"content":"Which option do you prefer?"}',
-                    },
-                }
-            ],
-        }
-        with tempfile.TemporaryDirectory() as directory:
-            trace_path = Path(directory) / "magentic-user.jsonl"
-            client = ScriptedClient(
-                [
-                    "facts",
-                    "plan",
-                    ledger(False, "ask the user"),
-                    message_call,
-                    ledger(True, "deliver"),
-                    "final answer",
-                ]
-            )
-            broker = EpisodeBroker(
-                profile="magentic-one",
-                prompt="complete the native conversation",
-                tools=[],
-                trace_path=trace_path,
-                policy={"magentic_max_rounds": 3},
-                client=client,
-            )
-            broker.start()
-            wave = broker.next_wave()
-            self.assertEqual(len(wave), 1)
-            self.assertEqual(wave[0].name, SEND_MESSAGE_TOOL)
-            final = broker.next_wave(user_message="I prefer option B")
-            events = [
-                json.loads(line)
-                for line in trace_path.read_text(encoding="utf-8").splitlines()
-            ]
-
-        self.assertIsInstance(final, FinalResponse)
-        self.assertEqual(final.answer, "final answer")
-        roles = [event.get("role") for event in events if event["event"] == "llm_request"]
-        self.assertEqual(
-            roles,
-            [
-                "orchestrator_facts",
-                "orchestrator_plan",
-                "orchestrator_ledger",
-                "Executor",
-                "orchestrator_ledger",
-                "orchestrator_final",
-            ],
-        )
-        second_ledger = json.dumps(client.requests[4], ensure_ascii=False)
-        self.assertIn("I prefer option B", second_ledger)
 
     def test_parallel_profile_wave_is_one_native_wave(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
