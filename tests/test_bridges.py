@@ -44,10 +44,31 @@ class RecordingClient:
     def __init__(self, responses: list[str]):
         self.responses = iter(responses)
         self.requests: list[list[dict[str, str]]] = []
+        self.native_tools: list[list[dict]] = []
 
     async def complete(self, messages, *, temperature=None, json_mode=False):
         self.requests.append(messages)
         return Completion(next(self.responses), 1, 1, 0.0, 0, {})
+
+    async def complete_native(
+        self,
+        messages,
+        *,
+        tools=None,
+        tool_choice=None,
+        temperature=None,
+    ):
+        self.requests.append(messages)
+        self.native_tools.append(tools or [])
+        content = next(self.responses)
+        return Completion(
+            content,
+            1,
+            1,
+            0.0,
+            0,
+            {"choices": [{"message": {"role": "assistant", "content": content}}]},
+        )
 
 
 RESPONSES = {
@@ -79,9 +100,25 @@ RESPONSES = {
     "magentic-one": [
         "facts",
         "plan",
-        '{"satisfied":false,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"inspect"}',
-        '{"report":"inspection complete"}',
-        '{"satisfied":true,"in_loop":false,"progress":true,"next_speaker":"executor","instruction":"deliver"}',
+        json.dumps(
+            {
+                "is_request_satisfied": {"reason": "test", "answer": False},
+                "is_progress_being_made": {"reason": "test", "answer": True},
+                "is_in_loop": {"reason": "test", "answer": False},
+                "instruction_or_question": {"reason": "test", "answer": "inspect"},
+                "next_speaker": {"reason": "test", "answer": "Executor"},
+            }
+        ),
+        "inspection complete",
+        json.dumps(
+            {
+                "is_request_satisfied": {"reason": "test", "answer": True},
+                "is_progress_being_made": {"reason": "test", "answer": True},
+                "is_in_loop": {"reason": "test", "answer": False},
+                "instruction_or_question": {"reason": "test", "answer": "deliver"},
+                "next_speaker": {"reason": "test", "answer": "Executor"},
+            }
+        ),
         "ok",
     ],
     "multi-persona": ["Final answer: ok"],
@@ -1025,7 +1062,10 @@ class BridgeMatrixTests(unittest.TestCase):
                         answer, client, schema = asyncio.run(exercise(root, benchmark, profile.id))
                         self.assertTrue(answer)
                         tool_name = json.loads(schema)[0]["name"]
-                        transcript = json.dumps(client.requests, ensure_ascii=False)
+                        transcript = json.dumps(
+                            {"requests": client.requests, "native_tools": client.native_tools},
+                            ensure_ascii=False,
+                        )
                         if profile.tool_contract == "no-external-tools":
                             self.assertNotIn(tool_name, transcript)
                         else:
