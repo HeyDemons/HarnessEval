@@ -771,6 +771,64 @@ class RunContext:
         )
         return completion.content
 
+    async def complete_native(
+        self,
+        role: str,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        temperature: float | None = None,
+    ) -> Completion:
+        """Make one native assistant turn while preserving the common accounting boundary.
+
+        Paper profiles normally use ``complete`` because their published protocols render
+        actions as text. Magentic-One's specialists are different: the pinned AutoGen
+        implementation gives participant agents native function tools, executes the calls
+        from that one response, then returns a tool summary to the orchestrator. Calling the
+        client directly would omit the request/response trace, token totals, response id and
+        BFCL declaration boundary that every other profile records, so native turns enter
+        through this sibling of ``complete``.
+        """
+
+        if self.environment.declaration_only and self.environment.declaration_committed:
+            raise DeclarationOnlyComplete(
+                "Declaration-only benchmark already received its committed call batch"
+            )
+        messages = self.environment.with_images(messages)
+        await self.trace.emit(
+            "llm_request",
+            role=role,
+            messages=messages,
+            json_mode=False,
+            temperature=temperature,
+            tools=tools or [],
+            tool_choice=tool_choice,
+        )
+        completion: Completion = await self.client.complete_native(
+            messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            temperature=temperature,
+        )
+        self.llm_calls += 1
+        response_id = self.llm_calls
+        _ASSISTANT_RESPONSE_ID.set(response_id)
+        self.prompt_tokens += completion.prompt_tokens
+        self.completion_tokens += completion.completion_tokens
+        await self.trace.emit(
+            "llm_response",
+            response_id=response_id,
+            role=role,
+            content=completion.content,
+            raw=completion.raw,
+            elapsed_seconds=completion.elapsed_seconds,
+            prompt_tokens=completion.prompt_tokens,
+            completion_tokens=completion.completion_tokens,
+            transport_retries=completion.transport_retries,
+        )
+        return completion
+
     async def complete_json(
         self,
         role: str,
