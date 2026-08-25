@@ -18,6 +18,14 @@ TASK_SET_DOMAINS = {
     "telecom_small": "telecom",
 }
 
+# Pinned to the official tau2-bench defaults in the benchmark image used by this
+# workspace (sierra-research/tau2-bench@79975ac).  Keep these explicit instead of
+# relying on TextRunConfig defaults: the native product bridge constructs the config
+# itself, and a silent upstream/default drift would otherwise change measurement.
+TAU2_USER_TEMPERATURE = 0.0
+TAU2_SEED = 300
+TAU2_MAX_STEPS = 200
+
 
 def _write(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -208,6 +216,7 @@ def _patch_tau_generation(client: CompletionClient) -> None:
             tools=schemas,
             tool_choice=tool_choice,
             temperature=kwargs.get("temperature"),
+            seed=kwargs.get("seed"),
         )
         raw_message = completion.raw["choices"][0]["message"]
         parsed_calls = []
@@ -269,7 +278,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
     from tau2.runner.build import _build_env_kwargs, build_text_orchestrator
     from tau2.runner.simulation import run_simulation
 
-    seed = int(policy.get("seed", 42))
+    seed = int(policy.get("seed", TAU2_SEED))
     random.seed(seed)
     client = completion_client_from_env()
     _patch_tau_generation(client)
@@ -383,8 +392,12 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         llm_agent="harnesseval-baseline",
         llm_user="harnesseval-hidden-user",
         llm_args_agent={},
-        llm_args_user={},
-        max_steps=int(policy.get("native_max_steps", 100)),
+        llm_args_user={
+            "temperature": float(
+                policy.get("native_user_temperature", TAU2_USER_TEMPERATURE)
+            )
+        },
+        max_steps=int(policy.get("native_max_steps", TAU2_MAX_STEPS)),
         max_errors=int(policy.get("native_max_errors", 10)),
         seed=seed,
         enforce_communication_protocol=True,

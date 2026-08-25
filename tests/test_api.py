@@ -367,7 +367,12 @@ if __name__ == "__main__":
 class ReasoningEffortTests(unittest.TestCase):
     """A matched control must send the same reasoning knob the product harness sends."""
 
-    def _payload(self, config: ApiConfig, temperature: float | None = None) -> dict:
+    def _payload(
+        self,
+        config: ApiConfig,
+        temperature: float | None = None,
+        seed: int | None = None,
+    ) -> dict:
         captured: dict = {}
 
         def fake_urlopen(request, timeout=None):
@@ -380,7 +385,9 @@ class ReasoningEffortTests(unittest.TestCase):
         with patch("urllib.request.urlopen", fake_urlopen):
             asyncio.run(
                 OpenAICompatibleClient(config).complete(
-                    [{"role": "user", "content": "hi"}], temperature=temperature
+                    [{"role": "user", "content": "hi"}],
+                    temperature=temperature,
+                    seed=seed,
                 )
             )
         return captured
@@ -406,6 +413,15 @@ class ReasoningEffortTests(unittest.TestCase):
         payload = self._payload(self._config(reasoning_effort="high"), temperature=1.0)
         self.assertEqual(payload["reasoning_effort"], "high")
         self.assertEqual(payload["temperature"], 1.0)
+
+    def test_explicit_seed_is_sent_with_explicit_temperature(self) -> None:
+        payload = self._payload(
+            self._config(reasoning_effort="high"),
+            temperature=0.0,
+            seed=300,
+        )
+        self.assertEqual(payload["temperature"], 0.0)
+        self.assertEqual(payload["seed"], 300)
 
     def test_a_profile_that_names_no_temperature_still_sends_none_under_an_effort(self) -> None:
         """The actor-only control stays matched to the product harness, which sends none."""

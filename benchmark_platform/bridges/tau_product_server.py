@@ -14,6 +14,9 @@ from .episode import SEND_MESSAGE_TOOL
 from .product_episode import PendingProductAction, ProductEpisodeBridge, serve
 from .tau_episode import (
     TASK_SET_DOMAINS,
+    TAU2_MAX_STEPS,
+    TAU2_SEED,
+    TAU2_USER_TEMPERATURE,
     _load_task,
     _native_tools,
     _patch_tau_generation,
@@ -44,7 +47,7 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
     from tau2.runner.build import _build_env_kwargs, build_text_orchestrator
     from tau2.runner.simulation import run_simulation
 
-    seed = int(policy.get("seed", 42))
+    seed = int(policy.get("seed", TAU2_SEED))
     random.seed(seed)
     client = completion_client_from_env()
     _patch_tau_generation(client)
@@ -189,8 +192,12 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
             llm_agent="harnesseval-product",
             llm_user="harnesseval-hidden-user",
             llm_args_agent={},
-            llm_args_user={},
-            max_steps=int(policy.get("native_max_steps", 100)),
+            llm_args_user={
+                "temperature": float(
+                    policy.get("native_user_temperature", TAU2_USER_TEMPERATURE)
+                )
+            },
+            max_steps=int(policy.get("native_max_steps", TAU2_MAX_STEPS)),
             max_errors=int(policy.get("native_max_errors", 10)),
             seed=seed,
             enforce_communication_protocol=True,

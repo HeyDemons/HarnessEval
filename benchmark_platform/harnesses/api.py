@@ -259,6 +259,7 @@ class CompletionClient(Protocol):
         messages: list[dict[str, str]],
         *,
         temperature: float | None = None,
+        seed: int | None = None,
         json_mode: bool = False,
     ) -> Completion: ...
 
@@ -269,6 +270,7 @@ class CompletionClient(Protocol):
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
         temperature: float | None = None,
+        seed: int | None = None,
     ) -> Completion: ...
 
 
@@ -287,12 +289,14 @@ class OpenAICompatibleClient:
         messages: list[dict[str, Any]],
         *,
         temperature: float | None = None,
+        seed: int | None = None,
         json_mode: bool = False,
     ) -> Completion:
         return await asyncio.to_thread(
             self._complete_sync,
             messages,
             temperature=temperature,
+            seed=seed,
             json_mode=json_mode,
         )
 
@@ -301,6 +305,7 @@ class OpenAICompatibleClient:
         messages: list[dict[str, Any]],
         *,
         temperature: float | None = None,
+        seed: int | None = None,
         json_mode: bool = False,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
@@ -317,6 +322,7 @@ class OpenAICompatibleClient:
         return self._complete_sync(
             messages,
             temperature=temperature,
+            seed=seed,
             json_mode=json_mode,
             tools=tools,
             tool_choice=tool_choice,
@@ -329,12 +335,14 @@ class OpenAICompatibleClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
         temperature: float | None = None,
+        seed: int | None = None,
     ) -> Completion:
         """Preserve native chat/tool messages for benchmark-owned simulators."""
         return await asyncio.to_thread(
             self.complete_sync,
             messages,
             temperature=temperature,
+            seed=seed,
             json_mode=False,
             tools=tools,
             tool_choice=tool_choice,
@@ -345,6 +353,7 @@ class OpenAICompatibleClient:
         messages: list[dict[str, Any]],
         *,
         temperature: float | None,
+        seed: int | None,
         json_mode: bool,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
@@ -371,6 +380,8 @@ class OpenAICompatibleClient:
             payload["temperature"] = temperature
         elif not self.config.reasoning_effort:
             payload["temperature"] = self.config.temperature
+        if seed is not None:
+            payload["seed"] = seed
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
         if tools:

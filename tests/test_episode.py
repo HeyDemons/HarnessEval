@@ -584,7 +584,10 @@ class TauTurnLifecycleTests(unittest.TestCase):
                 second_answer, state = self.agent.generate_next_message(second_user, state)
                 return Simulation([greeting, first_user, first_answer, second_user, second_answer])
 
+        configs: list[object] = []
+
         def build_text_orchestrator(config, task, *, seed):
+            configs.append(config)
             agent = registry.factories[config.agent](tools=[], domain_policy="domain policy")
             return Orchestrator(agent)
 
@@ -651,10 +654,15 @@ class TauTurnLifecycleTests(unittest.TestCase):
                     self.assertIn("user: second detail", created[1].prompt)
                     self.assertEqual(result["llm_calls"], 2)
                     self.assertEqual(result["tool_calls"], 6)
+                    self.assertEqual(configs[-1].llm_args_user, {"temperature": 0.0})
+                    self.assertEqual(configs[-1].seed, 300)
+                    self.assertEqual(configs[-1].max_steps, 200)
 
 
 class TauGenerationTests(unittest.TestCase):
     def test_tau_generation_hides_inline_reasoning_from_native_evaluator(self) -> None:
+        observed: dict[str, object] = {}
+
         class AssistantMessage:
             def __init__(self, *, role, content=None, tool_calls=None, **kwargs):
                 self.role = role
@@ -670,6 +678,7 @@ class TauGenerationTests(unittest.TestCase):
 
         class Client:
             def complete_sync(self, *args, **kwargs):
+                observed.update(kwargs)
                 return Completion(
                     '<think>internal evaluator reasoning</think>{"results":[]}',
                     3,
@@ -733,10 +742,12 @@ class TauGenerationTests(unittest.TestCase):
         with patch.dict(sys.modules, fake_modules):
             tau_episode._patch_tau_generation(Client())
             result = fake_modules["tau2.evaluator.evaluator_nl_assertions"].generate(
-                model="evaluator", messages=[]
+                model="evaluator", messages=[], temperature=0.0, seed=300
             )
 
         self.assertEqual(result.content, '{"results":[]}')
+        self.assertEqual(observed["temperature"], 0.0)
+        self.assertEqual(observed["seed"], 300)
 
 
 if __name__ == "__main__":
