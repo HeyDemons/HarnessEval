@@ -53,6 +53,12 @@ Each remembered trajectory remains complete. MemGPT uses `memgpt_core_memory_cha
 `memgpt_memory_warning_tokens`, matching the original core-memory and active
 context warning thresholds. Memory pressure is handled through semantic
 summarization into recall memory, never by slicing tool results or messages.
+Speculative Actions uses `sa_top_k` (default `3`) and `sa_temperature` (default
+`0.1`). `HARNESS_SA_MODEL` is mandatory and selects an independent Speculator;
+the remaining `HARNESS_SA_*` transport settings inherit from the Actor when
+unset. A fresh prediction window runs concurrently with every authoritative
+Actor turn, and only benchmark-declared parallel read-only calls are eligible
+for lossless pre-execution.
 
 Each tool is an argv command, never a shell string. Arguments arrive as one JSON
 object on stdin. A successful tool must write one complete JSON value to stdout.
@@ -81,7 +87,8 @@ RUN_DIR/harness-<profile>/<case>/attempts/0001/
 ```
 
 `harness_result.json` contains the final answer, topology/provenance, wall time,
-LLM/tool call counts, and token usage. `harness_trace.jsonl` retains complete
+LLM/tool call counts, and token usage. Actor and Speculator calls/tokens are
+reported separately as well as in the overall totals. `harness_trace.jsonl` retains complete
 messages, provider responses, tool arguments, and tool results.
 
 A finalizer receives only `HARNESS_RESULT_PATH` plus explicitly allow-listed

@@ -147,6 +147,16 @@ export HARNESS_API_KEY=...
 export HARNESS_MODEL=model-id
 ```
 
+Speculative Actions additionally requires an explicitly selected, independent
+Speculator model. It inherits the Actor endpoint and credentials unless a
+corresponding `HARNESS_SA_*` override is set:
+
+```bash
+export HARNESS_SA_MODEL=fast-model-id
+# optional: HARNESS_SA_API_BASE, HARNESS_SA_API_KEY,
+# HARNESS_SA_API_TYPE, HARNESS_SA_REASONING_EFFORT, HARNESS_SA_API_STREAM
+```
+
 Anthropic Messages providers use `HARNESS_API_TYPE=anthropic-messages` and
 require `HARNESS_MAX_OUTPUT_TOKENS`. Official Anthropic authentication defaults
 to `HARNESS_API_AUTH=x-api-key`; compatible gateways that issue bearer tokens
@@ -192,7 +202,8 @@ harnesseval bridge-run sa gaia \
   --run-dir runs/sa-gaia \
   --pass-env HARNESS_API_BASE \
   --pass-env HARNESS_API_KEY \
-  --pass-env HARNESS_MODEL
+  --pass-env HARNESS_MODEL \
+  --pass-env HARNESS_SA_MODEL
 ```
 
 The same command preserves stateful and task-container lifecycles:
@@ -216,10 +227,12 @@ baseline. Terminal-Bench and SWE-bench give the baseline only the task
 workspace; verifier tests and reference solutions never enter its container.
 
 `aflow-custom-init` is explicitly an unoptimized control that executes AFlow's
-round-1 `Custom` starting operator. It must not be reported as AFlow; a canonical
+round-1 `Custom(input, instruction="")` as one text generation with no external
+tool loop. It must not be reported as AFlow; a canonical
 AFlow arm requires a frozen optimized graph produced on a disjoint split.
 DyLAN and Multi-Persona intentionally receive no external tools because their
-published protocols do not define a tool loop.
+published protocols do not define a tool loop. Multi-Persona uses a generic SPP
+profile prompt with two complete demonstrations rather than a schematic example.
 
 LATS preserves tree expansion over independent environment states. It runs only
 when every declared tool has a verified read-only contract; benchmark environments

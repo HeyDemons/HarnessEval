@@ -7,7 +7,11 @@ import uuid
 from pathlib import PurePosixPath
 from typing import Any
 
-from benchmark_platform.harnesses.api import ProviderError, completion_client_from_env
+from benchmark_platform.harnesses.api import (
+    ProviderError,
+    completion_client_from_env,
+    sa_speculator_client_from_env,
+)
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import get_profile
@@ -430,13 +434,17 @@ async def execute(
             command_timeout_sec=timeout_sec or 600.0,
         ),
     )
+    client = completion_client_from_env()
     context = RunContext(
         profile_id,
         prompt,
-        completion_client_from_env(),
+        client,
         environment,
         trace,
         policy,
+        speculator_client=(
+            sa_speculator_client_from_env(client) if profile_id == "sa" else None
+        ),
     )
     started = time.perf_counter()
     try:
@@ -453,10 +461,8 @@ async def execute(
             "topology": profile.topology,
             "final_answer": answer,
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "policy": policy,
             "returncode": 0,
         }
@@ -474,10 +480,8 @@ async def execute(
             "provenance": profile.provenance,
             "topology": profile.topology,
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "returncode": 124,
             "error": timeout_error,
         }
@@ -494,10 +498,8 @@ async def execute(
             "provenance": profile.provenance,
             "topology": profile.topology,
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "returncode": 1,
             "error": str(exc),
         }
@@ -511,10 +513,8 @@ async def execute(
             "provenance": profile.provenance,
             "topology": profile.topology,
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "returncode": 1,
             "error": f"{type(exc).__name__}: {exc}",
         }

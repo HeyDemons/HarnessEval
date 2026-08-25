@@ -102,13 +102,13 @@ PROFILES = (
     HarnessProfile(
         id="aflow-custom-init",
         name="AFlow Custom initialization control",
-        topology="unoptimized AFlow round-1 Custom operator -> execution",
+        topology="unoptimized AFlow round-1 single Custom generation",
         provenance="local-control",
         source="https://github.com/FoundationAgents/AFlow",
         revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
-        tool_contract="dynamic-frozen-workflow",
+        tool_contract="no-external-tools",
         notes=(
-            "Executes AFlow's documented round-1 Custom initialization only. It is not an "
+            "Executes AFlow's documented round-1 Custom(input, instruction='') single generation. It is not an "
             "optimized AFlow workflow; a canonical AFlow arm requires a frozen graph produced "
             "on a disjoint optimization split."
         ),
@@ -146,7 +146,11 @@ PROFILES = (
         source="https://github.com/MikeWangWZHL/Solo-Performance-Prompting",
         revision="619c8a0ff4205bfd39e33f0867647b40e1703b94",
         tool_contract="no-external-tools",
-        notes="The published topology has no external tool loop; tool-dependent failures are part of the baseline.",
+        notes=(
+            "Uses the source SPP profile protocol with two complete benchmark-neutral demonstrations, "
+            "dynamic participant profiles, multi-round criticism, revision, and a delimited final answer. "
+            "The published topology has no external tool loop."
+        ),
     ),
     HarnessProfile(
         id="llmcompiler",
@@ -156,7 +160,11 @@ PROFILES = (
         source="https://github.com/SqueezeAILab/LLMCompiler",
         revision="a00c9d35507507da70e8c637eee64efc8c1857ae",
         tool_contract="dynamic",
-        notes="Executes dependency-ready benchmark tool calls concurrently.",
+        notes=(
+            "Executes dependency-ready benchmark tool calls concurrently. The upstream max_replans "
+            "parameter counts total planning passes (default one), and its final Joiner cannot request "
+            "another pass."
+        ),
     ),
     HarnessProfile(
         id="rewoo",
@@ -175,12 +183,16 @@ PROFILES = (
     HarnessProfile(
         id="sa",
         name="Speculative Actions",
-        topology="response predictor -> safe pre-actions -> authoritative Actor",
+        topology="independent fast action predictor -> per-turn top-k safe pre-actions -> exact-match Actor commit",
         provenance="protocol-reproduction",
         source="https://github.com/naimengye/speculative-action",
         revision="dc938b9ef7474caf07fe4ad16549c1fa8c7d268c",
         tool_contract="dynamic-read-only-speculation",
-        notes="Only benchmark-declared parallel read-only tools may execute speculatively.",
+        notes=(
+            "Only benchmark-declared parallel read-only tools may execute speculatively. "
+            "HARNESS_SA_MODEL explicitly selects the independent Speculator; endpoint and transport "
+            "settings inherit from the Actor unless HARNESS_SA_* overrides them."
+        ),
     ),
 )
 

@@ -58,6 +58,12 @@ class TaskProfileMatrixTests(unittest.TestCase):
             trace = JsonlTrace(root / f"{benchmark}-{profile_id}.jsonl")
             environment = ToolEnvironment(_tool_specs(), trace, handlers())
             client = RecordingClient(list(PROFILE_RESPONSES[profile_id]))
+            speculator_client = (
+                RecordingClient(['{"actions":[]}'])
+                if profile_id == "sa"
+                and any(tool.read_only and tool.parallel for tool in _tool_specs())
+                else None
+            )
             policy = {"max_turns": 4}
             if profile_id == "aflow-custom-init":
                 policy["aflow_workflow"] = ["Custom"]
@@ -68,6 +74,7 @@ class TaskProfileMatrixTests(unittest.TestCase):
                 environment,
                 trace,
                 policy,
+                speculator_client=speculator_client,
             )
             answer = await run_profile(context)
             return answer, client, environment.schema

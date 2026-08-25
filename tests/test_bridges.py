@@ -95,7 +95,7 @@ RESPONSES = {
         '{"score":1.0,"success":true,"feedback":"complete"}',
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
-    "aflow-custom-init": ['{"final":"ok"}'],
+    "aflow-custom-init": ["ok"],
     "dylan": ["ok", "ok", "ok"],
     "magentic-one": [
         "facts",
@@ -1033,7 +1033,21 @@ class BridgeMatrixTests(unittest.TestCase):
                         "lats_value_samples": 1,
                     }
                 )
-            context = RunContext(profile_id, bridge.prompt, client, environment, trace, policy)
+            speculator_client = (
+                RecordingClient(['{"actions":[]}'])
+                if profile_id == "sa"
+                and any(tool.read_only and tool.parallel for tool in bridge.tools)
+                else None
+            )
+            context = RunContext(
+                profile_id,
+                bridge.prompt,
+                client,
+                environment,
+                trace,
+                policy,
+                speculator_client=speculator_client,
+            )
             answer = await run_profile(context)
             return answer, client, environment.schema
 

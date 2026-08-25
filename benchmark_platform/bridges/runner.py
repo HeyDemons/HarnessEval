@@ -9,7 +9,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import ProviderError, completion_client_from_env
+from benchmark_platform.harnesses.api import (
+    ProviderError,
+    completion_client_from_env,
+    sa_speculator_client_from_env,
+)
 from benchmark_platform.harnesses.core import (
     DeclarationOnlyComplete,
     JsonlTrace,
@@ -59,13 +63,17 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         safe = list(bridge.metadata.get("safe_for_prelaunch") or [])
         effective_policy["speculation_safe_tools"] = safe
         effective_policy["branch_safe_tools"] = safe
+    client = completion_client_from_env()
     context = RunContext(
         profile_id,
         bridge.prompt,
-        completion_client_from_env(),
+        client,
         environment,
         trace,
         effective_policy,
+        speculator_client=(
+            sa_speculator_client_from_env(client) if profile_id == "sa" else None
+        ),
     )
     _write(job / "bridge_manifest.json", {"benchmark": benchmark, "case_id": case_id, "profile": profile_id, "tool_schemas": [tool.prompt_schema() for tool in bridge.tools], "metadata": bridge.metadata})
     started = time.perf_counter()
@@ -81,10 +89,8 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             "topology": profile.topology,
             "final_answer": answer,
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "bridge": bridge.metadata,
         }
         if benchmark == "bfcl":
@@ -110,11 +116,9 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
                 "topology": profile.topology,
                 "final_answer": None,
                 "execution_seconds": time.perf_counter() - started,
-                "llm_calls": context.llm_calls,
                 "tool_calls": len(environment.committed_calls),
                 "committed_calls": environment.committed_calls,
-                "prompt_tokens": context.prompt_tokens,
-                "completion_tokens": context.completion_tokens,
+                **context.usage_metrics(),
                 "bridge": bridge.metadata,
                 "termination": {
                     "kind": (
@@ -141,8 +145,8 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
                 "profile": profile.id,
                 "execution_seconds": time.perf_counter() - started,
                 "error": error,
-                "llm_calls": context.llm_calls,
                 "tool_calls": len(environment.calls),
+                **context.usage_metrics(),
                 "failure_kind": (
                     "provider_error" if isinstance(exc, ProviderError) else "agent_runtime"
                 ),

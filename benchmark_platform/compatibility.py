@@ -29,7 +29,7 @@ def compatibility_rows(
                 benchmark.id, (benchmark.adapter["kind"], "blocked_no_baseline_bridge")
             )
             if profile.id == "aflow-custom-init":
-                baseline_requirement = "disclosed_unoptimized_custom_initialization_control"
+                baseline_requirement = "aflow_round_1_single_custom_generation_no_external_tools"
             elif profile.id == "dmas":
                 baseline_requirement = "agentnet_aligned_cold_start_without_cross_case_memory"
             elif profile.id == "lats":
@@ -65,11 +65,8 @@ def compatibility_rows(
             if profile.id == "llmcompiler" and lifecycle == "native-conversation":
                 # LLMCompiler's premise is planning one parallel DAG of calls up front, which a
                 # conversation cannot supply: every user turn invalidates the plan, so each turn
-                # costs a replan. On tau2, the other native conversation, it failed 28 of 30
-                # cases with "replan budget exhausted after 2 replans" -- the same 28 errors,
-                # while rewoo completed 26/30 and cmas 17/23 on that suite. The budget is a
-                # harness default (llmcompiler_max_replans) and could be raised, but a value
-                # large enough for a 14-32 turn episode turns the method into a very expensive
+                # costs a new compiled plan. Raising the source's total planning-pass limit to
+                # cover a 14-32 turn episode turns the method into a very expensive
                 # ReAct -- planner, scheduler and joiner calls every turn -- which is no longer
                 # the published method. Inapplicable lifecycle, not a weak method.
                 runnable = False

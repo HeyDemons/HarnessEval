@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .api import ProviderError, completion_client_from_env
+from .api import ProviderError, completion_client_from_env, sa_speculator_client_from_env
 from .core import JsonlTrace, RunContext, ToolEnvironment, ToolSpec
 from .methods import run_profile
 from .profiles import get_profile
@@ -67,13 +67,17 @@ async def execute(profile_id: str, request_path: Path, output_path: Path, trace_
     trace = JsonlTrace(trace_path)
     tools = [ToolSpec.from_dict(item) for item in request.get("tools", [])]
     environment = ToolEnvironment(tools, trace)
+    client = completion_client_from_env()
     context = RunContext(
         profile_id,
         request["task"]["prompt"],
-        completion_client_from_env(),
+        client,
         environment,
         trace,
         request.get("policy") or {},
+        speculator_client=(
+            sa_speculator_client_from_env(client) if profile_id == "sa" else None
+        ),
     )
     started = time.perf_counter()
     result: dict[str, Any]
@@ -88,10 +92,8 @@ async def execute(profile_id: str, request_path: Path, output_path: Path, trace_
             "task_id": request["task"].get("id"),
             "final_answer": answer,
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "policy": request.get("policy") or {},
         }
         _write_json(output_path, result)
@@ -113,10 +115,8 @@ async def execute(profile_id: str, request_path: Path, output_path: Path, trace_
             "topology": profile.topology,
             "task_id": request.get("task", {}).get("id"),
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "error": str(exc),
         }
         await trace.emit("harness_error", error=result["error"], failure_kind="provider_error")
@@ -129,10 +129,8 @@ async def execute(profile_id: str, request_path: Path, output_path: Path, trace_
             "topology": profile.topology,
             "task_id": request.get("task", {}).get("id"),
             "execution_seconds": time.perf_counter() - started,
-            "llm_calls": context.llm_calls,
             "tool_calls": len(environment.calls),
-            "prompt_tokens": context.prompt_tokens,
-            "completion_tokens": context.completion_tokens,
+            **context.usage_metrics(),
             "error": f"{type(exc).__name__}: {exc}",
         }
         await trace.emit("harness_error", error=result["error"])

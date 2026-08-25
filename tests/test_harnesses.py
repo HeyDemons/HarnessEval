@@ -142,10 +142,16 @@ class HarnessTests(unittest.TestCase):
         responses: list[Any],
         *,
         policy: dict | None = None,
+        speculator_responses: list[Any] | None = None,
     ) -> tuple[str, ToolEnvironment]:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
             environment = ToolEnvironment(tool_specs(), trace)
+            speculator_client = (
+                ScriptedClient(speculator_responses)
+                if speculator_responses is not None
+                else None
+            )
             context = RunContext(
                 profile,
                 "retrieve alpha and beta, multiply them",
@@ -153,10 +159,15 @@ class HarnessTests(unittest.TestCase):
                 environment,
                 trace,
                 {"max_turns": 8, **(policy or {})},
+                speculator_client=speculator_client,
             )
             answer = asyncio.run(run_profile(context))
-            self.assertTrue(trace.path.read_text(encoding="utf-8"))
+            trace_text = trace.path.read_text(encoding="utf-8")
+            self.assertTrue(trace_text)
             self.last_client = context.client
+            self.last_speculator_client = speculator_client
+            self.last_context = context
+            self.last_events = [json.loads(line) for line in trace_text.splitlines()]
             return answer, environment
 
     def test_actor_only_dynamic_tools(self) -> None:
@@ -361,7 +372,11 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual([call["name"] for call in environment.calls], ["lookup", "lookup"])
 
         # sa speculates best-effort; a predictor that returns no actions list is a miss.
-        answer, _ = self.run_profile("sa", ['{"predicted":"nothing"}', '{"final":"42"}'])
+        answer, _ = self.run_profile(
+            "sa",
+            ['{"final":"42"}'],
+            speculator_responses=['{"predicted":"nothing"}'],
+        )
         self.assertEqual(answer, "42")
 
     def test_plan_execute_uses_agent_executors_for_textual_steps(self) -> None:
@@ -960,14 +975,16 @@ class HarnessTests(unittest.TestCase):
     def test_aflow_custom_initialization_control(self) -> None:
         answer, environment = self.run_profile(
             "aflow-custom-init",
-            [
-                '{"tool":"lookup","arguments":{"key":"alpha"}}',
-                '{"final":"6"}',
-            ],
+            ["6"],
             policy={"aflow_workflow": ["Custom"]},
         )
         self.assertEqual(answer, "6")
-        self.assertEqual(len(environment.calls), 1)
+        self.assertEqual(environment.calls, [])
+        self.assertEqual(len(self.last_client.messages), 1)
+        self.assertEqual(
+            self.last_client.messages[0],
+            [{"role": "user", "content": "retrieve alpha and beta, multiply them"}],
+        )
 
     def test_dylan_published_text_network_has_no_hidden_tool_loop(self) -> None:
         answer, environment = self.run_profile("dylan", ["42", "42", "42"])
@@ -988,8 +1005,12 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "Final answer: 42")
         self.assertEqual(environment.calls, [])
         prompt = self.last_client.messages[0][0]["content"]
-        self.assertIn("Structural example", prompt)
-        self.assertIn("Skeptical Verifier", prompt)
+        self.assertNotIn("Structural example", prompt)
+        self.assertIn("Here are two complete demonstrations", prompt)
+        self.assertIn("Example Task 1", prompt)
+        self.assertIn("Example Task 2", prompt)
+        self.assertIn("Profiles:", prompt)
+        self.assertGreaterEqual(prompt.count("Start collaboration!"), 2)
         self.assertIn("Finish collaboration!", prompt)
 
     def test_magentic_one_ledger_worker_and_delivery(self) -> None:
@@ -1393,7 +1414,7 @@ class HarnessTests(unittest.TestCase):
                 client,
                 environment,
                 trace,
-                {"max_turns": 8, "llmcompiler_max_replans": 1},
+                {"max_turns": 8, "llmcompiler_max_replans": 2},
             )
             answer = asyncio.run(run_profile(context))
             events = [json.loads(line) for line in trace.path.read_text().splitlines()]
@@ -1405,6 +1426,19 @@ class HarnessTests(unittest.TestCase):
             [event["cycle"] for event in events if event["event"] == "llmcompiler_join"],
             [0, 1],
         )
+
+    def test_llmcompiler_final_pass_forces_a_replan_payload_to_finish(self) -> None:
+        answer, _ = self.run_profile(
+            "llmcompiler",
+            [
+                '{"tasks":[]}',
+                '{"action":"replan","feedback":"best available answer"}',
+            ],
+        )
+        self.assertEqual(answer, "best available answer")
+        final_prompt = self.last_client.messages[-1][0]["content"]
+        self.assertIn("final planning pass", final_prompt)
+        self.assertIn("Do not request another replan", final_prompt)
 
     def test_rewoo_plan_evidence_solver(self) -> None:
         answer, environment = self.run_profile(
@@ -1546,12 +1580,73 @@ class HarnessTests(unittest.TestCase):
             "sa",
             [
                 '{"tool":"lookup","arguments":{"key":"alpha"}}',
-                '{"actions":[{"tool":"lookup","arguments":{"key":"alpha"}}]}',
                 '{"final":"6"}',
+            ],
+            speculator_responses=[
+                '{"actions":[{"tool":"lookup","arguments":{"key":"alpha"}}]}',
+                '{"actions":[]}',
             ],
         )
         self.assertEqual(answer, "6")
         self.assertEqual(len(environment.calls), 1)
+        self.assertEqual(len(self.last_speculator_client.messages), 2)
+        actor_response = next(
+            event["response_id"]
+            for event in self.last_events
+            if event.get("event") == "llm_response" and event.get("role") == "sa_actor"
+        )
+        speculator_response = next(
+            event["response_id"]
+            for event in self.last_events
+            if event.get("event") == "llm_response"
+            and event.get("role") == "sa_speculator"
+        )
+        self.assertEqual(environment.calls[0]["assistant_response_id"], actor_response)
+        self.assertNotEqual(environment.calls[0]["assistant_response_id"], speculator_response)
+
+    def test_sa_actor_and_independent_speculator_are_in_flight_together(self) -> None:
+        gate = asyncio.Event()
+        started = 0
+
+        class GatedClient(ScriptedClient):
+            async def complete(self, messages, *, temperature=None, json_mode=False):
+                nonlocal started
+                self.messages.append(messages)
+                self.json_modes.append(json_mode)
+                started += 1
+                if started == 2:
+                    gate.set()
+                await asyncio.wait_for(gate.wait(), timeout=1)
+                content = next(self.responses)
+                return Completion(
+                    content,
+                    1,
+                    1,
+                    0.0,
+                    0,
+                    {"choices": [{"message": {"content": content}}]},
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            actor = GatedClient(['{"final":"6"}'])
+            speculator = GatedClient(['{"actions":[]}'])
+            context = RunContext(
+                "sa",
+                "retrieve alpha",
+                actor,
+                environment,
+                trace,
+                {"max_turns": 2},
+                speculator_client=speculator,
+            )
+            answer = asyncio.run(run_profile(context))
+
+        self.assertEqual(answer, "6")
+        self.assertEqual(started, 2)
+        self.assertEqual(context.actor_llm_calls, 1)
+        self.assertEqual(context.speculator_llm_calls, 1)
 
     def test_sa_invalidates_speculation_after_state_transition(self) -> None:
         state = {"balance": 1}
@@ -1592,9 +1687,15 @@ class HarnessTests(unittest.TestCase):
             client = ScriptedClient(
                 [
                     '{"tool":"set_balance","arguments":{"value":2}}',
-                    '{"actions":[{"tool":"read_balance","arguments":{}}]}',
                     '{"tool":"read_balance","arguments":{}}',
                     '{"final":"2"}',
+                ]
+            )
+            speculator_client = ScriptedClient(
+                [
+                    '{"actions":[{"tool":"read_balance","arguments":{}}]}',
+                    '{"actions":[{"tool":"read_balance","arguments":{}}]}',
+                    '{"actions":[]}',
                 ]
             )
             context = RunContext(
@@ -1604,6 +1705,7 @@ class HarnessTests(unittest.TestCase):
                 environment,
                 trace,
                 {"max_turns": 5},
+                speculator_client=speculator_client,
             )
             answer = asyncio.run(run_profile(context))
             events = [json.loads(line) for line in trace.path.read_text().splitlines()]
@@ -1623,12 +1725,23 @@ class HarnessTests(unittest.TestCase):
             client = ScriptedClient(
                 [
                     '{"tool":"lookup","arguments":{"key":"alpha"}}',
-                    '{"actions":[{"tool":"lookup","arguments":{"key":"beta"}}]}',
                     '{"final":"6"}',
                 ]
             )
+            speculator_client = ScriptedClient(
+                [
+                    '{"actions":[{"tool":"lookup","arguments":{"key":"beta"}}]}',
+                    '{"actions":[]}',
+                ]
+            )
             context = RunContext(
-                "sa", "retrieve alpha", client, environment, trace, {"max_turns": 4}
+                "sa",
+                "retrieve alpha",
+                client,
+                environment,
+                trace,
+                {"max_turns": 4},
+                speculator_client=speculator_client,
             )
             answer = asyncio.run(run_profile(context))
             events = [json.loads(line) for line in trace.path.read_text().splitlines()]
@@ -1643,6 +1756,11 @@ class HarnessTests(unittest.TestCase):
                 for event in events
             )
         )
+        self.assertEqual(context.actor_llm_calls, 2)
+        self.assertEqual(context.speculator_llm_calls, 2)
+        self.assertEqual(context.prompt_tokens, 4)
+        self.assertEqual(context.actor_prompt_tokens, 2)
+        self.assertEqual(context.speculator_prompt_tokens, 2)
 
     def test_concatenated_actions_record_only_the_executed_action(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

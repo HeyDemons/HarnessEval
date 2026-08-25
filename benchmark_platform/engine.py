@@ -241,9 +241,48 @@ HARNESS_ENV = frozenset({
     "HARNESS_REASONING_EFFORT",
     "HARNESS_API_STREAM",
     "HARNESS_USER_AGENT",
+    "HARNESS_SA_API_BASE",
+    "HARNESS_SA_API_TYPE",
+    "HARNESS_SA_API_AUTH",
+    "HARNESS_SA_API_USER_AGENT",
+    "HARNESS_SA_API_KEY",
+    "HARNESS_SA_MODEL",
+    "HARNESS_SA_TEMPERATURE",
+    "HARNESS_SA_API_TIMEOUT_S",
+    "HARNESS_SA_API_RETRIES",
+    "HARNESS_SA_MAX_OUTPUT_TOKENS",
+    "HARNESS_SA_REASONING_EFFORT",
+    "HARNESS_SA_API_STREAM",
     "HARNESS_COMMAND_TIMEOUT_S",
     "HARNESS_TASK_OUTPUT_LIMIT",
 })
+
+
+def sa_client_identity(profile_id: str, actor_api_base: str) -> dict[str, Any]:
+    if profile_id != "sa":
+        return {}
+    base = os.environ.get("HARNESS_SA_API_BASE", "").strip() or actor_api_base
+    return {
+        "sa_model": os.environ.get("HARNESS_SA_MODEL") or None,
+        "sa_api_type": (
+            os.environ.get("HARNESS_SA_API_TYPE")
+            or os.environ.get("HARNESS_API_TYPE")
+            or "openai-completions"
+        ),
+        "sa_reasoning_effort": (
+            os.environ.get("HARNESS_SA_REASONING_EFFORT")
+            or os.environ.get("HARNESS_REASONING_EFFORT")
+            or None
+        ),
+        "sa_api_stream": (
+            os.environ.get("HARNESS_SA_API_STREAM")
+            if os.environ.get("HARNESS_SA_API_STREAM") is not None
+            else os.environ.get("HARNESS_API_STREAM")
+        ),
+        "sa_api_base_sha256": (
+            hashlib.sha256(base.encode("utf-8")).hexdigest() if base else None
+        ),
+    }
 
 
 def required_path_check(required: dict[str, Any]) -> dict[str, Any]:
@@ -1026,6 +1065,7 @@ class Platform:
             "network": network,
             "model": os.environ.get("HARNESS_MODEL") or None,
             "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            **sa_client_identity(profile["id"], api_base),
             "implementation": self.implementation_identity(),
             "runtime_image": self.image_identity(image),
         }
@@ -1169,6 +1209,7 @@ class Platform:
             "image": adapter["image"],
             "model": os.environ.get("HARNESS_MODEL") or None,
             "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            **sa_client_identity(profile["id"], api_base),
             "prepared_case_sha256": (
                 hashlib.sha256((prepared / "input" / "case.json").read_bytes()).hexdigest()
                 if prepared is not None
@@ -1293,6 +1334,7 @@ class Platform:
             "image": image,
             "model": os.environ.get("HARNESS_MODEL") or None,
             "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            **sa_client_identity(profile["id"], api_base),
             "implementation": self.implementation_identity(),
             "runtime_image": self.image_identity(image),
         }
@@ -1360,6 +1402,7 @@ class Platform:
             "controller_image": benchmark.adapter["image"],
             "model": os.environ.get("HARNESS_MODEL") or None,
             "api_base_sha256": hashlib.sha256(api_base.encode("utf-8")).hexdigest() if api_base else None,
+            **sa_client_identity(profile["id"], api_base),
             "implementation": self.implementation_identity(),
             "runtime_image": self.image_identity(benchmark.adapter["image"]),
         }

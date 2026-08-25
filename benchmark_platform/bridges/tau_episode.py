@@ -360,6 +360,12 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                 "llm_calls": 0,
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
+                "actor_llm_calls": 0,
+                "actor_prompt_tokens": 0,
+                "actor_completion_tokens": 0,
+                "speculator_llm_calls": 0,
+                "speculator_prompt_tokens": 0,
+                "speculator_completion_tokens": 0,
                 "tool_calls": 0,
                 "user_messages": 0,
             }

@@ -15,6 +15,7 @@ from benchmark_platform.harnesses.api import (
     OpenAICompatibleClient,
     ProviderError,
     completion_client_from_env,
+    sa_speculator_client_from_env,
 )
 from benchmark_platform.harnesses.content import ToolImage, tool_result_content
 
@@ -329,6 +330,34 @@ class NativeTransportTests(unittest.TestCase):
         with patch.dict("os.environ", values, clear=True):
             client = completion_client_from_env()
         self.assertIsInstance(client, AnthropicMessagesClient)
+
+    def test_sa_speculator_requires_an_explicit_model_and_inherits_transport(self) -> None:
+        actor = OpenAICompatibleClient(
+            ApiConfig(
+                "https://actor.invalid/v1",
+                "actor-secret",
+                "actor-model",
+                timeout_seconds=91,
+                transport_retries=2,
+                stream=True,
+            )
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "HARNESS_SA_MODEL"):
+                sa_speculator_client_from_env(actor)
+
+        with patch.dict(
+            "os.environ",
+            {"HARNESS_SA_MODEL": "fast-speculator"},
+            clear=True,
+        ):
+            speculator = sa_speculator_client_from_env(actor)
+        self.assertIsInstance(speculator, OpenAICompatibleClient)
+        self.assertEqual(speculator.config.model, "fast-speculator")
+        self.assertEqual(speculator.config.base_url, actor.config.base_url)
+        self.assertEqual(speculator.config.api_key, actor.config.api_key)
+        self.assertEqual(speculator.config.timeout_seconds, 91)
+        self.assertTrue(speculator.config.stream)
 
 
 if __name__ == "__main__":

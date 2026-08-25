@@ -15,6 +15,55 @@ from .magentic_one import run_magentic_one
 from .memgpt import run_memgpt
 
 
+# Solo Performance Prompting is itself a one-call prompting method.  The official
+# repository uses two complete demonstrations (rather than a schematic placeholder),
+# dynamic participants, explicit profiles, iterative criticism, and a delimited final
+# answer.  These benchmark-neutral demonstrations preserve that protocol without
+# importing a task-specific answer format from one of the three source benchmarks.
+SPP_PROFILE_PROMPT = """When solving a task, first identify the participants whose expertise or evaluation needs will help. Provide a short profile for each participant. Then simulate a multi-round collaboration until the participants agree that every requirement has been checked. Participants should give concrete criticism and the AI Assistant should revise incorrect work.
+
+Here are two complete demonstrations.
+---
+Example Task 1: Use each of the numbers 2, 3, and 5 exactly once with basic arithmetic to make 10.
+
+Participants: AI Assistant (you); Arithmetic Expert
+Profiles:
+- AI Assistant (you): drafts and revises a candidate solution.
+- Arithmetic Expert: checks the calculation and verifies that every supplied number is used exactly once.
+
+Start collaboration!
+AI Assistant (you): My first attempt is 5 * (3 - 2) = 10.
+Arithmetic Expert: The arithmetic is wrong: 3 - 2 is 1, so the expression equals 5. Please try again while retaining all three numbers exactly once.
+AI Assistant (you): Revised solution: 5 + 3 + 2 = 10.
+Arithmetic Expert: Verified. The sum is 10 and the numbers 2, 3, and 5 each appear exactly once.
+Finish collaboration!
+Final answer: 5 + 3 + 2 = 10
+
+---
+Example Task 2: Explain evaporation to an eight-year-old in exactly two sentences, and include the word sunlight.
+
+Participants: AI Assistant (you); Science Teacher; Eight-year-old Reader
+Profiles:
+- AI Assistant (you): writes the explanation and applies feedback.
+- Science Teacher: checks scientific correctness and the two-sentence constraint.
+- Eight-year-old Reader: flags words that are hard for a child to understand.
+
+Start collaboration!
+AI Assistant (you): Sunlight gives water molecules kinetic energy. They escape into the atmosphere. This process is evaporation.
+Science Teacher: The idea is broadly correct, but the response has three sentences instead of two.
+Eight-year-old Reader: "Kinetic energy" and "atmosphere" are difficult words for me.
+AI Assistant (you): Revised explanation: Sunlight warms liquid water and helps some of it rise into the air as an invisible gas. That change from liquid water into gas is called evaporation.
+Science Teacher: Verified: it is accurate, contains sunlight, and has exactly two sentences.
+Eight-year-old Reader: The revised version is easy to understand.
+Finish collaboration!
+Final answer: Sunlight warms liquid water and helps some of it rise into the air as an invisible gas. That change from liquid water into gas is called evaporation.
+
+---
+Now identify the participants, provide their profiles, and collaboratively solve the following task step by step. End the collaboration with "Finish collaboration!" and present the final solution with the prefix "Final answer:".
+
+Task: {task}"""
+
+
 async def run_aflow_custom_init(ctx: RunContext) -> str:
     """Execute only AFlow's disclosed, unoptimized round-1 Custom control."""
     workflow = ctx.policy.get("aflow_workflow")
@@ -23,9 +72,13 @@ async def run_aflow_custom_init(ctx: RunContext) -> str:
             "aflow-custom-init requires policy.aflow_workflow == ['Custom']; "
             "optimized AFlow graphs need a separate canonical profile"
         )
-    from .methods import _json_tool_loop
-
-    return await _json_tool_loop(ctx, "aflow_custom_initialization")
+    # AFlow's checked-in round-1 graph invokes exactly one Custom operator with
+    # instruction="".  Custom concatenates instruction + input and performs one
+    # unconstrained text generation; it is not an Actor tool loop.
+    return await ctx.complete(
+        "aflow_custom_initialization",
+        [{"role": "user", "content": ctx.prompt}],
+    )
 
 
 async def run_dylan(ctx: RunContext) -> str:
@@ -113,26 +166,7 @@ async def run_dylan(ctx: RunContext) -> str:
 async def run_multi_persona(ctx: RunContext) -> str:
     return await ctx.complete(
         "solo_performance_prompting",
-        [
-            {
-                "role": "user",
-                "content": (
-                    "Use Solo Performance Prompting. First identify task-specific participants and state each "
-                    "participant's expertise or evaluation need. Then simulate a multi-round collaboration: an "
-                    "initial proposal, critical checks from the participants, explicit correction of every discovered "
-                    "error, and a final verification by the AI Assistant.\n\n"
-                    "Structural example (do not solve the real task from this example):\n"
-                    "Participants: AI Assistant; Domain Expert; Skeptical Verifier\n"
-                    "Domain Expert: proposes a constraint-aware approach.\n"
-                    "AI Assistant: produces a draft.\n"
-                    "Skeptical Verifier: identifies a concrete violated constraint.\n"
-                    "AI Assistant: revises the draft and rechecks the constraint.\n"
-                    "Finish collaboration!\nFinal answer: <verified answer>\n\n"
-                    "For the real task, continue collaboration until objections are resolved and end exactly with "
-                    f"`Final answer: <answer>`.\nTask: {ctx.prompt}"
-                ),
-            }
-        ],
+        [{"role": "user", "content": SPP_PROFILE_PROMPT.format(task=ctx.prompt)}],
     )
 
 
@@ -222,13 +256,16 @@ def _resolve_reference(
 async def run_llmcompiler(ctx: RunContext) -> str:
     """LLMCompiler planner/scheduler/joiner loop with bounded replanning."""
 
-    max_replans = int(ctx.policy.get("llmcompiler_max_replans", 2))
-    if max_replans < 0:
-        raise ValueError("llmcompiler_max_replans must be non-negative")
+    # Upstream's max_replans is the total number of planning passes, including the
+    # initial one (its loop is range(max_replans)); every published config pins it to 1.
+    max_planning_passes = int(ctx.policy.get("llmcompiler_max_replans", 1))
+    if max_planning_passes < 1:
+        raise ValueError("llmcompiler_max_replans must be positive")
     prior_runs: list[dict[str, Any]] = []
     feedback = ""
 
-    for cycle in range(max_replans + 1):
+    for cycle in range(max_planning_passes):
+        final_pass = cycle == max_planning_passes - 1
         planner_context = ""
         if prior_runs:
             planner_context = (
@@ -306,10 +343,15 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                     "role": "user",
                     "content": (
                         "Judge whether the DAG results fully solve the task. Finish only when "
-                        "the answer is supported by observations; otherwise request a replan.\n"
-                        'Return JSON only, exactly {"action":"finish","answer":"..."} or '
-                        '{"action":"replan","feedback":"specific correction"}.\n'
-                        f"Task: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\n"
+                        "the answer is supported by observations.\n"
+                        + (
+                            'This is the final planning pass, so return JSON only as '
+                            '{"action":"finish","answer":"best supported answer"}. Do not request another replan.\n'
+                            if final_pass
+                            else 'Return JSON only, exactly {"action":"finish","answer":"..."} or '
+                            '{"action":"replan","feedback":"specific correction"}.\n'
+                        )
+                        + f"Task: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\n"
                         f"Results: {json.dumps(json_safe(results), ensure_ascii=False)}"
                     ),
                 }
@@ -318,19 +360,33 @@ async def run_llmcompiler(ctx: RunContext) -> str:
             strict_single_object=True,
         )
         action = str(decision.get("action", "")).strip().casefold()
-        await ctx.trace.emit("llmcompiler_join", cycle=cycle, decision=decision)
+        await ctx.trace.emit(
+            "llmcompiler_join",
+            cycle=cycle,
+            final_pass=final_pass,
+            decision=decision,
+        )
         if action == "finish":
             if "answer" not in decision:
                 raise ValueError("LLMCompiler Finish omitted answer")
             return str(decision["answer"])
         if action != "replan":
             raise ValueError("LLMCompiler joiner action must be finish or replan")
+        if final_pass:
+            # The pinned implementation unconditionally disables replanning on its final
+            # pass. Preserve the model's payload as the best available answer rather than
+            # turning a completed measurement into a harness error.
+            forced_answer = decision.get("answer") or decision.get("feedback")
+            if forced_answer is None:
+                raise ValueError("LLMCompiler final Replan omitted an answer or feedback")
+            await ctx.trace.emit(
+                "llmcompiler_final_replan_forced_finish",
+                cycle=cycle,
+                answer=str(forced_answer),
+            )
+            return str(forced_answer)
         prior_runs.append({"plan": plan, "results": json_safe(results)})
         feedback = str(decision.get("feedback", "")).strip()
-        if cycle >= max_replans:
-            raise RuntimeError(
-                f"LLMCompiler replan budget exhausted after {max_replans} replans"
-            )
 
     raise AssertionError("unreachable")
 
@@ -340,39 +396,72 @@ def _action_key(name: str, arguments: dict[str, Any]) -> str:
 
 
 async def run_sa(ctx: RunContext) -> str:
-    """Benchmark-neutral response-first Speculative Actions protocol reproduction."""
+    """Lossless top-k Speculative Actions with an independent fast model each turn."""
     safe_names = [name for name, tool in ctx.environment.tools.items() if tool.read_only and tool.parallel]
     policy_safe = ctx.policy.get("speculation_safe_tools")
     if isinstance(policy_safe, list):
         allowed = {str(name) for name in policy_safe}
         safe_names = [name for name in safe_names if name in allowed]
     top_k = int(ctx.policy.get("sa_top_k", 3))
+    if top_k < 1:
+        raise ValueError("sa_top_k must be positive")
+    if safe_names and ctx.speculator_client is None:
+        raise RuntimeError("sa requires an independent Speculator client for safe pre-actions")
 
-    async def predict_and_execute() -> dict[str, tuple[int, dict[str, Any]]]:
+    async def predict_and_execute(
+        turn: int,
+        actor_messages: list[dict[str, Any]],
+    ) -> dict[str, tuple[int, dict[str, Any]]]:
         if not safe_names:
             return {}
-        draft = await ctx.complete_json(
-            "sa_response_predictor",
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "Predict likely immediate read-only tool calls without claiming they happened.\n"
-                        f"Safe tools: {json.dumps([ctx.environment.tools[name].prompt_schema() for name in safe_names], ensure_ascii=False)}\n"
-                        f'Return JSON: {{"actions":[{{"tool":"name","arguments":{{}}}}]}} with at most {top_k} actions.\n'
-                        f"Task: {ctx.prompt}"
-                    ),
-                }
-            ],
-        )
-        # A predictor that returns no actions key, or a non-list, is a prediction miss and
-        # nothing more: speculation is best effort. Slicing None raised out of the arm.
-        actions = draft.get("actions") if isinstance(draft, dict) else []
+        predictor_messages = [
+            *actor_messages,
+            {
+                "role": "user",
+                "content": (
+                    "You are the fast Speculator, not the authoritative Actor. Predict the Actor's "
+                    "next immediate tool action from the conversation above. Predictions are best-effort "
+                    "and must never claim an observation occurred.\n"
+                    f"Only these lossless prelaunch tools are allowed: "
+                    f"{json.dumps([ctx.environment.tools[name].prompt_schema() for name in safe_names], ensure_ascii=False)}\n"
+                    f'Return one JSON object {{"actions":[{{"tool":"name","arguments":{{}}}}]}} '
+                    f"with at most {top_k} distinct actions. Return an empty actions list when the Actor "
+                    "is likely to answer or select a mutating tool."
+                ),
+            },
+        ]
+        try:
+            raw = await ctx.complete_speculator(
+                "sa_speculator",
+                predictor_messages,
+                json_mode=True,
+                temperature=float(ctx.policy.get("sa_temperature", 0.1)),
+            )
+            draft = extract_json(raw, expected_type=dict)
+        except Exception as exc:
+            await ctx.trace.emit(
+                "sa_prediction_failed",
+                turn=turn,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return {}
+        actions = draft.get("actions")
         if not isinstance(actions, list):
             actions = []
         speculation_epoch = ctx.environment.state_version
         cache: dict[str, tuple[int, dict[str, Any]]] = {}
-        valid = [item for item in actions[:top_k] if isinstance(item, dict) and item.get("tool") in safe_names and isinstance(item.get("arguments"), dict)]
+        valid_by_key: dict[str, dict[str, Any]] = {}
+        for item in actions[:top_k]:
+            if (
+                isinstance(item, dict)
+                and item.get("tool") in safe_names
+                and isinstance(item.get("arguments"), dict)
+            ):
+                valid_by_key.setdefault(
+                    _action_key(str(item["tool"]), item["arguments"]),
+                    item,
+                )
+        valid = list(valid_by_key.values())
 
         async def execute(item: dict[str, Any]) -> None:
             name = str(item["tool"])
@@ -395,32 +484,47 @@ async def run_sa(ctx: RunContext) -> str:
             )
         await ctx.trace.emit(
             "sa_draft_ready",
+            turn=turn,
             actions=valid,
             cached=list(cache),
             state_version=speculation_epoch,
         )
         return cache
 
-    draft_task = asyncio.create_task(predict_and_execute())
     from .methods import ACTION_SYSTEM, _normalize_action  # methods imports this module
 
     messages = [
         {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
         {"role": "user", "content": ctx.prompt},
     ]
-    cache: dict[str, tuple[int, dict[str, Any]]] | None = None
-    # Protocol handling must match _json_tool_loop (methods.py), which actor-only uses:
-    # normalize a single-key {tool_name: {...}} action, and on a malformed response feed
-    # the error back and retry within the turn budget instead of aborting. run_sa
-    # previously raised on both, so one model protocol slip cost sa the entire episode
-    # while actor-only recovered from the identical slip. That biases every sa-vs-
-    # actor-only comparison by the probability of a slip — observed on GAIA L2, where the
-    # model returned the correct answer under {"answer": ...} instead of {"final": ...}.
-    for _ in range(ctx.max_turns):
-        raw = await ctx.complete("sa_actor", messages, json_mode=True)
+    for turn in range(1, ctx.max_turns + 1):
+        # Repeat the speculative window after every observation.  Starting only once at the
+        # beginning is an initial prefetch control, not Speculative Actions.
+        draft_task = (
+            asyncio.create_task(predict_and_execute(turn, list(messages)))
+            if safe_names
+            else None
+        )
+        try:
+            raw = await ctx.complete("sa_actor", messages, json_mode=True)
+        except asyncio.CancelledError:
+            if draft_task is not None:
+                draft_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await draft_task
+            raise
+        except Exception:
+            # Do not leave a provider request or speculative tool read running after the
+            # authoritative arm has failed. Awaiting also preserves completed Speculator
+            # usage in the failed measurement.
+            if draft_task is not None:
+                await draft_task
+            raise
         try:
             action = _normalize_action(extract_json(raw, expected_type=dict), ctx.environment.names)
         except ValueError as exc:
+            if draft_task is not None:
+                await draft_task
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
@@ -429,14 +533,20 @@ async def run_sa(ctx: RunContext) -> str:
             )
             continue
         if "final" in action:
-            if not draft_task.done():
-                draft_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await draft_task
+            discarded = await draft_task if draft_task is not None else {}
+            if discarded:
+                await ctx.trace.emit(
+                    "sa_predictions_discarded",
+                    turn=turn,
+                    reason="actor_finished",
+                    entries=len(discarded),
+                )
             return str(action["final"])
         name = str(action.get("tool", ""))
         arguments = action.get("arguments")
         if not isinstance(arguments, dict):
+            if draft_task is not None:
+                await draft_task
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
@@ -444,8 +554,7 @@ async def run_sa(ctx: RunContext) -> str:
                 ]
             )
             continue
-        if cache is None:
-            cache = await draft_task
+        cache = await draft_task if draft_task is not None else {}
         key = _action_key(name, arguments)
         cached = cache.pop(key, None)
         if cached is not None and cached[0] == ctx.environment.state_version:
@@ -454,7 +563,10 @@ async def run_sa(ctx: RunContext) -> str:
             # Speculative reads stay out of authoritative traces and counters until the
             # Actor selects the exact action. Publish the cached result now in the same
             # position actor-only would have produced, without executing it twice.
-            await ctx.environment.commit_isolated_calls([record])
+            await ctx.environment.commit_isolated_calls(
+                [record],
+                assistant_response_id=ctx.last_actor_response_id,
+            )
             await ctx.trace.emit(
                 "sa_cache_hit",
                 name=name,

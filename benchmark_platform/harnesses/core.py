@@ -529,7 +529,12 @@ class ToolEnvironment:
         await self.trace.emit(f"{event_prefix}_tool_result", **record)
         return record["result"], record
 
-    async def commit_isolated_calls(self, records: list[dict[str, Any]]) -> None:
+    async def commit_isolated_calls(
+        self,
+        records: list[dict[str, Any]],
+        *,
+        assistant_response_id: int | None = None,
+    ) -> None:
         """Publish already-executed read-only calls as one selected assistant response.
 
         A tree search picks its trajectory after the fact, so the winning path's calls were
@@ -538,7 +543,13 @@ class ToolEnvironment:
         first record's -- instead of being truncated at the first id change.
         """
 
-        batch_id = records[0].get("assistant_response_id") if records else None
+        batch_id = (
+            assistant_response_id
+            if assistant_response_id is not None
+            else records[0].get("assistant_response_id")
+            if records
+            else None
+        )
         for record in records:
             name = str(record["name"])
             arguments = record["arguments"]
@@ -690,6 +701,8 @@ class RunContext:
         environment: ToolEnvironment,
         trace: JsonlTrace,
         policy: dict[str, Any],
+        *,
+        speculator_client: CompletionClient | None = None,
     ):
         self.profile = profile
         self.prompt = prompt
@@ -697,9 +710,17 @@ class RunContext:
         self.environment = environment
         self.trace = trace
         self.policy = policy
+        self.speculator_client = speculator_client
         self.llm_calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
+        self.actor_llm_calls = 0
+        self.actor_prompt_tokens = 0
+        self.actor_completion_tokens = 0
+        self.speculator_llm_calls = 0
+        self.speculator_prompt_tokens = 0
+        self.speculator_completion_tokens = 0
+        self.last_actor_response_id: int | None = None
 
     @property
     def max_turns(self) -> int:
@@ -736,6 +757,46 @@ class RunContext:
         json_mode: bool = False,
         temperature: float | None = None,
     ) -> str:
+        return await self._complete_with(
+            self.client,
+            "actor",
+            role,
+            messages,
+            json_mode=json_mode,
+            temperature=temperature,
+        )
+
+    async def complete_speculator(
+        self,
+        role: str,
+        messages: list[dict[str, Any]],
+        *,
+        json_mode: bool = False,
+        temperature: float | None = None,
+    ) -> str:
+        if self.speculator_client is None:
+            raise RuntimeError(
+                "Speculative Actions requires an independent Speculator client"
+            )
+        return await self._complete_with(
+            self.speculator_client,
+            "speculator",
+            role,
+            messages,
+            json_mode=json_mode,
+            temperature=temperature,
+        )
+
+    async def _complete_with(
+        self,
+        client: CompletionClient,
+        channel: str,
+        role: str,
+        messages: list[dict[str, Any]],
+        *,
+        json_mode: bool,
+        temperature: float | None,
+    ) -> str:
         if self.environment.declaration_only and self.environment.declaration_committed:
             raise DeclarationOnlyComplete(
                 "Declaration-only benchmark already received its committed call batch"
@@ -744,17 +805,28 @@ class RunContext:
         await self.trace.emit(
             "llm_request",
             role=role,
+            channel=channel,
             messages=messages,
             json_mode=json_mode,
             temperature=temperature,
         )
-        completion: Completion = await self.client.complete(
+        completion: Completion = await client.complete(
             messages,
             json_mode=json_mode,
             temperature=temperature,
         )
         self.llm_calls += 1
+        if channel == "speculator":
+            self.speculator_llm_calls += 1
+            self.speculator_prompt_tokens += completion.prompt_tokens
+            self.speculator_completion_tokens += completion.completion_tokens
+        else:
+            self.actor_llm_calls += 1
+            self.actor_prompt_tokens += completion.prompt_tokens
+            self.actor_completion_tokens += completion.completion_tokens
         response_id = self.llm_calls
+        if channel == "actor":
+            self.last_actor_response_id = response_id
         _ASSISTANT_RESPONSE_ID.set(response_id)
         self.prompt_tokens += completion.prompt_tokens
         self.completion_tokens += completion.completion_tokens
@@ -762,6 +834,7 @@ class RunContext:
             "llm_response",
             response_id=response_id,
             role=role,
+            channel=channel,
             content=completion.content,
             raw=completion.raw,
             elapsed_seconds=completion.elapsed_seconds,
@@ -799,6 +872,7 @@ class RunContext:
         await self.trace.emit(
             "llm_request",
             role=role,
+            channel="actor",
             messages=messages,
             json_mode=False,
             temperature=temperature,
@@ -812,14 +886,19 @@ class RunContext:
             temperature=temperature,
         )
         self.llm_calls += 1
+        self.actor_llm_calls += 1
         response_id = self.llm_calls
+        self.last_actor_response_id = response_id
         _ASSISTANT_RESPONSE_ID.set(response_id)
         self.prompt_tokens += completion.prompt_tokens
         self.completion_tokens += completion.completion_tokens
+        self.actor_prompt_tokens += completion.prompt_tokens
+        self.actor_completion_tokens += completion.completion_tokens
         await self.trace.emit(
             "llm_response",
             response_id=response_id,
             role=role,
+            channel="actor",
             content=completion.content,
             raw=completion.raw,
             elapsed_seconds=completion.elapsed_seconds,
@@ -828,6 +907,19 @@ class RunContext:
             transport_retries=completion.transport_retries,
         )
         return completion
+
+    def usage_metrics(self) -> dict[str, int]:
+        return {
+            "llm_calls": self.llm_calls,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "actor_llm_calls": self.actor_llm_calls,
+            "actor_prompt_tokens": self.actor_prompt_tokens,
+            "actor_completion_tokens": self.actor_completion_tokens,
+            "speculator_llm_calls": self.speculator_llm_calls,
+            "speculator_prompt_tokens": self.speculator_prompt_tokens,
+            "speculator_completion_tokens": self.speculator_completion_tokens,
+        }
 
     async def complete_json(
         self,

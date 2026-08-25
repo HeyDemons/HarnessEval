@@ -12,7 +12,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
+from benchmark_platform.harnesses.api import (
+    CompletionClient,
+    completion_client_from_env,
+    sa_speculator_client_from_env,
+)
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 
@@ -159,6 +163,7 @@ class EpisodeBroker:
         trace_path: Path,
         policy: dict[str, Any],
         client: CompletionClient | None = None,
+        speculator_client: CompletionClient | None = None,
     ):
         if any(tool.name == SEND_MESSAGE_TOOL for tool in tools):
             raise ValueError(f"Native benchmark already defines reserved tool {SEND_MESSAGE_TOOL}")
@@ -168,6 +173,7 @@ class EpisodeBroker:
         self.trace = JsonlTrace(trace_path)
         self.policy = policy
         self.client = client or completion_client_from_env()
+        self.speculator_client = speculator_client
         self._events: queue.Queue[ActionRequest | FinalResponse | EpisodeFailure] = queue.Queue()
         self._ready = threading.Event()
         self._pending: dict[str, ActionRequest] = {}
@@ -229,6 +235,15 @@ class EpisodeBroker:
             environment,
             self.trace,
             self.policy,
+            speculator_client=(
+                self.speculator_client
+                or (
+                    sa_speculator_client_from_env(self.client)
+                    if self.profile == "sa"
+                    and any(tool.read_only and tool.parallel for tool in self.native_tools)
+                    else None
+                )
+            ),
         )
         answer = await run_profile(self.context)
         self._events.put(FinalResponse(answer))
@@ -321,9 +336,7 @@ class EpisodeBroker:
             return {}
         calls = self.context.environment.calls
         return {
-            "llm_calls": self.context.llm_calls,
-            "prompt_tokens": self.context.prompt_tokens,
-            "completion_tokens": self.context.completion_tokens,
+            **self.context.usage_metrics(),
             # Native user communication is represented as a bridge tool only so an async
             # paper method can yield to the benchmark-owned simulator. It is not a benchmark
             # tool call, and the product arm records the same transition as a new turn rather

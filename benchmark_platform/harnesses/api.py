@@ -64,6 +64,70 @@ class ApiConfig:
             ),
         )
 
+    @classmethod
+    def from_sa_env(cls, actor: "ApiConfig") -> "ApiConfig":
+        """Build the independent Speculative Actions client configuration.
+
+        The paper's latency tradeoff requires a separately selected, faster Speculator.
+        Endpoint and transport settings may inherit from the Actor, but the model selection
+        must be explicit so an SA run can never silently collapse to two calls to the same
+        model.
+        """
+
+        model = os.getenv("HARNESS_SA_MODEL", "").strip()
+        if not model:
+            raise RuntimeError(
+                "Set HARNESS_SA_MODEL when running the sa profile; "
+                "the published method requires an explicitly selected Speculator model"
+            )
+        raw_max = os.getenv("HARNESS_SA_MAX_OUTPUT_TOKENS", "").strip()
+        raw_stream = os.getenv("HARNESS_SA_API_STREAM", "").strip().lower()
+        return cls(
+            base_url=(
+                os.getenv("HARNESS_SA_API_BASE", "").strip().rstrip("/")
+                or actor.base_url
+            ),
+            api_key=os.getenv("HARNESS_SA_API_KEY", "").strip() or actor.api_key,
+            model=model,
+            temperature=float(
+                os.getenv("HARNESS_SA_TEMPERATURE", "").strip()
+                or actor.temperature
+            ),
+            timeout_seconds=float(
+                os.getenv("HARNESS_SA_API_TIMEOUT_S", "").strip()
+                or actor.timeout_seconds
+            ),
+            transport_retries=max(
+                0,
+                int(
+                    os.getenv("HARNESS_SA_API_RETRIES", "").strip()
+                    or actor.transport_retries
+                ),
+            ),
+            max_output_tokens=int(raw_max) if raw_max else actor.max_output_tokens,
+            api_type=(
+                os.getenv("HARNESS_SA_API_TYPE", "").strip()
+                or actor.api_type
+            ),
+            api_auth=(
+                os.getenv("HARNESS_SA_API_AUTH", "").strip().lower()
+                or actor.api_auth
+            ),
+            reasoning_effort=(
+                os.getenv("HARNESS_SA_REASONING_EFFORT", "").strip()
+                or actor.reasoning_effort
+            ),
+            stream=(
+                actor.stream
+                if not raw_stream
+                else raw_stream not in {"0", "false", "no"}
+            ),
+            user_agent=(
+                os.getenv("HARNESS_SA_API_USER_AGENT", "").strip()
+                or actor.user_agent
+            ),
+        )
+
 
 class StreamInterrupted(Exception):
     """A stream that ended without a finish_reason, or carried an error frame instead.
@@ -669,10 +733,20 @@ class AnthropicMessagesClient:
         )
 
 
-def completion_client_from_env() -> CompletionClient:
-    config = ApiConfig.from_env()
+def _completion_client(config: ApiConfig, *, variable: str) -> CompletionClient:
     if config.api_type == "openai-completions":
         return OpenAICompatibleClient(config)
     if config.api_type == "anthropic-messages":
         return AnthropicMessagesClient(config)
-    raise RuntimeError(f"Unsupported HARNESS_API_TYPE: {config.api_type}")
+    raise RuntimeError(f"Unsupported {variable}: {config.api_type}")
+
+
+def completion_client_from_env() -> CompletionClient:
+    return _completion_client(ApiConfig.from_env(), variable="HARNESS_API_TYPE")
+
+
+def sa_speculator_client_from_env(actor: CompletionClient) -> CompletionClient:
+    return _completion_client(
+        ApiConfig.from_sa_env(actor.config),
+        variable="HARNESS_SA_API_TYPE",
+    )
