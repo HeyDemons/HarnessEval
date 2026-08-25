@@ -435,18 +435,6 @@ class PlatformTests(unittest.TestCase):
             {row["baseline_requirement"] for row in gdpval_text_only},
             {"gdpval_requires_workspace_artifact_tools"},
         )
-        aflow_gdpval = next(
-            row
-            for row in rows
-            if row["benchmark"] == "gdpval"
-            and row["baseline"] == "aflow-custom-init"
-        )
-        self.assertFalse(aflow_gdpval["runnable"])
-        self.assertEqual(
-            aflow_gdpval["baseline_requirement"],
-            "gdpval_requires_workspace_artifact_tools",
-        )
-
     def test_adapter_fingerprint_is_content_based(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
         benchmark = platform.catalog.get("swe-bench-verified")

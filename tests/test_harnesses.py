@@ -975,16 +975,14 @@ class HarnessTests(unittest.TestCase):
     def test_aflow_custom_initialization_control(self) -> None:
         answer, environment = self.run_profile(
             "aflow-custom-init",
-            ["6"],
+            [
+                '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"final":"6"}',
+            ],
             policy={"aflow_workflow": ["Custom"]},
         )
         self.assertEqual(answer, "6")
-        self.assertEqual(environment.calls, [])
-        self.assertEqual(len(self.last_client.messages), 1)
-        self.assertEqual(
-            self.last_client.messages[0],
-            [{"role": "user", "content": "retrieve alpha and beta, multiply them"}],
-        )
+        self.assertEqual(len(environment.calls), 1)
 
     def test_dylan_published_text_network_has_no_hidden_tool_loop(self) -> None:
         answer, environment = self.run_profile("dylan", ["42", "42", "42"])

@@ -95,7 +95,7 @@ RESPONSES = {
         '{"score":1.0,"success":true,"feedback":"complete"}',
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
-    "aflow-custom-init": ["ok"],
+    "aflow-custom-init": ['{"final":"ok"}'],
     "dylan": ["ok", "ok", "ok"],
     "magentic-one": [
         "facts",

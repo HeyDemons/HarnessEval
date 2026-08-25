@@ -72,13 +72,9 @@ async def run_aflow_custom_init(ctx: RunContext) -> str:
             "aflow-custom-init requires policy.aflow_workflow == ['Custom']; "
             "optimized AFlow graphs need a separate canonical profile"
         )
-    # AFlow's checked-in round-1 graph invokes exactly one Custom operator with
-    # instruction="".  Custom concatenates instruction + input and performs one
-    # unconstrained text generation; it is not an Actor tool loop.
-    return await ctx.complete(
-        "aflow_custom_initialization",
-        [{"role": "user", "content": ctx.prompt}],
-    )
+    from .methods import _json_tool_loop
+
+    return await _json_tool_loop(ctx, "aflow_custom_initialization")
 
 
 async def run_dylan(ctx: RunContext) -> str:

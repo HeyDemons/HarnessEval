@@ -227,8 +227,7 @@ baseline. Terminal-Bench and SWE-bench give the baseline only the task
 workspace; verifier tests and reference solutions never enter its container.
 
 `aflow-custom-init` is explicitly an unoptimized control that executes AFlow's
-round-1 `Custom(input, instruction="")` as one text generation with no external
-tool loop. It must not be reported as AFlow; a canonical
+round-1 `Custom` starting operator. It must not be reported as AFlow; a canonical
 AFlow arm requires a frozen optimized graph produced on a disjoint split.
 DyLAN and Multi-Persona intentionally receive no external tools because their
 published protocols do not define a tool loop. Multi-Persona uses a generic SPP

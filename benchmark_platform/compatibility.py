@@ -29,7 +29,7 @@ def compatibility_rows(
                 benchmark.id, (benchmark.adapter["kind"], "blocked_no_baseline_bridge")
             )
             if profile.id == "aflow-custom-init":
-                baseline_requirement = "aflow_round_1_single_custom_generation_no_external_tools"
+                baseline_requirement = "disclosed_unoptimized_custom_initialization_control"
             elif profile.id == "dmas":
                 baseline_requirement = "agentnet_aligned_cold_start_without_cross_case_memory"
             elif profile.id == "lats":
