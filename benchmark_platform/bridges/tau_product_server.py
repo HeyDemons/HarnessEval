@@ -16,6 +16,7 @@ from .tau_episode import (
     TASK_SET_DOMAINS,
     TAU2_MAX_STEPS,
     TAU2_SEED,
+    TAU2_USER_REASONING_EFFORT,
     TAU2_USER_TEMPERATURE,
     _load_task,
     _native_tools,
@@ -50,7 +51,12 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
     seed = int(policy.get("seed", TAU2_SEED))
     random.seed(seed)
     client = completion_client_from_env()
-    _patch_tau_generation(client)
+    _patch_tau_generation(
+        client,
+        user_reasoning_effort=str(
+            policy.get("native_user_reasoning_effort", TAU2_USER_REASONING_EFFORT)
+        ),
+    )
     task_set, task = _load_task(case_id)
     domain = TASK_SET_DOMAINS.get(task_set, task_set)
     agent_name = f"harnesseval_product_{uuid.uuid4().hex}"

@@ -260,6 +260,7 @@ class CompletionClient(Protocol):
         *,
         temperature: float | None = None,
         seed: int | None = None,
+        reasoning_effort: str | None = None,
         json_mode: bool = False,
     ) -> Completion: ...
 
@@ -271,6 +272,7 @@ class CompletionClient(Protocol):
         tool_choice: str | None = None,
         temperature: float | None = None,
         seed: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Completion: ...
 
 
@@ -290,6 +292,7 @@ class OpenAICompatibleClient:
         *,
         temperature: float | None = None,
         seed: int | None = None,
+        reasoning_effort: str | None = None,
         json_mode: bool = False,
     ) -> Completion:
         return await asyncio.to_thread(
@@ -297,6 +300,7 @@ class OpenAICompatibleClient:
             messages,
             temperature=temperature,
             seed=seed,
+            reasoning_effort=reasoning_effort,
             json_mode=json_mode,
         )
 
@@ -306,6 +310,7 @@ class OpenAICompatibleClient:
         *,
         temperature: float | None = None,
         seed: int | None = None,
+        reasoning_effort: str | None = None,
         json_mode: bool = False,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
@@ -323,6 +328,7 @@ class OpenAICompatibleClient:
             messages,
             temperature=temperature,
             seed=seed,
+            reasoning_effort=reasoning_effort,
             json_mode=json_mode,
             tools=tools,
             tool_choice=tool_choice,
@@ -336,6 +342,7 @@ class OpenAICompatibleClient:
         tool_choice: str | None = None,
         temperature: float | None = None,
         seed: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> Completion:
         """Preserve native chat/tool messages for benchmark-owned simulators."""
         return await asyncio.to_thread(
@@ -343,6 +350,7 @@ class OpenAICompatibleClient:
             messages,
             temperature=temperature,
             seed=seed,
+            reasoning_effort=reasoning_effort,
             json_mode=False,
             tools=tools,
             tool_choice=tool_choice,
@@ -354,6 +362,7 @@ class OpenAICompatibleClient:
         *,
         temperature: float | None,
         seed: int | None,
+        reasoning_effort: str | None,
         json_mode: bool,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str | None = None,
@@ -374,11 +383,12 @@ class OpenAICompatibleClient:
         # the method under HARNESS_REASONING_EFFORT. The two parameters are not exclusive at
         # the API: gpt-5.6-terra accepted reasoning_effort=high with temperature=1.0 and five
         # such calls answered Octopus/Octopus/Otter/Elephant/Octopus, so the diversity is real.
-        if self.config.reasoning_effort:
-            payload["reasoning_effort"] = self.config.reasoning_effort
+        effective_reasoning_effort = reasoning_effort or self.config.reasoning_effort
+        if effective_reasoning_effort:
+            payload["reasoning_effort"] = effective_reasoning_effort
         if temperature is not None:
             payload["temperature"] = temperature
-        elif not self.config.reasoning_effort:
+        elif not effective_reasoning_effort:
             payload["temperature"] = self.config.temperature
         if seed is not None:
             payload["seed"] = seed

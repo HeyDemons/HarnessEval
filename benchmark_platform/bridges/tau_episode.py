@@ -23,6 +23,7 @@ TASK_SET_DOMAINS = {
 # relying on TextRunConfig defaults: the native product bridge constructs the config
 # itself, and a silent upstream/default drift would otherwise change measurement.
 TAU2_USER_TEMPERATURE = 0.0
+TAU2_USER_REASONING_EFFORT = "none"
 TAU2_SEED = 300
 TAU2_MAX_STEPS = 200
 
@@ -194,7 +195,11 @@ def _load_task(case_id: str):
     return task_set, matches[0]
 
 
-def _patch_tau_generation(client: CompletionClient) -> None:
+def _patch_tau_generation(
+    client: CompletionClient,
+    *,
+    user_reasoning_effort: str = TAU2_USER_REASONING_EFFORT,
+) -> None:
     from tau2.data_model.message import AssistantMessage, ToolCall
     from tau2.utils.llm_utils import to_litellm_messages
 
@@ -217,6 +222,11 @@ def _patch_tau_generation(client: CompletionClient) -> None:
             tool_choice=tool_choice,
             temperature=kwargs.get("temperature"),
             seed=kwargs.get("seed"),
+            reasoning_effort=(
+                user_reasoning_effort
+                if model == "harnesseval-hidden-user"
+                else None
+            ),
         )
         raw_message = completion.raw["choices"][0]["message"]
         parsed_calls = []
@@ -281,7 +291,12 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
     seed = int(policy.get("seed", TAU2_SEED))
     random.seed(seed)
     client = completion_client_from_env()
-    _patch_tau_generation(client)
+    _patch_tau_generation(
+        client,
+        user_reasoning_effort=str(
+            policy.get("native_user_reasoning_effort", TAU2_USER_REASONING_EFFORT)
+        ),
+    )
     task_set, task = _load_task(case_id)
     domain = TASK_SET_DOMAINS.get(task_set, task_set)
     agent_name = f"harnesseval_{uuid.uuid4().hex}"
