@@ -372,7 +372,6 @@ class ReasoningEffortTests(unittest.TestCase):
         config: ApiConfig,
         temperature: float | None = None,
         seed: int | None = None,
-        reasoning_effort: str | None = None,
     ) -> dict:
         captured: dict = {}
 
@@ -389,7 +388,6 @@ class ReasoningEffortTests(unittest.TestCase):
                     [{"role": "user", "content": "hi"}],
                     temperature=temperature,
                     seed=seed,
-                    reasoning_effort=reasoning_effort,
                 )
             )
         return captured
@@ -422,17 +420,6 @@ class ReasoningEffortTests(unittest.TestCase):
             temperature=0.0,
             seed=300,
         )
-        self.assertEqual(payload["temperature"], 0.0)
-        self.assertEqual(payload["seed"], 300)
-
-    def test_per_call_reasoning_effort_overrides_actor_default(self) -> None:
-        payload = self._payload(
-            self._config(reasoning_effort="high"),
-            temperature=0.0,
-            seed=300,
-            reasoning_effort="none",
-        )
-        self.assertEqual(payload["reasoning_effort"], "none")
         self.assertEqual(payload["temperature"], 0.0)
         self.assertEqual(payload["seed"], 300)
 

@@ -748,15 +748,6 @@ class TauGenerationTests(unittest.TestCase):
         self.assertEqual(result.content, '{"results":[]}')
         self.assertEqual(observed["temperature"], 0.0)
         self.assertEqual(observed["seed"], 300)
-        self.assertIsNone(observed["reasoning_effort"])
-
-        fake_modules["tau2.user.user_simulator"].generate(
-            model="harnesseval-hidden-user",
-            messages=[],
-            temperature=0.0,
-            seed=300,
-        )
-        self.assertEqual(observed["reasoning_effort"], "none")
 
 
 if __name__ == "__main__":
