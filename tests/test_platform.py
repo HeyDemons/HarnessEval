@@ -18,9 +18,7 @@ from benchmark_platform.engine import (
     docker_host_gateway_flags,
     docker_socket_source,
     terminal_agent_command,
-    terminal_phase_timeout_sec,
     terminal_result_outcome,
-    terminal_verifier_reserve_sec,
     required_path_check,
 )
 from benchmark_platform.scorers.gaia import question_score
@@ -129,22 +127,6 @@ class PlatformTests(unittest.TestCase):
             ),
             ("failed", "task_environment", "container did not start"),
         )
-
-    def test_terminal_arm_deadline_reserves_native_verifier_time(self) -> None:
-        with (
-            patch.dict(
-                os.environ,
-                {"TERMINAL_BENCH_VERIFIER_RESERVE_S": "120"},
-                clear=False,
-            ),
-            patch("benchmark_platform.engine.time.monotonic", return_value=100.0),
-        ):
-            reserve = terminal_verifier_reserve_sec(590.0)
-            effective = terminal_phase_timeout_sec(
-                900.0, 690.0, reserve_sec=reserve
-            )
-        self.assertEqual(reserve, 120.0)
-        self.assertEqual(effective, 470.0)
 
     def test_gaia_public_scorer_semantics(self) -> None:
         self.assertTrue(question_score("$1,234", "1234"))
