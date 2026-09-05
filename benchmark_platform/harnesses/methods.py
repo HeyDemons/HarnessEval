@@ -76,9 +76,21 @@ LABELLED_ACTION = re.compile(
     r"Action\s*\d*\s*:[\s]*(.*?)[\s]*Action\s*\d*\s*Input\s*\d*\s*:", flags=re.IGNORECASE | re.DOTALL
 )
 BARE_ACTION = re.compile(r"Action\s*:\s*([\w.-]+)", flags=re.IGNORECASE)
+OBSERVATION_STOP = re.compile(r"(?m)^[ \t]*Observation(?:[ \t]+\d+)?[ \t]*:")
+
+
+def _stop_react_observation(text: str) -> str:
+    """Do not consume model-authored observations as environment evidence.
+
+    A local stop also works with reasoning/Responses providers that do not
+    support stop sequences. Raw provider output and all usage stay in the trace.
+    """
+    match = OBSERVATION_STOP.search(text)
+    return text[:match.start()].rstrip() if match else text
 
 
 def _parse_react(text: str) -> dict[str, Any]:
+    text = _stop_react_observation(text)
     final = re.search(r"Final Answer\s*:\s*(.+)", text, flags=re.IGNORECASE | re.DOTALL)
     action = LABELLED_ACTION.search(text) or BARE_ACTION.search(text)
     if final and action:
@@ -150,6 +162,11 @@ async def run_react(ctx: RunContext) -> str:
     ]
     for _ in range(ctx.max_turns):
         raw = await ctx.complete("react", messages)
+        consumed = _stop_react_observation(raw)
+        if consumed != raw:
+            await ctx.trace.emit("react_observation_stop", implementation="local-output-stop-v1",
+                                 generated_characters=len(raw), consumed_characters=len(consumed))
+        raw = consumed
         try:
             action = _parse_react(raw)
         except (ValueError, json.JSONDecodeError) as exc:
