@@ -21,3 +21,4 @@ ARG SOURCE_REV
 LABEL org.orch.benchmark.source-revision="${SOURCE_REV}"
 ENV BFCL_PROJECT_ROOT=/opt/gorilla/berkeley-function-call-leaderboard
 WORKDIR /opt/gorilla/berkeley-function-call-leaderboard
+RUN pip install --no-cache-dir --retries 12 --timeout 60 sacrebleu==2.3.1

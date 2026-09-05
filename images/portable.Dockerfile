@@ -44,6 +44,8 @@ COPY drivers/toolset_probe.py /opt/platform/toolset_probe.py
 COPY benchmark_platform/scorers/gaia.py /opt/platform/gaia_scorer.py
 COPY drivers/web_search.py /usr/local/bin/web_search
 RUN chmod 0755 /usr/local/bin/web_search
+# DyLAN open-ended consensus must use its upstream BLEU implementation.
+RUN pip install --no-cache-dir --retries 12 --timeout 60 sacrebleu==2.3.1
 WORKDIR /work
 
 FROM core AS office

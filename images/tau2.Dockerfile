@@ -27,3 +27,4 @@ COPY drivers/toolset_probe.py /opt/platform/toolset_probe.py
 ENV PATH="/opt/tau2/.venv/bin:${PATH}"
 LABEL org.orch.benchmark.source-revision="${SOURCE_REV}"
 WORKDIR /opt/tau2
+RUN UV_INDEX_URL="${PIP_INDEX_URL}" uv pip install --python /opt/tau2/.venv/bin/python sacrebleu==2.3.1

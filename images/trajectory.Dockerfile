@@ -35,3 +35,4 @@ COPY drivers/portable_smoke.py /opt/platform/portable_smoke.py
 COPY drivers/toolset_probe.py /opt/platform/toolset_probe.py
 LABEL org.orch.benchmark.source-revision="${SOURCE_REV}"
 WORKDIR /opt/trajectory
+RUN pip install --no-cache-dir --retries 12 --timeout 60 sacrebleu==2.3.1

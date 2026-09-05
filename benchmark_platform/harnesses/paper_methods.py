@@ -5,7 +5,6 @@ import contextlib
 import json
 import random
 import re
-from collections import Counter
 from typing import Any
 
 from .core import RunContext, extract_json, json_safe, tool_result_content
@@ -77,6 +76,24 @@ async def run_aflow_custom_init(ctx: RunContext) -> str:
     return await _json_tool_loop(ctx, "aflow_custom_initialization")
 
 
+def _dylan_most_frequent(candidates: list[str]) -> tuple[str, int]:
+    # DyLAN 006e440, code/demo/LLMLP.py (open-ended cmp_res), utils.py
+    # (most_frequent) and prompt_lib.py (GEN_THRESHOLD=0.9). Compare each
+    # candidate against every answer; BLEU similarity is not transitive, so
+    # clustering or Counter would change the upstream vote and tie behavior.
+    from sacrebleu import sentence_bleu
+
+    answer, count = candidates[0], 0
+    for candidate in candidates:
+        frequency = sum(
+            sentence_bleu(candidate, [other], lowercase=True).score >= 90
+            for other in candidates
+        )
+        if frequency > count:
+            answer, count = candidate, frequency
+    return answer, count
+
+
 async def run_dylan(ctx: RunContext) -> str:
     """DyLAN's published text-agent network; it intentionally has no tool loop."""
     random.seed(0)
@@ -120,8 +137,7 @@ async def run_dylan(ctx: RunContext) -> str:
             # DyLAN's open-ended evaluator keeps each complete response as its candidate
             # (``ans_parser = lambda x: x``). Projecting it to the last number corrupts
             # compound GAIA answers such as ``7, 9`` and ``White;5876``.
-            votes = Counter(item.strip() for item in replies.values())
-            answer, count = votes.most_common(1)[0]
+            answer, count = _dylan_most_frequent(list(replies.values()))
             if count > (2 * len(active)) // 3:
                 await ctx.trace.emit("dylan_early_stop", round=round_id + 1, answer=answer)
                 return answer
@@ -155,8 +171,7 @@ async def run_dylan(ctx: RunContext) -> str:
                 active_agents=active,
                 active_roles=[roles[index] for index in active],
             )
-    votes = Counter(item.strip() for item in replies.values())
-    return votes.most_common(1)[0][0]
+    return _dylan_most_frequent(list(replies.values()))[0]
 
 
 async def run_multi_persona(ctx: RunContext) -> str:

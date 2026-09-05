@@ -27,3 +27,4 @@ COPY drivers/vitabench_smoke.py /opt/platform/vitabench_smoke.py
 COPY drivers/toolset_probe.py /opt/platform/toolset_probe.py
 LABEL org.orch.benchmark.source-revision="${SOURCE_REV}"
 WORKDIR /opt/vitabench
+RUN pip install --no-cache-dir --retries 12 --timeout 60 sacrebleu==2.3.1

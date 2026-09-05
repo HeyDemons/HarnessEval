@@ -14,3 +14,4 @@ COPY drivers/swebench_bridge.py /opt/platform/swebench_bridge.py
 ARG SOURCE_REV
 LABEL org.orch.benchmark.source-revision="${SOURCE_REV}"
 WORKDIR /job
+RUN pip install --no-cache-dir --retries 12 --timeout 60 sacrebleu==2.3.1
