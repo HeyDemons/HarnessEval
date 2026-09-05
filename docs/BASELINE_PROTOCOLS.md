@@ -133,3 +133,10 @@ lifecycle, no current batch benchmark is runnable for it. Its standalone
 model-value fallback is an adaptation; sequential proposal requests do not have
 the source's batched-sampling latency. Do not expose hidden gold to make it
 runnable or report these configurations as equivalent latency measurements.
+
+**Decision: LATS is temporarily not participating in the current batch.** Keep
+its profile and compatibility gates registered, but display its participation
+as N/A, not a zero score. Do not include it in the current effective comparison
+or denominator. Historical records remain intact and explicitly historical.
+A new read-only/snapshot-capable benchmark is separate future integration work,
+not part of this batch or a reason to relax the existing gate.

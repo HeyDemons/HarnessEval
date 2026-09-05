@@ -92,6 +92,8 @@ def compatibility_rows(
                     "tool_contract": profile.tool_contract,
                     "baseline_requirement": baseline_requirement,
                     "runnable": runnable,
+                    "participation_status": ("not_participating" if profile.id == "lats" and not runnable
+                                             else "eligible" if runnable else "incompatible"),
                     "publishable_score": False,
                 }
             )

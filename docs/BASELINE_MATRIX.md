@@ -12,7 +12,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | Plan-and-Execute | Dynamic | Minimal planner; sequential executors receive the original objective, previous steps and current objective (the source's optional include_task_in_prompt mode); last step response is returned |
 | CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
-| LATS | Dynamic branch-isolated | Published MCTS proposal, value, rollout, reflection, and backpropagation; requires read-only tools or environment snapshots |
+| LATS | Dynamic branch-isolated | **N/A — temporarily not participating** in the current batch; profile retained, no valid batch environment; historical records excluded from current comparisons |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
 | AFlow | No external tools (QA operators) | Frozen Python graph from a disjoint search; distinct Custom/AnswerGenerate and candidate-preserving ScEnsemble; see [artifact workflow](AFLOW_DYLAN.md) |
 | DyLAN | No external tools (text profile) | Frozen team from cross-query mean importance on a disjoint optimization split; evaluation performs only inference; see [configuration](AFLOW_DYLAN.md) |
