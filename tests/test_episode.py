@@ -562,6 +562,7 @@ class TauTurnLifecycleTests(unittest.TestCase):
             @staticmethod
             def metrics():
                 return {
+                    "agent_turns": 1,
                     "llm_calls": 1,
                     "prompt_tokens": 10,
                     "completion_tokens": 2,
@@ -653,6 +654,7 @@ class TauTurnLifecycleTests(unittest.TestCase):
                     self.assertIn("assistant: assistant turn 1", created[1].prompt)
                     self.assertIn("user: second detail", created[1].prompt)
                     self.assertEqual(result["llm_calls"], 2)
+                    self.assertEqual(result["agent_turns"], 2)
                     self.assertEqual(result["tool_calls"], 6)
                     self.assertEqual(configs[-1].llm_args_user, {"temperature": 0.0})
                     self.assertEqual(configs[-1].seed, 300)

@@ -366,6 +366,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
 
         def metrics(self) -> dict[str, int]:
             totals = {
+                "agent_turns": 0,
                 "llm_calls": 0,
                 "prompt_tokens": 0,
                 "completion_tokens": 0,
@@ -380,7 +381,10 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
             }
             for broker in self.brokers:
                 for name, value in broker.metrics().items():
-                    totals[name] += int(value)
+                    # RunContext may add a new counter without changing the
+                    # native adapter. Do not lose an already-scored simulation
+                    # during final metrics collection (e.g. agent_turns).
+                    totals[name] = totals.get(name, 0) + int(value)
             return totals
 
     registry.register_agent_factory(HarnessAgent, agent_name)
