@@ -28,7 +28,7 @@ class DyLANFidelityTests(unittest.IsolatedAsyncioTestCase):
         answer = "The answer is Paris because it is the capital city of France."
         trace = Trace()
         ctx = RunContext("dylan", "synthetic task", Client([answer, answer.lower(), answer]),
-                         ToolEnvironment([], trace), trace, {})
+                         ToolEnvironment([], trace), trace, {"dylan_team_optimization": False})
         self.assertEqual(await run_profile(ctx), answer)
         self.assertEqual(ctx.llm_calls, 3)
         self.assertTrue(any(x["event"] == "dylan_early_stop" for x in trace.events))
@@ -47,7 +47,7 @@ class DyLANFidelityTests(unittest.IsolatedAsyncioTestCase):
         a = "The answer is Paris because it is the capital city of France."
         trace = Trace()
         ctx = RunContext("dylan", "synthetic task", Client(["Berlin", a, a.lower(), "London"]),
-                         ToolEnvironment([], trace), trace, {"dylan_rounds": 1})
+                         ToolEnvironment([], trace), trace, {"dylan_rounds": 1, "dylan_team_optimization": False})
         self.assertEqual(await run_profile(ctx), a)
         self.assertEqual(ctx.llm_calls, 4)
         self.assertFalse(any(x["event"] == "dylan_early_stop" for x in trace.events))

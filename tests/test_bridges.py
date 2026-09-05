@@ -95,8 +95,8 @@ RESPONSES = {
         '{"score":1.0,"success":true,"feedback":"complete"}',
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
-    "aflow": ['{"final":"ok"}'],
-    "dylan": ["ok", "ok", "ok"],
+    "aflow": ["ok"],
+    "dylan": ["ok"] * 5,
     "magentic-one": [
         "facts",
         "plan",
@@ -1024,7 +1024,8 @@ class BridgeMatrixTests(unittest.TestCase):
             client = RecordingClient(list(RESPONSES[profile_id]))
             policy = {"max_turns": 4}
             if profile_id == "aflow":
-                policy["aflow_workflow"] = ["Custom"]
+                from benchmark_platform.harnesses.aflow import make_artifact
+                policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
             if profile_id == "lats":
                 policy.update(
                     {

@@ -9,13 +9,13 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | --- | --- | --- |
 | Actor-only | Dynamic | Shared JSON tool loop control |
 | ReAct | Dynamic | Published Thought/Action/Observation protocol |
-| Plan-and-Execute | Dynamic | Source-aligned minimal text planner; sequential executors receive only previous steps and the current objective; the last step response is returned |
+| Plan-and-Execute | Dynamic | Minimal planner; sequential executors receive the original objective, previous steps and current objective (the source's optional include_task_in_prompt mode); last step response is returned |
 | CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
 | LATS | Dynamic branch-isolated | Published MCTS proposal, value, rollout, reflection, and backpropagation; requires read-only tools or environment snapshots |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
-| AFlow | Dynamic frozen workflow | HarnessEval upstream executor: tool-using Custom/AnswerGenerate and ScEnsemble; `["Custom"]` alone remains an unoptimized initialization |
-| DyLAN | No external tools | Open-ended consensus and final voting use upstream sacrebleu 2.3.1 with lowercase sentence BLEU >= 90; no external tool loop |
+| AFlow | No external tools (QA operators) | Frozen Python graph from a disjoint search; distinct Custom/AnswerGenerate and candidate-preserving ScEnsemble; see [artifact workflow](AFLOW_DYLAN.md) |
+| DyLAN | No external tools (text profile) | Trial network, peer ratings, backward importance, team selection, fresh solving network; BLEU consensus; see [configuration](AFLOW_DYLAN.md) |
 | Magentic-One | Dynamic | Ledger, speaker selection, stall and replan topology |
 | Multi-Persona | No external tools | SPP profile protocol with two complete demonstrations, dynamic participant profiles, iterative criticism/revision, and one model call |
 | LLMCompiler | Dynamic | Dependency DAG with immediate scheduling after prerequisites finish, including embedded `$1`/`${1}` result substitution; uses the upstream-supported non-streaming planner mode; `max_replans` counts total planning passes |
@@ -42,9 +42,9 @@ applications.
 All 112 baseline x benchmark cells have an explicit lifecycle route, and each
 route is exercised by a scripted protocol subtest (56 single-turn, 28 native
 conversation, and 28 task-container). This proves bridge and tool-contract
-compatibility, not model task success. DyLAN and Multi-Persona are
-executed without external tools because their published methods do not define a
-tool loop; a tool-dependent task may therefore end in a normal capability
+compatibility, not model task success. The selected AFlow QA, DyLAN text and
+Multi-Persona profiles execute without external tools. This does not imply that
+all experiments in the DyLAN paper prohibit tools. A tool-dependent task may end in a normal capability
 failure. Exposing hidden user scenarios as prompts, replacing task containers
 with text questions, or silently giving either method a ReAct loop would produce
 an easier but invalid comparison.

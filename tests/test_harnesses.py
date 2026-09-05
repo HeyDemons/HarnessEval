@@ -972,29 +972,28 @@ class HarnessTests(unittest.TestCase):
             events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(sum(event["event"] == "memgpt_active_memory_summarized" for event in events), 1)
 
-    def test_aflow_frozen_custom_uses_tools(self) -> None:
+    def test_aflow_frozen_custom_preserves_plain_text_operator(self) -> None:
+        from benchmark_platform.harnesses.aflow import make_artifact
         answer, environment = self.run_profile(
             "aflow",
-            ['{"tool":"lookup","arguments":{"key":"alpha"}}', '{"final":"6"}'],
-            policy={"aflow_workflow": ["Custom"]},
+            ["6"],
+            policy={"aflow_artifact": make_artifact(), "aflow_allow_initialization": True},
         )
         self.assertEqual(answer, "6")
-        self.assertEqual(len(environment.calls), 1)
-        self.assertEqual(self.last_context.llm_calls, 2)
-        self.assertEqual(self.last_client.json_modes, [True, True])
+        self.assertEqual(len(environment.calls), 0)
+        self.assertEqual(self.last_context.llm_calls, 1)
+        self.assertEqual(self.last_client.json_modes, [False])
 
     def test_dylan_published_text_network_has_no_hidden_tool_loop(self) -> None:
-        answer, environment = self.run_profile("dylan", ["42", "42", "42"])
+        answer, environment = self.run_profile("dylan", ["42"] * 5)
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls, [])
         prompts = [messages[0]["content"] for messages in self.last_client.messages]
-        self.assertEqual(len(set(prompts)), 3)
-        self.assertTrue(any("Logical Solver" in prompt for prompt in prompts))
-        self.assertTrue(any("Critical Reviewer" in prompt for prompt in prompts))
-        self.assertTrue(any("Alternative Solver" in prompt for prompt in prompts))
+        self.assertEqual(len(prompts), 5)
+        self.assertTrue(all("AI assistant" in prompt for prompt in prompts))
 
     def test_dylan_preserves_complete_open_ended_candidate(self) -> None:
-        answer, _ = self.run_profile("dylan", ["7, 9", "7, 9", "7, 9"])
+        answer, _ = self.run_profile("dylan", ["7, 9"] * 5)
         self.assertEqual(answer, "7, 9")
 
     def test_multi_persona_published_single_model_protocol(self) -> None:

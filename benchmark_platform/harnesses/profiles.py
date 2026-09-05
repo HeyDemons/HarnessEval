@@ -106,18 +106,23 @@ PROFILES = (
         provenance="protocol-reproduction",
         source="https://github.com/FoundationAgents/AFlow",
         revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
-        tool_contract="dynamic-frozen-workflow",
-        notes="Evaluation executes a frozen operator graph; workflow optimization must use a separate training split.",
+        tool_contract="no-external-tools",
+        notes=("Executes frozen Python graphs with pinned AFlow HotpotQA Custom/AnswerGenerate/ScEnsemble operators. "
+               "Requires a disjoint optimization artifact; no automatic Custom fallback. Other dataset operators "
+               "and dynamic tool workflows require separate adapters."),
     ),
     HarnessProfile(
         id="dylan",
         name="DyLAN",
-        topology="dynamic text-agent network -> consensus/pruning",
+        topology="trial network -> backward importance -> team selection -> fresh task-solving network",
         provenance="protocol-reproduction",
         source="https://github.com/SALT-NLP/DyLAN",
         revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
         tool_contract="no-external-tools",
-        notes="The published topology has no external tool loop; tool-dependent failures are part of the baseline.",
+        notes=("Query-local team optimization and text inference with upstream BLEU consensus and peer ratings. "
+               "Defaults: four Assistant candidates, select two, three rounds per phase. This is the public text "
+               "protocol; the paper also includes separate tool-enabled experiments. dylan_team_optimization=False "
+               "is an explicitly recorded inference-only ablation."),
     ),
     HarnessProfile(
         id="magentic-one",

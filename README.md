@@ -14,7 +14,7 @@ envelopes while leaving task semantics, tools, and scoring with each benchmark.
   environments.
 - A portable harness request contract for user-supplied tools and
   OpenAI-compatible APIs.
-- Fourteen theory/control profiles, including LATS, MemGPT, the explicit AFlow Custom initialization control, DyLAN,
+- Fourteen theory/control profiles, including LATS, MemGPT, frozen AFlow Python workflows, DyLAN,
   Magentic-One, Multi-Persona, LLMCompiler, ReWOO, and Speculative Actions.
 - Atomic per-case results, append-only attempts, process locks, resume, and
   complete terminal/JSONL logs.
@@ -226,15 +226,13 @@ and tau keep the hidden user and mutable official environment outside the
 baseline. Terminal-Bench and SWE-bench give the baseline only the task
 workspace; verifier tests and reference solutions never enter its container.
 
-`aflow` uses HarnessEval upstream's frozen workflow executor: `Custom` and
-`AnswerGenerate` run tool-using agents, and `ScEnsemble` selects among candidates.
-Pass the frozen operator list in `policy.aflow_workflow`. The parent workspace's
-batch runner currently supplies `["Custom"]`, an unoptimized initialization;
-results with that policy must not be described as an optimized AFlow workflow.
-Optimized graphs must come from a disjoint optimization split. Historical
-`aflow-custom-init` records are not renamed or merged into the restored `aflow` arm.
-DyLAN and Multi-Persona intentionally receive no external tools because their
-published protocols do not define a tool loop. Multi-Persona uses a generic SPP
+`aflow` executes frozen Python workflows with the pinned QA operators and requires
+a disjoint optimization artifact. The workspace runner no longer supplies a
+single Custom fallback. `dylan` performs a preliminary network trial, importance
+backpropagation, team selection, and fresh text-network inference. See
+[algorithm configuration and artifact workflow](docs/AFLOW_DYLAN.md).
+These AFlow QA and DyLAN text profiles receive no external tools; DyLAN's paper
+also includes separate tool-enabled experiments. Multi-Persona uses a generic SPP
 profile prompt with two complete demonstrations rather than a schematic example.
 
 LATS preserves tree expansion over independent environment states. It runs only
