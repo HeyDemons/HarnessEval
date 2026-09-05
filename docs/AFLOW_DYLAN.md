@@ -25,8 +25,9 @@ operators and arbitrary dynamic tool workflows are not implemented by this
 adapter. The shared no-external-tools compatibility rules apply. Monetary cost
 is unknown (`None`); provider token usage is recorded by RunContext. The default
 operator budget is 100 calls, configurable as `aflow_max_operator_calls`; the
-outer benchmark deadline still applies. XML validation rejects missing fields
-rather than relying on upstream's permissive formatter defaults. Provider
+outer benchmark deadline still applies. XML parsing preserves upstream optional
+fields and extra parsed tags. Missing `thought` is allowed; graphs still fail if
+they access an absent `answer`, and invalid ensemble letters are errors. Provider
 transport retries use HarnessEval's configured retry policy.
 
 ### Offline search and freezing
@@ -37,10 +38,15 @@ uniform/softmax selection (`lambda=.3`, `alpha=.2` on scores multiplied by 100),
 LLM graph/prompt edits, repeated validation, parent-indexed success/failure
 experience, and final selection by mean validation score. Defaults are 20
 expansions, five validation repetitions, and four parent candidates. The search
-prompt adapts the official prompt to this API; automatic convergence stopping
-is not enabled. Syntax/format-invalid expansions consume a search round and
-are unscored. Provider or evaluator transport failures abort the search rather
-than being assigned a zero score.
+prompt adapts the official prompt to this API. Automatic convergence stopping
+uses the pinned defaults: top three means, z=0, five unchanged transitions.
+`--no-check-convergence` explicitly disables it. Empty or repeated modifications
+are regenerated within the same round, including parent reselection. Each reply,
+parent, rejection and provider usage is saved; retries do not consume rounds.
+`--max-generation-attempts` optionally bounds this loop; the default is unbounded
+as upstream, with cancellation controlled by the caller. Exhausting an explicit
+cap raises instead of freezing an incomplete search. Other syntax/graph-invalid
+expansions remain unscored rounds. Provider/evaluator failures abort the search.
 
 Example split manifest (IDs must come from actual separate splits):
 
@@ -69,7 +75,8 @@ The CLI itself never imports generated graphs and never loads answer keys.
 Its evaluator subprocess has a default 900-second timeout; an evaluator that
 starts containers owns their cleanup. Use unique output directories.
 
-Outputs include the search history, raw optimizer expansions, and `frozen.json`
+Outputs include the search history, per-attempt raw optimizer expansions,
+`generations.json`, and `frozen.json`
 with code checksum, source revision, split membership, selected round and score,
 and search-history checksum. An unchanged initialization can legitimately win
 a completed search; it is not silently labeled as an improvement. Split IDs
@@ -96,22 +103,49 @@ agent environment. Do not import them into a host evaluator with gold data.
 
 ## DyLAN
 
-The default `dylan` text profile now runs both stages from the COLM 2024 paper:
+Default `dylan` requires a frozen team from a disjoint optimization split. Each
+public optimization question runs one demo text network and backward pass.
+Importance sums across layers, then averages across optimization questions;
+stable top-k candidate IDs define a single team for the held-out split.
+Evaluation never runs a trial or selects agents using the current answer.
 
-1. A preliminary temporal network exchanges responses and 1–5 peer ratings.
-2. Incoming weights are normalized, terminal supporters receive equal mass,
-   and importance propagates backward; per-agent scores sum across layers.
-3. The top agents form a fresh solving network. Trial responses are not passed
-   into the new network.
+This is an open-ended text adapter of cross-query importance aggregation. It
+does not claim to implement the pinned MMLU subject/subset analysis scripts:
+those use fixed CLI roles, single-choice answers and offline subject analysis.
+No gold scorer is used for agent selection in this adapter.
 
-Defaults: four `Assistant` candidates (the public demo's role configuration),
-select two, three rounds per phase, temperature 1.0, and a run-local RNG seeded
-from `dylan_seed` or `seed` (default 0). `dylan_roles` accepts one pinned role
-name per candidate: Assistant, Mathematician, Programmer, Lawyer, Historian,
-Economist, Psychologist, Doctor. Set `dylan_agents`, `dylan_team_size`, and
-`dylan_rounds` explicitly when reproducing another configuration. This default
-is query-local team optimization, not a claim to use the paper's optimized
-MMLU subject teams.
+Use the split manifest above and a separate optimization file containing only
+public questions, for example `[{"id":"train-case-id","prompt":"Public question"}]`.
+Only id/prompt fields are accepted, and case IDs must exactly match the
+optimization split. Export the Harness provider configuration before running:
+
+```bash
+python -m benchmark_platform.harnesses.dylan_team \
+  --split-manifest split.json --optimization-cases public-questions.json \
+  --roles Assistant Programmer Mathematician Historian --team-size 2 \
+  --rounds 3 --seed 0 --output /path/to/new/team-directory
+```
+
+The directory contains per-question JSONL traces, `trials.json` and `team.json`.
+The team pins candidate roles, selected IDs, mean importance, rounds, seed,
+source/importance revisions, split membership and checksums. Public prompts
+must be sanitized by the caller; checksums establish identity, not proof of
+an externally supplied artifact's origin.
+
+The batch runner loads `HARNESS_DYLAN_TEAM` or a benchmark override such as
+`HARNESS_DYLAN_TEAM_GAIA` once per process. It rejects optimization overlap with
+the actual evaluation suite and checks coverage of selected cases before any
+model calls. Missing teams skip default sweeps; explicit `--methods dylan`
+fails preflight. Team identity is included in resume checks. Direct library
+requests must provide `dylan_team_artifact`, `dylan_benchmark`, `dylan_case_id`;
+candidate/round/seed overrides are rejected because the artifact is authoritative.
+
+The old per-query trial+solve remains the opt-in `dylan-query-local` profile,
+classified as a local adaptation. It defaults to four Assistant candidates,
+selects two, runs three rounds per phase, and uses temperature 1.0 and seed 0.
+Its policy accepts `dylan_agents`, `dylan_roles`, `dylan_team_size`,
+`dylan_rounds`, and `dylan_seed` (or `seed`). At defaults with no consensus early
+stop it uses 17 calls, not 22: 11 trial and 6 solve. Trial replies do not enter solve.
 
 The first two layers exchange all active responses. From the third layer,
 the listwise ranker selects two agents when more than two remain. Predecessor
@@ -127,9 +161,9 @@ active population required. Invalid rating lists use uniform incoming weights.
 Stable score ties are broken by original agent ID. The trace records effective
 configuration, nodes/edge weights, rank selections, importance and chosen team.
 
-`dylan_team_optimization=False` is an explicit inference-only ablation. It is
-used by low-level consensus tests; it is not the default baseline. This profile
-uses the public text protocol. The full paper also discusses tool nodes and
+Within `dylan-query-local`, `dylan_team_optimization=False` is an explicit
+inference-only ablation, used by low-level consensus tests. Both profiles
+use the public text protocol. The full paper also discusses tool nodes and
 reports separate code-interpreter/WebShop experiments; it is inaccurate to
 describe the entire DyLAN paper as prohibiting tools. Adding such tools to the
 existing arm would require a separately specified adapter and new identity.

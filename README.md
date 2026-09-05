@@ -228,8 +228,9 @@ workspace; verifier tests and reference solutions never enter its container.
 
 `aflow` executes frozen Python workflows with the pinned QA operators and requires
 a disjoint optimization artifact. The workspace runner no longer supplies a
-single Custom fallback. `dylan` performs a preliminary network trial, importance
-backpropagation, team selection, and fresh text-network inference. See
+single Custom fallback. `dylan` requires a team frozen from importance averaged
+over a disjoint optimization split; evaluation runs only that team's text network.
+`dylan-query-local` explicitly retains the per-query trial/selection/solve adaptation. See
 [algorithm configuration and artifact workflow](docs/AFLOW_DYLAN.md).
 These AFlow QA and DyLAN text profiles receive no external tools; DyLAN's paper
 also includes separate tool-enabled experiments. Multi-Persona uses a generic SPP

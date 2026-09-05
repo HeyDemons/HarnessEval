@@ -92,8 +92,26 @@ benchmarks are gated rather than substituting arbitrary API tools for code execu
 
 ## Other boundaries
 
+LLMCompiler now defaults to `llmcompiler_reference_mode="upstream"`: only declared
+dependencies are replaced, both `$1` and `${1}` are supported, and the replacement
+is `str(observation)`. A `.txt` suffix is literal, not a field selection. Dict
+values are traversed for the dynamic JSON tool adapter. The old typed field
+syntax is retained only as explicit `legacy-json-fields` policy and recorded
+in `llmcompiler_config`; it is a different dialect, not a compatibility superset.
+The batch runner selects upstream semantics and records a new measurement identity.
+
+AFlow XML operators preserve upstream optional fields. A missing `thought` is
+allowed; consuming a missing `answer` still fails in the graph. Search defaults
+to upstream convergence checking and regenerates repeated modifications in the
+same round, preserving rejected replies and their usage. See [search and frozen
+DyLAN teams](AFLOW_DYLAN.md) for configuration and split validation.
+
 DMAS retains its declared cold-start inference contract; no AgentNet training
-is added. Plan-and-Execute's original-objective option, SPP's generic examples,
+is added. Its LLM capability mapper and weighted entry selection differ from
+upstream's task-type capability map. ReWOO requires worker evidence assignments,
+uses JSON tool inputs and typed field references, and omits the brackets that
+upstream adds around substituted evidence strings. These are adapter boundaries.
+Plan-and-Execute's original-objective option, SPP's generic examples,
 LLMCompiler's non-streaming planner and SA's source-like waiting are declared
 configurations/adaptations, not modifications made in this correction.
 
