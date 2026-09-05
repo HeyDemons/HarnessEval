@@ -33,7 +33,19 @@ single-turn suite, not future stateful BFCL categories or native conversations.
 Reference: [Inspect Evals single-turn solver](https://github.com/UKGovernmentBEIS/inspect_evals/blob/ac481c7a7b4fb05d6befdfea59b47fc61b839a4f/src/inspect_evals/bfcl/solve/single_turn_solver.py).
 The reference informs generation/execution boundaries, not a replacement scorer.
 
-## ReAct text stop
+## ReAct protocols
+
+The workspace batch runner explicitly uses the native-tool adapter by default
+(`HARNESS_REACT_PROTOCOL=native`). The model selects one native action, receives
+the actual tool-result message, and submits its answer through a local
+react_finish control action. Multiple calls in one response are rejected before
+side effects to preserve serial interaction. The control action is not an
+environment tool and does not expose scores or gold. This follows Inspect's
+structured-message approach, not the original text parser.
+
+Use `HARNESS_REACT_PROTOCOL=text` to select the corrected textual profile. Direct
+library use retains text unless policy.react_protocol explicitly selects native.
+Both choices have distinct measurement identities in the batch runner.
 
 The text profile stops consuming output at the first line-level Observation:
 or numbered Observation n: marker, before parsing and before appending the

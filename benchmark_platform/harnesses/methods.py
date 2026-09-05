@@ -125,6 +125,12 @@ def _parse_react(text: str) -> dict[str, Any]:
 
 
 async def run_react(ctx: RunContext) -> str:
+    protocol = ctx.policy.get("react_protocol", "text")
+    if protocol == "native":
+        from .react_native import run_react_native
+        return await run_react_native(ctx)
+    if protocol != "text":
+        raise ValueError("react_protocol must be text or native")
     messages = [
         {
             "role": "system",

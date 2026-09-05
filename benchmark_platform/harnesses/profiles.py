@@ -34,8 +34,9 @@ PROFILES = (
         source="https://github.com/ysymyth/ReAct",
         revision="6bdb3a1fd38b8188fc7ba4102969fe483df8fdc9",
         tool_contract="dynamic",
-        notes=("Text ReAct uses a local Observation stop, preserving raw output/usage in the trace. "
-               "BFCL uses a one-response native declaration adapter; this is a distinct measurement protocol."),
+        notes=("Supports explicit native serial tools with a finish control action, or text ReAct with a local "
+               "Observation stop. The workspace batch runner selects native by default and records the protocol. "
+               "BFCL uses a separate one-response native declaration adapter."),
     ),
     HarnessProfile(
         id="plan-execute",

@@ -8,7 +8,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | Profile | Tool contract | Fidelity boundary |
 | --- | --- | --- |
 | Actor-only | Dynamic | Shared JSON tool loop control |
-| ReAct | Dynamic | Text protocol with a local Observation stop; native single-response adapter on BFCL |
+| ReAct | Dynamic | Batch default: native serial tool loop with explicit finish; optional text protocol with local Observation stop; separate single-response adapter on BFCL |
 | Plan-and-Execute | Dynamic | Minimal planner; sequential executors receive the original objective, previous steps and current objective (the source's optional include_task_in_prompt mode); last step response is returned |
 | CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |

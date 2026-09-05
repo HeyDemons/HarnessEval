@@ -250,7 +250,9 @@ publishable native score is available. See
 The current BFCL single-turn suite uses one native response for actor-only,
 ReAct and SA; multi-response algorithms are marked incompatible. Magentic-One
 now separates specialist tools and executes code without an Executor model
-call. See [baseline protocol corrections](docs/BASELINE_PROTOCOLS.md).
+call. The workspace batch runner defaults to native-tool ReAct outside BFCL;
+`HARNESS_REACT_PROTOCOL=text` selects the corrected legacy text protocol.
+See [baseline protocol corrections](docs/BASELINE_PROTOCOLS.md).
 
 ## Local Product CLIs
 
