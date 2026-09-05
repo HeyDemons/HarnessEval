@@ -1,4 +1,4 @@
-"""DyLAN text network, including query-local team optimization.
+"""DyLAN text network with frozen offline teams and an explicit query-local variant.
 
 Algorithm: COLM 2024, sections 3.3/3.4, equations 7 and 10--12.
 Protocol reference: SALT-NLP/DyLAN 006e440, code/demo. We fix its shuffled
@@ -94,7 +94,9 @@ class Node:
 
 def backward(layers: list[list[Node]], answer: str, population: int) -> list[float]:
     """Normalize terminal supporters, propagate weights, sum by stable agent id."""
-    supporters = [node for node in layers[-1] if equivalent(answer, node.reply)]
+    # The pinned backward pass treats each node's reply as the BLEU hypothesis.
+    # Unlike equality, reversing hypothesis/reference can cross the threshold.
+    supporters = [node for node in layers[-1] if equivalent(node.reply, answer)]
     # Identity is a valid vote even for an empty response (BLEU may be zero).
     if not supporters:
         supporters = [node for node in layers[-1] if node.reply == answer]
@@ -155,6 +157,25 @@ async def forward(ctx: RunContext, roles: list[str], active: list[int], rounds: 
 
 
 async def run_dylan(ctx: RunContext) -> str:
+    if ctx.profile == "dylan":
+        from .dylan_team import validate_team
+        benchmark, case_id = ctx.policy.get("dylan_benchmark"), ctx.policy.get("dylan_case_id")
+        if not isinstance(benchmark, str) or not benchmark or not isinstance(case_id, str) or not case_id:
+            raise ValueError("Frozen DyLAN requires dylan_benchmark and dylan_case_id")
+        artifact = validate_team(ctx.policy.get("dylan_team_artifact"), benchmark=benchmark, case_id=case_id)
+        overrides = set(ctx.policy) & {"dylan_agents", "dylan_roles", "dylan_rounds", "dylan_seed", "dylan_team_size",
+                                      "dylan_team_optimization"}
+        if overrides:
+            raise ValueError("Frozen DyLAN configuration comes from the artifact; remove policy overrides")
+        roles = [ROLE_PROMPTS[role] for role in artifact["candidate_roles"]]
+        await ctx.trace.emit("dylan_config", implementation="text-frozen-team-v1",
+                             artifact_sha256=artifact["artifact_sha256"], artifact=artifact,
+                             active_agents=artifact["selected_agents"], team_optimization=False)
+        answer, _ = await forward(ctx, roles, artifact["selected_agents"][:], artifact["rounds"],
+                                  random.Random(artifact["seed"]), "solve")
+        return answer
+    if ctx.profile != "dylan-query-local":
+        raise ValueError("Query-local DyLAN must use the explicit dylan-query-local profile")
     population = int(ctx.policy.get("dylan_agents", 4))
     rounds = int(ctx.policy.get("dylan_rounds", 3))
     if population < 1 or rounds < 1:
@@ -173,7 +194,7 @@ async def run_dylan(ctx: RunContext) -> str:
         raise ValueError("dylan_team_size must be between 1 and population")
     rng = random.Random(int(ctx.policy.get("dylan_seed", ctx.policy.get("seed", 0))))
     active = list(range(population))
-    await ctx.trace.emit("dylan_config", implementation="text-team-optimization-v1", roles=role_names,
+    await ctx.trace.emit("dylan_config", implementation="text-team-optimization-v2", roles=role_names,
                          rounds=rounds, team_size=team_size, team_optimization=optimize)
     if optimize:
         answer, layers = await forward(ctx, roles, active, rounds, rng, "trial")

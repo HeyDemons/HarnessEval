@@ -116,15 +116,26 @@ PROFILES = (
     HarnessProfile(
         id="dylan",
         name="DyLAN",
-        topology="trial network -> backward importance -> team selection -> fresh task-solving network",
+        topology="offline mean importance -> frozen team -> task-solving network",
         provenance="protocol-reproduction",
         source="https://github.com/SALT-NLP/DyLAN",
         revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
         tool_contract="no-external-tools",
-        notes=("Query-local team optimization and text inference with upstream BLEU consensus and peer ratings. "
-               "Defaults: four Assistant candidates, select two, three rounds per phase. This is the public text "
-               "protocol; the paper also includes separate tool-enabled experiments. dylan_team_optimization=False "
-               "is an explicitly recorded inference-only ablation."),
+        notes=("Requires a team frozen on a disjoint optimization split; evaluation only runs the selected text network. "
+               "Uses mean summed layer importance and stable top-k selection with demo BLEU consensus, not the MMLU "
+               "subject/subset selection scripts. The query-local variant has a separate profile."),
+    ),
+    HarnessProfile(
+        id="dylan-query-local",
+        name="DyLAN query-local adaptation",
+        topology="per-query trial -> backward importance -> fresh solve",
+        provenance="local-adaptation",
+        source="https://github.com/SALT-NLP/DyLAN",
+        revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
+        tool_contract="no-external-tools",
+        notes=("Explicit variant retaining per-query trial+solve, with four Assistant candidates, a two-agent team, "
+               "and three rounds per phase. dylan_team_optimization=False is an inference-only ablation. "
+               "Neither configuration is cross-query offline team optimization."),
     ),
     HarnessProfile(
         id="magentic-one",

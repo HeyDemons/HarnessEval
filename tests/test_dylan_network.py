@@ -18,10 +18,18 @@ class RecordingClient(Client):
 
 def context(replies, **policy):
     trace = Trace()
-    return RunContext("dylan", "Task", RecordingClient(replies), ToolEnvironment([], trace), trace, policy)
+    return RunContext("dylan-query-local", "Task", RecordingClient(replies), ToolEnvironment([], trace), trace, policy)
 
 
 class NetworkTests(unittest.IsolatedAsyncioTestCase):
+    def test_backward_uses_reply_as_bleu_hypothesis(self):
+        answer = " ".join(f"word{i}" for i in range(10))
+        longer = answer + " extra"
+        # BLEU(answer, longer)=90.48 but BLEU(longer, answer)=89.32.
+        # Only the exact-answer node supports this terminal result upstream.
+        layers = [[Node(0, answer), Node(1, longer)]]
+        self.assertEqual(backward(layers, answer, 2), [1.0, 0.0])
+
     def test_backward_propagates_edge_weights_and_sums_by_agent(self):
         layers = [[Node(0, "x"), Node(1, "y")],
                   [Node(0, "oak", {0: .75, 1: .25}), Node(1, "pine", {0: .1, 1: .9})]]
@@ -38,7 +46,7 @@ class NetworkTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(fallback)
             self.assertEqual(len(set(ranks)), 2)
 
-    async def test_default_optimizes_then_solves_without_trial_messages(self):
+    async def test_explicit_query_local_variant_solves_without_trial_messages(self):
         ctx = context(["trial-answer"] * 3 + ["solve-answer"] * 2)
         state = random.getstate()
         self.assertEqual(await run_dylan(ctx), "solve-answer")

@@ -27,7 +27,7 @@ class DyLANFidelityTests(unittest.IsolatedAsyncioTestCase):
     async def test_case_variants_reach_consensus_after_three_calls(self):
         answer = "The answer is Paris because it is the capital city of France."
         trace = Trace()
-        ctx = RunContext("dylan", "synthetic task", Client([answer, answer.lower(), answer]),
+        ctx = RunContext("dylan-query-local", "synthetic task", Client([answer, answer.lower(), answer]),
                          ToolEnvironment([], trace), trace, {"dylan_team_optimization": False})
         self.assertEqual(await run_profile(ctx), answer)
         self.assertEqual(ctx.llm_calls, 3)
@@ -46,7 +46,7 @@ class DyLANFidelityTests(unittest.IsolatedAsyncioTestCase):
     async def test_final_vote_also_uses_bleu(self):
         a = "The answer is Paris because it is the capital city of France."
         trace = Trace()
-        ctx = RunContext("dylan", "synthetic task", Client(["Berlin", a, a.lower(), "London"]),
+        ctx = RunContext("dylan-query-local", "synthetic task", Client(["Berlin", a, a.lower(), "London"]),
                          ToolEnvironment([], trace), trace, {"dylan_rounds": 1, "dylan_team_optimization": False})
         self.assertEqual(await run_profile(ctx), a)
         self.assertEqual(ctx.llm_calls, 4)

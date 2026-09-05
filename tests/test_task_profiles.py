@@ -11,7 +11,7 @@ from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnvironment
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import PROFILES
-from tests.test_episode import PROFILE_RESPONSES
+from tests.test_episode import PROFILE_RESPONSES, frozen_dylan_policy
 
 
 class RecordingClient:
@@ -65,6 +65,8 @@ class TaskProfileMatrixTests(unittest.TestCase):
                 else None
             )
             policy = {"max_turns": 4}
+            if profile_id == "dylan":
+                policy.update(frozen_dylan_policy(benchmark))
             if profile_id == "aflow":
                 from benchmark_platform.harnesses.aflow import make_artifact
                 policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)

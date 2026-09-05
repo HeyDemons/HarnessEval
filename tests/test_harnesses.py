@@ -937,7 +937,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.last_client.json_modes, [False])
 
     def test_dylan_published_text_network_has_no_hidden_tool_loop(self) -> None:
-        answer, environment = self.run_profile("dylan", ["42"] * 5)
+        answer, environment = self.run_profile("dylan-query-local", ["42"] * 5)
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls, [])
         prompts = [messages[0]["content"] for messages in self.last_client.messages]
@@ -945,7 +945,7 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(all("AI assistant" in prompt for prompt in prompts))
 
     def test_dylan_preserves_complete_open_ended_candidate(self) -> None:
-        answer, _ = self.run_profile("dylan", ["7, 9"] * 5)
+        answer, _ = self.run_profile("dylan-query-local", ["7, 9"] * 5)
         self.assertEqual(answer, "7, 9")
 
     def test_multi_persona_published_single_model_protocol(self) -> None:

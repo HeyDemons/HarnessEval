@@ -97,6 +97,7 @@ RESPONSES = {
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
     "aflow": ["ok"],
     "dylan": ["ok"] * 5,
+    "dylan-query-local": ["ok"] * 5,
     "magentic-one": [
         "facts",
         "plan",
@@ -758,6 +759,9 @@ class BridgeMatrixTests(unittest.TestCase):
             environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
             client = RecordingClient(list(RESPONSES[profile_id]))
             policy = {"max_turns": 4}
+            if profile_id == "dylan":
+                from tests.test_episode import frozen_dylan_policy
+                policy.update(frozen_dylan_policy(benchmark))
             if profile_id == "aflow":
                 from benchmark_platform.harnesses.aflow import make_artifact
                 policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)

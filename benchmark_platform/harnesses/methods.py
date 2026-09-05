@@ -345,6 +345,7 @@ async def run_profile(ctx: RunContext) -> str:
     extended = {
         "aflow": run_aflow,
         "dylan": run_dylan,
+        "dylan-query-local": run_dylan,
         "dmas": run_dmas,
         "magentic-one": run_magentic_one,
         "multi-persona": run_multi_persona,

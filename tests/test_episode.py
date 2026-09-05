@@ -57,6 +57,7 @@ PROFILE_RESPONSES = {
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
     "aflow": ["ok"],
     "dylan": ["ok"] * 5,
+    "dylan-query-local": ["ok"] * 5,
     "magentic-one": [
         "facts",
         "plan",
@@ -90,6 +91,14 @@ PROFILE_RESPONSES = {
     ],
     "sa": ['{"final":"ok"}'],
 }
+
+
+def frozen_dylan_policy(benchmark):
+    from benchmark_platform.harnesses.dylan_team import freeze_team
+    team = freeze_team([{"case_id": "train", "importance": [1, 1, 0, 0]}],
+                       {"benchmark": benchmark, "optimization_case_ids": ["train"], "evaluation_case_ids": ["case"]},
+                       roles=["Assistant"] * 4)
+    return {"dylan_team_artifact": team, "dylan_benchmark": benchmark, "dylan_case_id": "case"}
 
 
 class ScriptedClient:
@@ -147,6 +156,8 @@ class EpisodeBrokerTests(unittest.TestCase):
                     with self.subTest(benchmark=benchmark, profile=profile.id):
                         client = ScriptedClient(list(PROFILE_RESPONSES[profile.id]))
                         policy = {"max_turns": 4}
+                        if profile.id == "dylan":
+                            policy.update(frozen_dylan_policy(benchmark))
                         if profile.id == "aflow":
                             from benchmark_platform.harnesses.aflow import make_artifact
                             policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
