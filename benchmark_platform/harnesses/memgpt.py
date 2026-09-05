@@ -340,7 +340,10 @@ async def run_memgpt(ctx: RunContext) -> str:
             request_heartbeat = None
         try:
             result = await execute(function, function_arguments)
-            function_failed = False
+            # The benchmark transport packages raised exceptions and validation
+            # failures as ok=false. Upstream forces an error-handling heartbeat
+            # for failed function execution, regardless of request_heartbeat.
+            function_failed = isinstance(result, dict) and result.get("ok") is False
         except Exception as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
             function_failed = True
