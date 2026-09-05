@@ -219,10 +219,12 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
                                   "arguments": arguments if isinstance(arguments, str) else json.dumps(arguments)})
             else:
                 raise ValueError(f"Unsupported Responses message role: {role}")
+        system_instructions = "\n\n".join(instructions)
         body: dict[str, Any] = {
             "model": self.config.model, "input": items,
-            # Explicit whitespace is neutral, but avoids relay default instructions.
-            "instructions": "\n\n".join(instructions) or " ",
+            # The relay trims whitespace before choosing its default instructions.
+            # A minimal non-whitespace sentinel avoids an injected agent prompt.
+            "instructions": system_instructions if system_instructions.strip() else ".",
             "store": False, "stream": self.config.stream,
         }
         if self.config.reasoning_effort:

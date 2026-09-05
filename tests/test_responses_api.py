@@ -89,8 +89,14 @@ class ResponsesTests(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=Response(envelope())) as urlopen:
             client().complete_sync([{"role": "developer", "content": "policy"}, {"role": "user", "content": "hello"}])
         body = json.loads(urlopen.call_args.args[0].data)
-        self.assertEqual(body["instructions"], " ")
+        self.assertEqual(body["instructions"], ".")
         self.assertEqual(body["input"][0]["role"], "developer")
+
+    def test_whitespace_system_instructions_do_not_trigger_relay_defaults(self):
+        with patch("urllib.request.urlopen", return_value=Response(envelope())) as request:
+            client().complete_sync([{"role": "system", "content": " \n\t"},
+                                    {"role": "user", "content": "task"}])
+        self.assertEqual(json.loads(request.call_args.args[0].data)["instructions"], ".")
 
     def test_existing_json_in_input_needs_no_reminder(self):
         with patch("urllib.request.urlopen", return_value=Response(envelope())) as urlopen:

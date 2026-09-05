@@ -10,6 +10,9 @@ The client uses `/responses`, explicit top-level `instructions`, `store=false`,
 typed terminal stream events, and `text.format` for JSON mode. Never concatenate
 both deltas and done snapshots. Multiple text messages remain in generation
 order so the existing method-specific parser decides which action to execute.
+When a method has no system prompt, `instructions="."` is a neutral non-whitespace
+sentinel: the relay was observed replacing whitespace-only instructions with
+roughly 4,380 extra input tokens. Real system instructions remain unchanged.
 Hosted tools are not enabled: native function calls/results stay within the
 benchmark's bridge. Images remain typed content, not base64 text in prompts.
 
