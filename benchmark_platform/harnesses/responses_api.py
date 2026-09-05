@@ -101,6 +101,10 @@ def _stream_response(response: Any) -> dict[str, Any]:
         line = raw_line.decode("utf-8").rstrip("\r\n")
         if not line:
             event()
+            if terminal is not None:
+                # The terminal envelope is authoritative. Do not wait for a
+                # compatible server to close an otherwise idle HTTP stream.
+                return terminal
         elif line.startswith("data:"):
             data.append(line[5:].lstrip(" "))
     if data:

@@ -156,6 +156,13 @@ class ResponsesTests(unittest.TestCase):
         response = Response("\n".join("data: " + l for l in text.splitlines()).encode())
         self.assertEqual(_stream_response(response)["status"], "completed")
 
+    def test_completed_envelope_does_not_wait_for_http_eof(self):
+        def idle_after_completion():
+            yield ('data: ' + json.dumps({'type': 'response.completed', 'response': envelope()}) + '\n').encode()
+            yield b'\n'
+            raise TimeoutError('server kept the connection open')
+        self.assertEqual(_stream_response(idle_after_completion())["status"], "completed")
+
     def test_stream_failure_retry_and_missing_terminal(self):
         for failure in [stream({"type": "response.failed"}), stream({"type": "error"}),
                         stream({"type": "response.output_text.delta", "delta": "partial"})]:
