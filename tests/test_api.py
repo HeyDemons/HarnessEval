@@ -240,7 +240,8 @@ class NativeTransportTests(unittest.TestCase):
                             "input": {"query": "next"},
                         },
                     ],
-                    "usage": {"input_tokens": 5, "output_tokens": 7},
+                    "usage": {"input_tokens": 5, "output_tokens": 7,
+                              "cache_read_input_tokens": 100, "cache_creation_input_tokens": 20},
                 }
             )
 
@@ -261,6 +262,8 @@ class NativeTransportTests(unittest.TestCase):
             )
 
         self.assertEqual(observed["url"], "https://example.invalid/v1/messages")
+        self.assertEqual(completion.raw["anthropic_usage"]["cache_read_input_tokens"], 100)
+        self.assertEqual(completion.raw["anthropic_usage"]["cache_creation_input_tokens"], 20)
         self.assertEqual(observed["authorization"], "Bearer secret")
         self.assertEqual(observed["user_agent"], "HarnessEval/0.1")
         self.assertEqual(observed["payload"]["system"], "policy")

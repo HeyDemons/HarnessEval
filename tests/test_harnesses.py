@@ -175,6 +175,40 @@ class HarnessTests(unittest.TestCase):
             self.last_events = [json.loads(line) for line in trace_text.splitlines()]
             return answer, environment
 
+    def test_agent_turns_includes_completed_protocol_repair_responses(self) -> None:
+        # Three tool decisions plus the final answer, with one protocol repair in between:
+        # the repair is a completed Actor model turn too.
+        answer, environment = self.run_profile(
+            "actor-only",
+            [
+                '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                "not json at all",
+                '{"tool":"lookup","arguments":{"key":"beta"}}',
+                '{"tool":"multiply","arguments":{"a":6,"b":7}}',
+                '{"final":"42"}',
+            ],
+        )
+        self.assertEqual(answer, "42")
+        metrics = self.last_context.usage_metrics()
+        self.assertEqual(len(environment.calls), 3)
+        self.assertEqual(metrics["agent_turns"], 5)
+        self.assertEqual(metrics["llm_calls"], 5)
+
+    def test_agent_turns_counts_a_parallel_action_set_once(self) -> None:
+        # BFCL returns directly after its one response declares a parallel batch.
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace, declaration_only=True)
+            message = native_tool_call("lookup", {"key": "alpha"})
+            message["tool_calls"].append({"id": "call-2", "type": "function", "function": {
+                "name": "multiply", "arguments": '{"a":6,"b":7}'}})
+            context = RunContext(
+                "actor-only", "p", ScriptedClient([message]), environment, trace, {"max_turns": 8}
+            )
+            asyncio.run(run_profile(context))
+            self.assertEqual(len(environment.calls), 2)
+            self.assertEqual(context.agent_turns, 1)
+
     def test_actor_only_dynamic_tools(self) -> None:
         answer, environment = self.run_profile(
             "actor-only",

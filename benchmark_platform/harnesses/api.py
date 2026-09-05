@@ -727,6 +727,7 @@ class AnthropicMessagesClient:
         usage = raw.get("usage") or {}
         openai_raw = {
             **raw,
+            "anthropic_usage": dict(usage),
             "choices": [{"message": message, "finish_reason": stop_reason}],
             "usage": {
                 "prompt_tokens": int(usage.get("input_tokens") or 0),

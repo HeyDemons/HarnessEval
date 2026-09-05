@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from .api import Completion, CompletionClient
 from .content import ToolImage, json_safe, tool_result_content
+from ..measurement import TURN_DEFINITION, TOKEN_DEFINITION, METRICS_VERSION, add_tokens, normalize_usage, zero_tokens
 
 
 _ASSISTANT_RESPONSE_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -745,6 +746,11 @@ class RunContext:
         self.last_actor_response_id: int | None = None
         from ..budgets import ModelResponseBudget
         self.model_budget = ModelResponseBudget(policy.get("model_response_limit"))
+        self.channel_requests = {"actor": 0, "speculator": 0}
+        self.channel_tokens = {"actor": zero_tokens(), "speculator": zero_tokens()}
+        self.channel_usage_missing = {"actor": 0, "speculator": 0}
+        # A reporting turn is a completed Actor-channel model response, including
+        # planning/repair and its tool batch. Runtime budgets remain independent.
 
     @property
     def max_turns(self) -> int:
@@ -849,12 +855,14 @@ class RunContext:
             json_mode=json_mode,
             temperature=temperature,
         )
+        self.channel_requests[channel] += 1
         completion: Completion = await client.complete(
             messages,
             json_mode=json_mode,
             temperature=temperature,
         )
         self.llm_calls += 1
+        self._record_usage(channel, completion)
         if channel == "speculator":
             self.speculator_llm_calls += 1
             self.speculator_prompt_tokens += completion.prompt_tokens
@@ -921,6 +929,7 @@ class RunContext:
             tools=tools or [],
             tool_choice=tool_choice,
         )
+        self.channel_requests["actor"] += 1
         completion: Completion = await self.client.complete_native(
             messages,
             tools=tools,
@@ -928,6 +937,7 @@ class RunContext:
             temperature=temperature,
         )
         self.llm_calls += 1
+        self._record_usage("actor", completion)
         self.actor_llm_calls += 1
         response_id = self.llm_calls
         self.last_actor_response_id = response_id
@@ -951,9 +961,29 @@ class RunContext:
         )
         return completion
 
-    def usage_metrics(self) -> dict[str, int]:
+    @property
+    def agent_turns(self) -> int:
+        return self.actor_llm_calls
+
+    def _record_usage(self, channel: str, completion: Completion) -> None:
+        tokens, known = normalize_usage(completion.raw)
+        add_tokens(self.channel_tokens[channel], tokens)
+        self.channel_usage_missing[channel] += int(not known) + completion.transport_retries
+
+    def usage_metrics(self) -> dict[str, Any]:
+        coverage = {}
+        for channel, responses in (("actor", self.actor_llm_calls), ("speculator", self.speculator_llm_calls)):
+            missing = self.channel_usage_missing[channel] + max(0, self.channel_requests[channel] - responses)
+            coverage[channel] = {"usage_missing_requests": missing, "usage_complete": missing == 0}
         return {
+            "metrics_version": METRICS_VERSION,
+            "agent_turns_definition": TURN_DEFINITION,
+            "token_definition": TOKEN_DEFINITION,
+            "actor_tokens": dict(self.channel_tokens["actor"]),
+            "speculator_tokens": dict(self.channel_tokens["speculator"]),
+            "usage_coverage": coverage,
             "model_requests": self.model_budget.used,
+            "agent_turns": self.agent_turns,
             "llm_calls": self.llm_calls,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
