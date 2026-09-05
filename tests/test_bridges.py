@@ -106,7 +106,7 @@ RESPONSES = {
                 "is_progress_being_made": {"reason": "test", "answer": True},
                 "is_in_loop": {"reason": "test", "answer": False},
                 "instruction_or_question": {"reason": "test", "answer": "inspect"},
-                "next_speaker": {"reason": "test", "answer": "Executor"},
+                "next_speaker": {"reason": "test", "answer": "FileSurfer"},
             }
         ),
         "inspection complete",
@@ -816,7 +816,7 @@ class BridgeMatrixTests(unittest.TestCase):
                             {"requests": client.requests, "native_tools": client.native_tools},
                             ensure_ascii=False,
                         )
-                        if profile.tool_contract == "no-external-tools":
+                        if profile.tool_contract == "no-external-tools" or (profile.id == "magentic-one" and benchmark in {"bfcl", "trajectory-bench"}):
                             self.assertNotIn(tool_name, transcript)
                         else:
                             self.assertIn(tool_name, transcript)

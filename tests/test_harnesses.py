@@ -70,7 +70,7 @@ class ScriptedClient:
 def magentic_ledger(
     *,
     satisfied: bool,
-    speaker: str = "Executor",
+    speaker: str = "FileSurfer",
     instruction: str = "continue",
     progress: bool = True,
     in_loop: bool = False,
@@ -112,6 +112,11 @@ def tool_specs() -> list[ToolSpec]:
     ]
 
 
+def magentic_tool_specs() -> list[ToolSpec]:
+    original = tool_specs()[0]
+    return [ToolSpec("read_file", "read a file", original.parameters, original.command, read_only=True)]
+
+
 class HarnessTests(unittest.TestCase):
     def test_source_schema_aliases_are_normalized_recursively(self) -> None:
         source = {
@@ -146,7 +151,7 @@ class HarnessTests(unittest.TestCase):
     ) -> tuple[str, ToolEnvironment]:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            environment = ToolEnvironment(tool_specs(), trace)
+            environment = ToolEnvironment(magentic_tool_specs() if profile == "magentic-one" else tool_specs(), trace)
             speculator_client = (
                 ScriptedClient(speculator_responses)
                 if speculator_responses is not None
@@ -310,7 +315,10 @@ class HarnessTests(unittest.TestCase):
         names = {"web_search", "read_file", "list_files", "write_file", "run_command"}
         for role in expected_team:
             with self.subTest(role=role):
-                self.assertEqual(_magentic_worker_tools(role, names), sorted(names))
+                self.assertEqual(_magentic_worker_tools(role, names), {
+                    "FileSurfer": ["list_files", "read_file"], "WebSurfer": ["web_search"],
+                    "Coder": [], "Executor": ["run_command"],
+                }[role])
 
     def test_magentic_orchestrator_prompts_match_pinned_autogen_revision(self) -> None:
         from benchmark_platform.harnesses import magentic_one
@@ -961,10 +969,10 @@ class HarnessTests(unittest.TestCase):
                 "Use the executor",
                 magentic_ledger(
                     satisfied=False,
-                    speaker="Executor",
+                    speaker="FileSurfer",
                     instruction="look up alpha",
                 ),
-                native_tool_call("lookup", {"key": "alpha"}),
+                native_tool_call("read_file", {"key": "alpha"}),
                 magentic_ledger(satisfied=True),
                 "6",
             ],
@@ -973,7 +981,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(len(environment.calls), 1)
         self.assertEqual(
             self.last_client.native_tools[0][0]["function"]["name"],
-            "lookup",
+            "read_file",
         )
 
     def test_magentic_one_returns_to_ledger_after_each_participant_response(self) -> None:
@@ -987,7 +995,7 @@ class HarnessTests(unittest.TestCase):
                         satisfied=False,
                         instruction="retrieve alpha",
                     ),
-                    native_tool_call("lookup", {"key": "alpha"}),
+                    native_tool_call("read_file", {"key": "alpha"}),
                     magentic_ledger(
                         satisfied=False,
                         instruction="verify prior work",
@@ -1001,7 +1009,7 @@ class HarnessTests(unittest.TestCase):
                 "magentic-one",
                 "retrieve alpha",
                 client,
-                ToolEnvironment(tool_specs(), trace),
+                ToolEnvironment(magentic_tool_specs(), trace),
                 trace,
                 {"max_turns": 8},
             )
@@ -1019,16 +1027,16 @@ class HarnessTests(unittest.TestCase):
                 "orchestrator_facts",
                 "orchestrator_plan",
                 "orchestrator_ledger",
-                "Executor",
+                "FileSurfer",
                 "orchestrator_ledger",
-                "Executor",
+                "FileSurfer",
                 "orchestrator_ledger",
                 "orchestrator_final",
             ],
         )
         second_ledger = client.messages[4]
         transcript = json.dumps(second_ledger, ensure_ascii=False)
-        self.assertIn("lookup", transcript)
+        self.assertIn("read_file", transcript)
         self.assertIn("alpha", transcript)
 
     def test_magentic_invalid_speaker_retries_the_official_ledger(self) -> None:
@@ -1056,7 +1064,7 @@ class HarnessTests(unittest.TestCase):
                     ),
                     magentic_ledger(
                         satisfied=False,
-                        speaker="Executor",
+                        speaker="FileSurfer",
                         instruction="valid dispatch",
                     ),
                     "completed one participant turn",
@@ -1102,7 +1110,7 @@ class HarnessTests(unittest.TestCase):
                 "magentic-one",
                 "complete the task",
                 client,
-                ToolEnvironment(tool_specs(), trace),
+                ToolEnvironment(magentic_tool_specs(), trace),
                 trace,
                 {"magentic_max_rounds": 2},
             )
@@ -1156,7 +1164,7 @@ class HarnessTests(unittest.TestCase):
                 "magentic-one",
                 "complete the task",
                 client,
-                ToolEnvironment(tool_specs(), trace),
+                ToolEnvironment(magentic_tool_specs(), trace),
                 trace,
                 {"magentic_max_rounds": 4, "magentic_max_stalls": 2},
             )
@@ -1189,13 +1197,13 @@ class HarnessTests(unittest.TestCase):
                 {
                     "id": "bad-call",
                     "type": "function",
-                    "function": {"name": "lookup", "arguments": "{bad"},
+                    "function": {"name": "read_file", "arguments": "{bad"},
                 }
             ],
         }
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            environment = ToolEnvironment(tool_specs(), trace)
+            environment = ToolEnvironment(magentic_tool_specs(), trace)
             client = ScriptedClient(
                 [
                     "facts",
@@ -1246,7 +1254,7 @@ class HarnessTests(unittest.TestCase):
                     "id": "lookup-call",
                     "type": "function",
                     "function": {
-                        "name": "lookup",
+                        "name": "read_file",
                         "arguments": '{"key":"alpha"}',
                     },
                 },
@@ -1261,12 +1269,12 @@ class HarnessTests(unittest.TestCase):
                     message_schema,
                     ("/bin/false",),
                 ),
-                tool_specs()[0],
+                magentic_tool_specs()[0],
             ]
             environment = ToolEnvironment(
                 tools,
                 trace,
-                {"send_message_to_user": handler, "lookup": handler},
+                {"send_message_to_user": handler, "read_file": handler},
             )
             client = ScriptedClient(
                 [

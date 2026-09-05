@@ -8,7 +8,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | Profile | Tool contract | Fidelity boundary |
 | --- | --- | --- |
 | Actor-only | Dynamic | Shared JSON tool loop control |
-| ReAct | Dynamic | Published Thought/Action/Observation protocol |
+| ReAct | Dynamic | Text protocol with a local Observation stop; native single-response adapter on BFCL |
 | Plan-and-Execute | Dynamic | Minimal planner; sequential executors receive the original objective, previous steps and current objective (the source's optional include_task_in_prompt mode); last step response is returned |
 | CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
@@ -16,7 +16,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
 | AFlow | No external tools (QA operators) | Frozen Python graph from a disjoint search; distinct Custom/AnswerGenerate and candidate-preserving ScEnsemble; see [artifact workflow](AFLOW_DYLAN.md) |
 | DyLAN | No external tools (text profile) | Trial network, peer ratings, backward importance, team selection, fresh solving network; BLEU consensus; see [configuration](AFLOW_DYLAN.md) |
-| Magentic-One | Dynamic | Ledger, speaker selection, stall and replan topology |
+| Magentic-One | Workspace specialists | Ledger topology, separate file/web tools, tool-free Coder and non-LLM code Executor |
 | Multi-Persona | No external tools | SPP profile protocol with two complete demonstrations, dynamic participant profiles, iterative criticism/revision, and one model call |
 | LLMCompiler | Dynamic | Dependency DAG with immediate scheduling after prerequisites finish, including embedded `$1`/`${1}` result substitution; uses the upstream-supported non-streaming planner mode; `max_replans` counts total planning passes |
 | ReWOO | Dynamic | Source Plan/#E protocol; plan all calls first, execute explicit sequential Evidence Workers (dynamic tools or LLM worker), then solve from the complete evidence log |
@@ -49,12 +49,10 @@ failure. Exposing hidden user scenarios as prompts, replacing task containers
 with text questions, or silently giving either method a ReAct loop would produce
 an easier but invalid comparison.
 
-LATS is marked non-runnable for benchmark lifecycles that do not expose a
-branch snapshot/restore contract. It can run directly on verified all-read-only
-toolsets, currently the BFCL declaration bridge. TRAJECT's remote endpoints lack
-an auditable idempotence contract and remain gated. Executing
-several mutating branches in one shared environment would not be LATS and is
-therefore rejected.
+BFCL single-turn accepts actor-only, ReAct, SA and text-only SPP. Multi-response
+methods are gated instead of truncated or merged into one response. LATS also
+lacks a branch-safe environment on the other batch benchmarks, so there is
+currently no runnable batch benchmark for it. See [protocol corrections](BASELINE_PROTOCOLS.md).
 
 The generic harness does not expose hidden benchmark answers to a baseline
 during execution. LATS therefore uses its language-model value evaluations for

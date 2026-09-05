@@ -34,7 +34,8 @@ PROFILES = (
         source="https://github.com/ysymyth/ReAct",
         revision="6bdb3a1fd38b8188fc7ba4102969fe483df8fdc9",
         tool_contract="dynamic",
-        notes="Reproduces the published interleaved reasoning/action protocol with runtime tool schemas.",
+        notes=("Text ReAct uses a local Observation stop, preserving raw output/usage in the trace. "
+               "BFCL uses a one-response native declaration adapter; this is a distinct measurement protocol."),
     ),
     HarnessProfile(
         id="plan-execute",
@@ -134,9 +135,9 @@ PROFILES = (
         tool_contract="dynamic",
         notes=(
             "Pins AutoGen's task/progress prompts, validated selected-speaker, stall/replan, "
-            "one-response participant boundary and max-round finalization. Every participant "
-            "receives the complete dynamic toolset selected by the benchmark bridge; these "
-            "tools replace the upstream browser/file/terminal implementations."
+            "one-response participant boundary and max-round finalization. FileSurfer has file-reading tools, "
+            "WebSurfer has web tools, Coder writes code without tools, and Executor runs scripts without an LLM. "
+            "Workspace tools replace upstream browser/file backends; this is not the full AutoGen application."
         ),
     ),
     HarnessProfile(

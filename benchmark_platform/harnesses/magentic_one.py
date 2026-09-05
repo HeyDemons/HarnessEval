@@ -182,15 +182,15 @@ WORKER_ROLES = (
             "A helpful and general-purpose AI assistant that has strong language skills, "
             "Python skills, and Linux command line skills."
         ),
-        ("run_command",),
+        (),
     ),
     (
         "Executor",
         (
-            "A computer terminal and action executor that carries out permitted tool calls "
-            "for the team."
+            "A code executor that runs fenced Python or sh scripts supplied by the team, "
+            "without making model calls."
         ),
-        (),
+        ("run_command",),
     ),
 )
 
@@ -226,16 +226,15 @@ def _magentic_team(_names: set[str]) -> dict[str, str]:
     return {role: description for role, description, _required in WORKER_ROLES}
 
 
-def _magentic_worker_tools(_role: str, names: set[str]) -> list[str]:
-    """Give every participant the complete toolset selected by the benchmark bridge.
-
-    Magentic-One contributes the multi-agent topology and ledger protocol.  Its upstream
-    browser, file, and terminal implementations are not portable benchmark contracts, so the
-    same benchmark-native tools exposed to the other tool-using baselines are made available
-    to every selected participant.
-    """
-
-    return sorted(names)
+def _magentic_worker_tools(role: str, names: set[str]) -> list[str]:
+    """Preserve specialist responsibilities using existing workspace tools."""
+    capabilities = {
+        "FileSurfer": {"read_file", "list_files", "search_files"},
+        "WebSurfer": {"web_search", "web_browser", "browse_web", "fetch_url"},
+        "Coder": set(),
+        "Executor": {"run_command"},
+    }
+    return sorted(names & capabilities[role])
 
 
 def _team_description(workers: dict[str, str]) -> str:
@@ -365,6 +364,12 @@ async def _participant_turn(
     speaker: str,
     thread: list[dict[str, str]],
 ) -> str:
+    if speaker == "Executor":
+        from .code_executor import execute_code
+        response = await execute_code(ctx, thread)
+        await ctx.trace.emit("magentic_participant_response", speaker=speaker,
+                             kind="code_execution", content=response)
+        return response
     allowed_names = _magentic_worker_tools(speaker, set(ctx.environment.names))
     tools = _native_tool_schemas(ctx, allowed_names)
     completion = await ctx.complete_native(
@@ -562,10 +567,8 @@ async def _final_answer(
 async def run_magentic_one(ctx: RunContext) -> str:
     """Run the pinned Magentic-One ledger/participant state machine.
 
-    The benchmark bridge supplies the same complete dynamic toolset to every participant in
-    place of AutoGen's fixed browser/file/terminal implementations. The collaboration boundary
-    is unchanged: one selected participant publishes one response, and the orchestrator
-    updates its progress ledger before any participant can act again.
+    Workspace tools replace AutoGen's browser/file backends. Specialist tool
+    responsibilities remain distinct; Executor runs code without an LLM call.
     """
 
     workers = _magentic_team(set(ctx.environment.names))
@@ -599,6 +602,7 @@ async def run_magentic_one(ctx: RunContext) -> str:
         )
     ]
     stalls = 0
+    executor_cursor = 0
     max_rounds = int(ctx.policy.get("magentic_max_rounds", 20))
     max_stalls = int(ctx.policy.get("magentic_max_stalls", 3))
     if max_rounds < 1 or max_stalls < 1:
@@ -650,6 +654,7 @@ async def run_magentic_one(ctx: RunContext) -> str:
                 facts=facts,
                 plan=plan,
             )
+            executor_cursor = 0
             continue
 
         speaker = str(ledger["next_speaker"]["answer"])
@@ -661,7 +666,9 @@ async def run_magentic_one(ctx: RunContext) -> str:
             speaker=speaker,
             instruction=instruction,
         )
-        response = await _participant_turn(ctx, speaker, thread)
+        response = await _participant_turn(ctx, speaker, thread[executor_cursor:] if speaker == "Executor" else thread)
         thread.append(_message(speaker, response))
+        if speaker == "Executor":
+            executor_cursor = len(thread)
 
     return await _final_answer(ctx, thread, "Max rounds reached.")

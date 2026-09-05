@@ -247,6 +247,11 @@ the lifecycle bridge exists; it does not mean the case succeeded or that a
 publishable native score is available. See
 [the baseline matrix](docs/BASELINE_MATRIX.md).
 
+The current BFCL single-turn suite uses one native response for actor-only,
+ReAct and SA; multi-response algorithms are marked incompatible. Magentic-One
+now separates specialist tools and executes code without an Executor model
+call. See [baseline protocol corrections](docs/BASELINE_PROTOCOLS.md).
+
 ## Local Product CLIs
 
 HarnessEval can drive an installed Pi CLI without copying the user's Pi home or
