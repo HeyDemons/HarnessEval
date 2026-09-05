@@ -747,6 +747,10 @@ class AnthropicMessagesClient:
 def _completion_client(config: ApiConfig, *, variable: str) -> CompletionClient:
     if config.api_type == "openai-completions":
         return OpenAICompatibleClient(config)
+    if config.api_type == "openai-responses":
+        from .responses_api import OpenAIResponsesClient
+
+        return OpenAIResponsesClient(config)
     if config.api_type == "anthropic-messages":
         return AnthropicMessagesClient(config)
     raise RuntimeError(f"Unsupported {variable}: {config.api_type}")
