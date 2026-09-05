@@ -182,13 +182,16 @@ async def run_llmcompiler(ctx: RunContext) -> str:
     reference_mode = ctx.policy.get("llmcompiler_reference_mode", "upstream")
     if reference_mode not in {"upstream", "legacy-json-fields"}:
         raise ValueError("llmcompiler_reference_mode must be upstream or legacy-json-fields")
-    await ctx.trace.emit("llmcompiler_config", implementation="declared-text-references-v2",
+    await ctx.trace.emit("llmcompiler_config", implementation="inferred-text-references-v3",
+                         dependency_mode="arguments-plus-declared" if reference_mode == "upstream" else "declared-only",
                          reference_mode=reference_mode, max_planning_passes=max_planning_passes)
     reference_instructions = (
-        "Reference a declared dependency's complete observation with $1 or ${1}. "
+        "Reference an earlier task's complete observation with $1 or ${1}. "
+        "Earlier numeric references automatically create dependencies; use dependencies for additional ordering constraints. "
         "References insert str(observation), even when they occupy the whole argument. "
         "Suffixes are literal text: $1.txt appends .txt; field/index selection is not supported. "
         if reference_mode == "upstream" else
+        "List all prerequisite task IDs in dependencies. "
         "Legacy JSON-field references: use $1 or ${1} for a complete observation, "
         "$1.result.field or $1.result[0] for a JSON field. Whole references preserve JSON types; "
         "embedded references insert text. Dot suffixes are field paths, not literal filenames. "
@@ -216,7 +219,7 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                         f"Available tools: {ctx.environment.schema}\n"
                         'Return JSON: {"tasks":[{"id":"1","tool":"name","arguments":{},'
                         '"dependencies":[]}]}.\n'
-                        "Use unique positive integer task ids. List all prerequisite task ids in dependencies. "
+                        "Use unique positive integer task ids. "
                         + reference_instructions
                         + "Never guess an observation that a prerequisite tool must supply.\n"
                         f"Task: {ctx.prompt}{planner_context}"
@@ -233,6 +236,21 @@ async def run_llmcompiler(ctx: RunContext) -> str:
             for index, item in enumerate(tasks, start=1)
             if isinstance(item, dict)
         }
+        dependency_graph = {}
+        for task_id, item in pending.items():
+            declared = item.get("dependencies", [])
+            inferred = []
+            effective = declared
+            if reference_mode == "upstream":
+                from .compiler_references import infer_dependencies
+                inferred = infer_dependencies(task_id, item.get("arguments") or {})
+                # Keep explicit ordering constraints from the dynamic JSON planner.
+                # Compute once, before any tool can start; substitution and readiness
+                # must consume exactly the same effective dependency list.
+                effective = [str(dep) for dep in sorted({int(dep) for dep in [*declared, *inferred]})]
+            pending[task_id] = {**item, "dependencies": effective}
+            dependency_graph[task_id] = {"declared": declared, "inferred": inferred, "effective": effective}
+        await ctx.trace.emit("llmcompiler_dependencies", cycle=cycle, tasks=dependency_graph)
         results: dict[str, Any] = {}
         async def execute(task_id: str, item: dict[str, Any]) -> tuple[str, Any]:
             name = item.get("tool")

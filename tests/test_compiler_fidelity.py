@@ -7,7 +7,7 @@ from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.paper_methods import _resolve_reference
-from benchmark_platform.harnesses.compiler_references import resolve_arguments
+from benchmark_platform.harnesses.compiler_references import infer_dependencies, resolve_arguments
 
 
 class Trace:
@@ -38,6 +38,65 @@ def make_context(tasks, handlers):
 
 
 class CompilerFidelityTests(unittest.IsolatedAsyncioTestCase):
+    def test_infers_pinned_numeric_references_in_nested_arguments(self):
+        self.assertEqual(infer_dependencies("11", {"q": "${1}.txt", "nested": ["$10", "$HOME", "${PATH}", "$11", "$12", "$0"]}),
+                         ["1", "10"])
+        self.assertEqual(infer_dependencies("11", {"q": "$10"}), ["10"])
+
+    async def test_missing_dependencies_wait_and_substitute_without_serializing_unrelated_work(self):
+        for dependency_field in ({}, {"dependencies": []}):
+            with self.subTest(dependency_field=dependency_field):
+                producer_started, release_producer = asyncio.Event(), asyncio.Event()
+                unrelated_started, release_unrelated = asyncio.Event(), asyncio.Event()
+                successor_started = asyncio.Event()
+                received = []
+
+                async def producer(args):
+                    producer_started.set()
+                    await release_producer.wait()
+                    return "report"
+
+                async def unrelated(args):
+                    unrelated_started.set()
+                    await release_unrelated.wait()
+                    return "unrelated"
+
+                async def successor(args):
+                    received.append(args)
+                    successor_started.set()
+                    return "done"
+
+                ctx = make_context([
+                    {"id": "1", "tool": "producer"},
+                    {"id": "2", "tool": "unrelated"},
+                    {"id": "3", "tool": "successor", "arguments": {"q": "read ${1}.txt"}, **dependency_field},
+                ], {"producer": producer, "unrelated": unrelated, "successor": successor})
+                task = asyncio.create_task(run_profile(ctx))
+                try:
+                    await asyncio.wait_for(asyncio.gather(producer_started.wait(), unrelated_started.wait()), 1)
+                    self.assertEqual(received, [])
+                    release_producer.set()
+                    await asyncio.wait_for(successor_started.wait(), 1)
+                    self.assertFalse(task.done())
+                    self.assertEqual(received, [{"q": "read {'ok': True, 'result': 'report'}.txt"}])
+                    event = next(e for e in ctx.trace.events if e["event"] == "llmcompiler_dependencies")
+                    self.assertEqual(event["tasks"]["3"], {"declared": [], "inferred": ["1"], "effective": ["1"]})
+                finally:
+                    release_producer.set()
+                    release_unrelated.set()
+                    await task
+
+    async def test_explicit_ordering_edges_are_retained_in_effective_graph(self):
+        async def lookup(args):
+            return "done"
+        ctx = make_context([
+            {"id": "1", "tool": "lookup"}, {"id": "2", "tool": "lookup"},
+            {"id": "3", "tool": "lookup", "arguments": {"q": "$1"}, "dependencies": [2]},
+        ], {"lookup": lookup})
+        await run_profile(ctx)
+        event = next(e for e in ctx.trace.events if e["event"] == "llmcompiler_dependencies")
+        self.assertEqual(event["tasks"]["3"], {"declared": [2], "inferred": ["1"], "effective": ["1", "2"]})
+
     def test_upstream_preserves_literal_suffixes_and_string_types(self):
         results = {"1": "report", "10": {"ok": True}}
         self.assertEqual(resolve_arguments("read $1.txt ${1}.csv", [1], results),

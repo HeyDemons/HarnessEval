@@ -19,7 +19,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | DyLAN query-local | No external tools (local adaptation) | Explicit `dylan-query-local` variant: per-query trial, importance, selection and fresh solve; not offline team optimization |
 | Magentic-One | Workspace specialists | Ledger topology, separate file/web tools, tool-free Coder and non-LLM code Executor |
 | Multi-Persona | No external tools | SPP profile protocol with two complete demonstrations, dynamic participant profiles, iterative criticism/revision, and one model call |
-| LLMCompiler | Dynamic | Immediate dependency-ready scheduling; declared `$1`/`${1}` references insert str(observation) with literal suffixes; legacy JSON-field dialect requires explicit policy; non-streaming planner; `max_replans` counts total planning passes |
+| LLMCompiler | Dynamic | Dependencies inferred from predecessor `$1`/`${1}` references plus explicit ordering edges; scheduling and text substitution share the effective graph; literal suffixes; legacy dialect requires explicit policy; non-streaming planner |
 | ReWOO | Dynamic | Source Plan/#E protocol; plan all calls first, execute explicit sequential Evidence Workers (dynamic tools or LLM worker), then solve from the complete evidence log |
 | SA | Dynamic read-only speculation | Independent `HARNESS_SA_MODEL` predicts top-k safe actions concurrently on every Actor turn; only an exact Actor match commits a pre-executed read |
 

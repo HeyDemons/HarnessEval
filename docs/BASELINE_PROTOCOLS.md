@@ -92,13 +92,25 @@ benchmarks are gated rather than substituting arbitrary API tools for code execu
 
 ## Other boundaries
 
-LLMCompiler now defaults to `llmcompiler_reference_mode="upstream"`: only declared
-dependencies are replaced, both `$1` and `${1}` are supported, and the replacement
-is `str(observation)`. A `.txt` suffix is literal, not a field selection. Dict
+LLMCompiler defaults to `llmcompiler_reference_mode="upstream"`. Before scheduling,
+it scans serialized argument text with the pinned numeric-reference regex and
+infers positive predecessor IDs smaller than the current task ID. Both `$1` and
+`${1}` infer dependency 1; `$10` does not infer dependency 1. Explicit JSON-planner
+dependencies remain additional ordering constraints (a declared adapter extension).
+Their union is computed once and used by both readiness and substitution. Missing
+or empty dependencies therefore cannot launch a referenced task prematurely.
+`llmcompiler_dependencies` records declared, inferred and effective edges; the
+raw plan remains unchanged in the trace. The replacement is `str(observation)`.
+A `.txt` suffix is literal, not a field selection. Dict
 values are traversed for the dynamic JSON tool adapter. The old typed field
 syntax is retained only as explicit `legacy-json-fields` policy and recorded
 in `llmcompiler_config`; it is a different dialect, not a compatibility superset.
-The batch runner selects upstream semantics and records a new measurement identity.
+The legacy dialect retains explicit-only dependencies. The batch runner selects
+upstream semantics and records `inferred-text-references-v3`; v2 measurements
+cannot silently resume under this change. References outside the pinned positive
+predecessor range are not inferred, rather than inventing forward-reference support.
+
+Reference: [pinned dependency parser](https://github.com/SqueezeAILab/LLMCompiler/blob/a00c9d35507507da70e8c637eee64efc8c1857ae/src/llm_compiler/output_parser.py).
 
 AFlow XML operators preserve upstream optional fields. A missing `thought` is
 allowed; consuming a missing `answer` still fails in the graph. Search defaults
