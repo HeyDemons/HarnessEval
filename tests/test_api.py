@@ -362,6 +362,50 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(speculator.config.timeout_seconds, 91)
         self.assertTrue(speculator.config.stream)
 
+    def test_speculator_effort_off_sends_no_reasoning_effort(self) -> None:
+        actor = OpenAICompatibleClient(
+            ApiConfig(
+                "https://actor.invalid/v1",
+                "actor-secret",
+                "actor-model",
+                reasoning_effort="high",
+            )
+        )
+        # Unset inherits the actor, which is the only behaviour that existed before.
+        with patch.dict("os.environ", {"HARNESS_SA_MODEL": "fast"}, clear=True):
+            self.assertEqual(
+                sa_speculator_client_from_env(actor).config.reasoning_effort, "high"
+            )
+        # "off" means no reasoning_effort at all, not a literal value sent to the API.
+        with patch.dict(
+            "os.environ",
+            {"HARNESS_SA_MODEL": "fast", "HARNESS_SA_REASONING_EFFORT": "OFF"},
+            clear=True,
+        ):
+            self.assertIsNone(
+                sa_speculator_client_from_env(actor).config.reasoning_effort
+            )
+        # Any other value still passes through untouched.
+        with patch.dict(
+            "os.environ",
+            {"HARNESS_SA_MODEL": "fast", "HARNESS_SA_REASONING_EFFORT": "minimal"},
+            clear=True,
+        ):
+            self.assertEqual(
+                sa_speculator_client_from_env(actor).config.reasoning_effort, "minimal"
+            )
+
+    def test_actor_effort_off_sends_no_reasoning_effort(self) -> None:
+        environment = {
+            "HARNESS_API_BASE": "https://actor.invalid/v1",
+            "HARNESS_API_KEY": "secret",
+            "HARNESS_MODEL": "actor-model",
+        }
+        with patch.dict("os.environ", {**environment, "HARNESS_REASONING_EFFORT": "off"}, clear=True):
+            self.assertIsNone(completion_client_from_env().config.reasoning_effort)
+        with patch.dict("os.environ", {**environment, "HARNESS_REASONING_EFFORT": "high"}, clear=True):
+            self.assertEqual(completion_client_from_env().config.reasoning_effort, "high")
+
 
 if __name__ == "__main__":
     unittest.main()

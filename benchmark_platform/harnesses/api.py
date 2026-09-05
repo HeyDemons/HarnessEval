@@ -16,6 +16,21 @@ from .content import ToolImage
 RETRYABLE_HTTP_STATUS = {408, 409, 424, 425, 429}
 
 
+def _reasoning_effort(value: str, *, default: str | None = None) -> str | None:
+    """Resolve a reasoning-effort environment value.
+
+    An empty value keeps the caller's default, which for the SA speculator is the actor's
+    setting. The literal "off" is not an API value: it means send no reasoning_effort at all,
+    matching PERSEUS_SPECULATOR_THINKING=off, so a speculator can be configured lighter than
+    its actor instead of only inheriting or naming another effort level.
+    """
+
+    effort = value.strip()
+    if not effort:
+        return default
+    return None if effort.lower() == "off" else effort
+
+
 @dataclass(frozen=True)
 class ApiConfig:
     base_url: str
@@ -55,7 +70,7 @@ class ApiConfig:
             max_output_tokens=int(raw_max) if raw_max else None,
             api_type=os.getenv("HARNESS_API_TYPE", "openai-completions").strip() or "openai-completions",
             api_auth=os.getenv("HARNESS_API_AUTH", "x-api-key").strip().lower() or "x-api-key",
-            reasoning_effort=os.getenv("HARNESS_REASONING_EFFORT", "").strip() or None,
+            reasoning_effort=_reasoning_effort(os.getenv("HARNESS_REASONING_EFFORT", "")),
             stream=os.getenv("HARNESS_API_STREAM", "1").strip() not in {"0", "false", "no"},
             user_agent=(
                 os.getenv("HARNESS_API_USER_AGENT", "").strip()
@@ -113,9 +128,9 @@ class ApiConfig:
                 os.getenv("HARNESS_SA_API_AUTH", "").strip().lower()
                 or actor.api_auth
             ),
-            reasoning_effort=(
-                os.getenv("HARNESS_SA_REASONING_EFFORT", "").strip()
-                or actor.reasoning_effort
+            reasoning_effort=_reasoning_effort(
+                os.getenv("HARNESS_SA_REASONING_EFFORT", ""),
+                default=actor.reasoning_effort,
             ),
             stream=(
                 actor.stream
