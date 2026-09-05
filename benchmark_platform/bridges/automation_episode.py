@@ -108,6 +108,7 @@ class AutomationEpisode:
 
 
 async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *, episode=None, client=None):
+    arm_started = time.monotonic()
     profile = get_profile(profile_id)
     job.mkdir(parents=True, exist_ok=True)
     episode = episode or AutomationEpisode(case_id)
@@ -123,8 +124,15 @@ async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *,
               "bridge": episode.metadata, "policy": policy}
     started = time.monotonic()
     try:
-        deadline = float(os.environ.get("HARNESS_ARM_TIMEOUT_S", "890"))
-        result["final_answer"] = await asyncio.wait_for(run_profile(context), deadline)
+        deadline = float(policy.get("automationbench_arm_timeout_s", os.environ.get("HARNESS_ARM_TIMEOUT_S", "890")))
+        reserve = float(policy.get("automationbench_finalize_grace_s", 10))
+        # Dataset materialization can be expensive. It must consume the same
+        # outer arm budget, leaving time to persist the native assertion score
+        # before the host watchdog removes the container.
+        remaining = deadline - (time.monotonic() - arm_started) - reserve
+        if remaining <= 0:
+            raise TimeoutError
+        result["final_answer"] = await asyncio.wait_for(run_profile(context), remaining)
     except ProviderError as error:
         result.update(status="failed", failure_kind="provider_error", error=str(error))
     except TimeoutError:
@@ -145,6 +153,7 @@ async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *,
         result.update(status="failed", failure_kind="verifier_error", native_score_status="infra_failed",
                       error=f"Native assertion scorer failed: {type(error).__name__}: {error}")
     result.update(execution_seconds=time.monotonic() - started, tool_calls=len(environment.calls), **context.usage_metrics())
+    result.update(setup_seconds=started - arm_started, total_episode_seconds=time.monotonic() - arm_started)
     write_json(job / "harness_result.json", result)
     write_json(job / "payload.json", result)
     return result

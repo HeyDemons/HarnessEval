@@ -1,7 +1,9 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from benchmark_platform.bridges.automation_episode import api_specs, public_prompt, run_episode
 from benchmark_platform.harnesses.api import Completion, ProviderError
@@ -61,6 +63,22 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(order, ["provider_failed", "scorer"])
             self.assertEqual(result["failure_kind"], "provider_error")
             self.assertIsNone(result["native_score"])
+
+    async def test_dataset_setup_consumes_arm_budget_and_scoring_still_persists(self):
+        order = []
+        def initialize(case_id):
+            time.sleep(0.03)
+            return FakeEpisode(order)
+        with tempfile.TemporaryDirectory() as tmp, patch(
+            "benchmark_platform.bridges.automation_episode.AutomationEpisode", side_effect=initialize
+        ):
+            result = await run_episode("actor-only", "sales:1",
+                {"automationbench_arm_timeout_s": 0.01, "automationbench_finalize_grace_s": 0},
+                Path(tmp), client=Client(order))
+            self.assertEqual(order, ["scorer"])
+            self.assertEqual(result["failure_kind"], "agent_timeout")
+            self.assertTrue((Path(tmp) / "official_score.json").exists())
+            self.assertEqual(result["llm_calls"], 0)
 
     def test_prompt_does_not_render_private_state_or_assertions(self):
         row = {"prompt": [{"role": "user", "content": "public task"}], "info": {"assertions": "PRIVATE_ASSERTION", "initial_state": "PRIVATE_WORLD"}}
