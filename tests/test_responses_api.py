@@ -211,13 +211,15 @@ class ResponsesTests(unittest.TestCase):
         self.assertEqual(parts[1], {"type": "input_image", "image_url": image.data_uri, "detail": "auto"})
         self.assertNotIn(image.data_uri, json.dumps(messages))
 
-    def test_temperature_preserved_and_seed_not_silently_discarded(self):
+    def test_temperature_preserved_and_unsupported_seed_explicitly_recorded(self):
         with patch("urllib.request.urlopen", return_value=Response(envelope())) as request:
             client(reasoning_effort="high").complete_sync([{"role": "user", "content": "hi"}], temperature=0)
         self.assertEqual(json.loads(request.call_args.args[0].data)["temperature"], 0)
-        with patch("urllib.request.urlopen") as request, self.assertRaisesRegex(ValueError, "provider seed"):
-            client().complete_sync([{"role": "user", "content": "hi"}], seed=42)
-        request.assert_not_called()
+        with patch("urllib.request.urlopen", return_value=Response(envelope())) as request, self.assertWarnsRegex(RuntimeWarning, "provider seed"):
+            result = client().complete_sync([{"role": "user", "content": "hi"}], seed=42)
+        self.assertNotIn("seed", json.loads(request.call_args.args[0].data))
+        self.assertEqual(result.raw["responses_request"]["provider_seed_requested"], 42)
+        self.assertFalse(result.raw["responses_request"]["provider_seed_applied"])
 
     def test_invalid_roles_and_hosted_tools_rejected(self):
         for messages, tools in [([{"role": "unexpected", "content": "hi"}], None),

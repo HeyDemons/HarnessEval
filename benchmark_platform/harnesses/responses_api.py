@@ -15,6 +15,7 @@ import time
 from typing import Any
 import urllib.error
 import urllib.request
+import warnings
 
 from .api import (
     ApiConfig, Completion, OpenAICompatibleClient, ProviderError,
@@ -178,7 +179,10 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
 
     def _request(self, messages, *, temperature, seed, json_mode, tools, tool_choice):
         if seed is not None:
-            raise ValueError("The Responses API does not support a provider seed; native episode seeds remain separate")
+            warnings.warn(
+                "Responses does not support provider seed; the requested value is recorded but not sent. "
+                "Native episode seeds are unchanged.", RuntimeWarning, stacklevel=2,
+            )
         visible = _chat_messages(messages)
         instructions, items = [], []
         for index, message in enumerate(visible):
@@ -277,6 +281,8 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
             retries += 1
             time.sleep(2 ** (retries - 1))
         message = raw["choices"][0]["message"]
+        raw["responses_request"] = {"provider_seed_requested": seed, "provider_seed_applied": False,
+                                    "store": False, "explicit_instructions": True}
         if not json_mode and original.get("status") == "completed":
             # Match the entire visible prefix as well as the assistant response:
             # concurrent branches/hidden-user calls cannot borrow one another's state.

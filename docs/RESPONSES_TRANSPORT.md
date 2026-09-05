@@ -21,8 +21,10 @@ retains input/cache/output fields, but never stores encrypted reasoning payloads
 
 Some relays require the word JSON in input rather than instructions. When JSON
 mode is requested and input lacks it, a neutral `Return JSON.` format reminder is
-added at serialization only. Provider `seed` is unsupported and rejected rather
-than silently ignored; Tau2's native episode seed remains independently configured.
+added at serialization only. Provider `seed` is unsupported: the client warns and
+records `responses_request.provider_seed_requested` with `provider_seed_applied=false`,
+without sending an unsupported API field. Tau2's native episode seed remains
+independently configured and applied; this is not provider-level seeded equivalence.
 
 The protocol is part of measurement identity. Do not silently combine latency or
 token measurements across Chat Completions and Responses, nor treat endpoint
