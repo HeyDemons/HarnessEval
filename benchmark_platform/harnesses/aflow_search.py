@@ -19,6 +19,7 @@ from typing import Awaitable, Callable
 
 from .aflow import REVISION, digest, make_artifact, validate_artifact
 from .api import completion_client_from_env
+from .artifact_provenance import provider_identity
 
 
 def selection_probabilities(scores: list[float]) -> list[float]:
@@ -179,6 +180,7 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
         "validation_score": best["score"], "selected_round": best["round"],
         "search_history_sha256": digest(history), "optimizer": "aflow-score-mixture-python-v2",
         "generations_sha256": digest(generations), "generation_calls": len(generations),
+        "optimization_config": provider_identity(client),
         "seed": seed, "rounds": rounds, "validation_rounds": validation_rounds, "sample": sample,
         "completed_rounds": len(history) - 1, "check_convergence": check_convergence,
         "stop_reason": "converged" if check_convergence and stopped["converged"] else "round_budget",

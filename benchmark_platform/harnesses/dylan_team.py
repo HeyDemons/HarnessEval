@@ -17,6 +17,7 @@ import random
 
 from .aflow import digest
 from .aflow_search import validate_split
+from .artifact_provenance import provider_identity
 from .core import JsonlTrace, RunContext, ToolEnvironment
 from .dylan import ROLE_PROMPTS, backward, forward
 
@@ -34,7 +35,7 @@ def validate_config(roles: list[str], team_size: int, rounds: int, seed: int) ->
 
 
 def freeze_team(records: list[dict], split: dict, *, roles: list[str], team_size: int = 2,
-                rounds: int = 3, seed: int = 0) -> dict:
+                rounds: int = 3, seed: int = 0, optimization_config: dict | None = None) -> dict:
     validate_split(split)
     validate_config(roles, team_size, rounds, seed)
     if not isinstance(records, list) or len(records) != len(split["optimization_case_ids"]):
@@ -55,6 +56,7 @@ def freeze_team(records: list[dict], split: dict, *, roles: list[str], team_size
                 **{key: split[key] for key in ("benchmark", "optimization_case_ids", "evaluation_case_ids")},
                 "candidate_roles": roles, "selected_agents": selected, "importance_scores": scores,
                 "rounds": rounds, "seed": seed, "trials_sha256": digest(records),
+                "optimization_config": optimization_config or {"kind": "external-importance-records"},
                 "selection": "mean-layer-importance-top-k-stable-id"}
     artifact["artifact_sha256"] = digest(artifact)
     return artifact
@@ -118,10 +120,12 @@ async def optimize_team(client, cases: list[dict], split: dict, output: Path, *,
                                        rounds, rng, "optimization")
         scores = backward(layers, answer, len(roles))
         records.append({"case_id": case_id, "importance": scores, "llm_calls": ctx.llm_calls,
+                        "prompt_tokens": ctx.prompt_tokens, "completion_tokens": ctx.completion_tokens,
                         "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest()})
         await trace.emit("dylan_optimization_importance", **records[-1])
         (output / "trials.json").write_text(json.dumps(records, indent=2) + "\n")
-    artifact = freeze_team(records, split, roles=roles, team_size=team_size, rounds=rounds, seed=seed)
+    artifact = freeze_team(records, split, roles=roles, team_size=team_size, rounds=rounds, seed=seed,
+                           optimization_config=provider_identity(client))
     validate_team(artifact)
     (output / "team.json").write_text(json.dumps(artifact, indent=2) + "\n")
     return artifact

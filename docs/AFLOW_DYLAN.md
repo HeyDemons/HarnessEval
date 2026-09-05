@@ -83,6 +83,12 @@ a completed search; it is not silently labeled as an improvement. Split IDs
 and checksums make provenance reviewable, but are not cryptographic proof of
 how an externally supplied artifact was produced.
 
+Both offline optimizers also record the model, reasoning, stream and request
+configuration, with only a hash of the endpoint and no API credentials. DyLAN
+trial records include token usage; AFlow generation records include rejected
+attempt usage. An external importance table explicitly has unreported provider
+provenance unless its caller supplies configuration.
+
 The workspace batch runner reads `HARNESS_AFLOW_ARTIFACT` or a benchmark-specific
 override such as `HARNESS_AFLOW_ARTIFACT_GAIA`. It validates the benchmark and
 case membership, embeds the artifact in the agent request, and records its
