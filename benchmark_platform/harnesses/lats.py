@@ -64,7 +64,7 @@ class _SearchMemory:
     failures: list[str] = field(default_factory=list)
     failure_answers: set[str] = field(default_factory=set)
     reflections: list[dict[str, str]] = field(default_factory=list)
-    value_cache: dict[str, tuple[float, str]] = field(default_factory=dict)
+    value_cache: dict[str, tuple[float, bool, str]] = field(default_factory=dict)
 
 
 def _select_node(root: _Node) -> _Node | None:
@@ -201,8 +201,7 @@ async def _value(
 ) -> tuple[float, bool, str]:
     trajectory = node.trajectory(ctx.prompt)
     if trajectory in memory.value_cache:
-        score, feedback = memory.value_cache[trajectory]
-        return score, False, feedback
+        return memory.value_cache[trajectory]
     prompt = (
         "Evaluate this LATS trajectory. Judge whether a final answer, if present, fully solves the task and score "
         "the trajectory's progress from 0 to 1.\n"
@@ -226,8 +225,9 @@ async def _value(
         feedback.append(str(evaluation.get("feedback", "")))
     mean_score = sum(scores) / len(scores)
     joined_feedback = "\n".join(feedback)
-    memory.value_cache[trajectory] = (mean_score, joined_feedback)
-    return mean_score, successes > len(scores) / 2, joined_feedback
+    result = (mean_score, successes > len(scores) / 2, joined_feedback)
+    memory.value_cache[trajectory] = result
+    return result
 
 
 def _remember_failure(ctx: RunContext, node: _Node, feedback: str, memory: _SearchMemory) -> None:
