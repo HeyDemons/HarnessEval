@@ -91,7 +91,8 @@ def _backpropagate(node: _Node, reward: float) -> None:
 
 
 def _candidate_key(candidate: dict[str, Any]) -> str:
-    return json.dumps(candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    action = {key: value for key, value in candidate.items() if key != "assistant_response_id"}
+    return json.dumps(action, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _unique_failures(memory: _SearchMemory, limit: int) -> list[str]:
@@ -177,6 +178,7 @@ async def _propose(
                 "tool": str(candidate["tool"]),
                 "arguments": arguments,
             }
+        normalized["assistant_response_id"] = ctx.last_actor_response_id
         candidates.append(normalized)
         await ctx.trace.emit(
             "lats_sample",
@@ -298,7 +300,8 @@ async def _expand(
             # (BFCL) would otherwise score every candidate the search went on to reject.
             # Only the returned trajectory is published, by _commit_path.
             observation, call_record = await ctx.environment.call_isolated(
-                action["tool"], action["arguments"]
+                action["tool"], action["arguments"],
+                assistant_response_id=candidate["assistant_response_id"],
             )
             child = _Node(
                 parent=node,

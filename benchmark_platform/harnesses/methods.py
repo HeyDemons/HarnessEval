@@ -292,6 +292,12 @@ async def run_cmas(ctx: RunContext) -> str:
 
 
 async def run_profile(ctx: RunContext) -> str:
+    if ctx.environment.declaration_only:
+        from .declaration import SINGLE_TURN_PROFILES, run_declaration
+        if ctx.profile not in SINGLE_TURN_PROFILES:
+            raise ValueError(f"{ctx.profile} requires a multi-response agent protocol; BFCL single-turn is incompatible")
+        if ctx.profile != "multi-persona":
+            return await run_declaration(ctx)
     if ctx.profile == "actor-only":
         return await _json_tool_loop(ctx, "actor")
     if ctx.profile == "react":

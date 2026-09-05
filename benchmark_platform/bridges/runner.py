@@ -72,7 +72,7 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         trace,
         effective_policy,
         speculator_client=(
-            sa_speculator_client_from_env(client) if profile_id == "sa" else None
+            sa_speculator_client_from_env(client) if profile_id == "sa" and benchmark != "bfcl" else None
         ),
     )
     _write(job / "bridge_manifest.json", {"benchmark": benchmark, "case_id": case_id, "profile": profile_id, "tool_schemas": [tool.prompt_schema() for tool in bridge.tools], "metadata": bridge.metadata})
@@ -100,11 +100,11 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             result["trajectory_calls"] = _published_calls(environment)
     except Exception as exc:
         error = f"{type(exc).__name__}: {exc}"
-        if benchmark == "bfcl" and environment.declaration_committed:
+        if benchmark == "bfcl" and environment.declaration_committed and isinstance(exc, DeclarationOnlyComplete):
             # BFCL scores the declared calls themselves. Some multi-turn profiles have a
             # stricter terminal protocol than BFCL's one-response lifecycle. Once the first
-            # call-bearing assistant response is committed, the benchmark is complete and a
-            # later internal profile step cannot add to or erase that batch.
+            # assistant response is committed, an expected lifecycle stop completes
+            # the measurement. Unexpected parsing/runtime errors remain failures.
             expected_stop = isinstance(exc, DeclarationOnlyComplete)
             result = {
                 "schema_version": 1,
@@ -157,6 +157,12 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             if benchmark == "trajectory-bench":
                 result["trajectory_calls"] = _published_calls(environment)
             await trace.emit("bridge_error", error=result["error"])
+    if benchmark == "bfcl":
+        result["committed_calls"] = environment.committed_calls
+        result["declaration_protocol"] = "native-single-response-v1"
+        result["committed_response_id"] = environment.declaration_response_id
+        result["environment_calls"] = 0
+        result["agent_turns"] = 1 if environment.declaration_committed else 0
     _write(job / "harness_result.json", result)
     return result
 

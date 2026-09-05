@@ -396,6 +396,18 @@ class ToolEnvironment:
         return self._declaration_committed
 
     @property
+    def declaration_response_id(self) -> int | None:
+        return self._committed_response_id
+
+    def commit_declaration_response(self, response_id: int) -> None:
+        """Freeze the first assistant response, including an empty call batch."""
+        if self.declaration_only:
+            if self._declaration_committed and response_id != self._committed_response_id:
+                raise DeclarationOnlyComplete("The first declaration response is already committed")
+            self._declaration_committed = True
+            self._committed_response_id = response_id
+
+    @property
     def committed_calls(self) -> list[dict[str, Any]]:
         if not self.declaration_only or not self._declaration_committed:
             return []
@@ -488,7 +500,7 @@ class ToolEnvironment:
             finally:
                 # A failed mutating tool may have applied a partial side effect. Treat
                 # every invocation as a state boundary; invalid arguments never enter.
-                await self._leave_exclusive(mutated=not tool.read_only)
+                await self._leave_exclusive(mutated=not tool.read_only and not self.declaration_only)
         record = {
             "name": name,
             "arguments": arguments,
@@ -508,6 +520,7 @@ class ToolEnvironment:
         arguments: dict[str, Any],
         *,
         event_prefix: str = "lats",
+        assistant_response_id: int | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Execute one read-only search-branch call without publishing it as an answer.
 
@@ -524,8 +537,14 @@ class ToolEnvironment:
             raise ValueError(f"Cannot isolate unknown tool {name!r}")
         if not tool.read_only:
             raise ValueError(f"Cannot isolate mutating tool {name!r}")
-        await self.trace.emit(f"{event_prefix}_tool_request", name=name, arguments=arguments)
-        record = await self._execute_isolated_read_only_call(tool, arguments)
+        token = _ASSISTANT_RESPONSE_ID.set(assistant_response_id) if assistant_response_id is not None else None
+        try:
+            await self.trace.emit(f"{event_prefix}_tool_request", name=name, arguments=arguments,
+                                  assistant_response_id=_ASSISTANT_RESPONSE_ID.get())
+            record = await self._execute_isolated_read_only_call(tool, arguments)
+        finally:
+            if token is not None:
+                _ASSISTANT_RESPONSE_ID.reset(token)
         await self.trace.emit(f"{event_prefix}_tool_result", **record)
         return record["result"], record
 
@@ -535,29 +554,29 @@ class ToolEnvironment:
         *,
         assistant_response_id: int | None = None,
     ) -> None:
-        """Publish already-executed read-only calls as one selected assistant response.
+        """Publish selected reads without merging their model-response provenance.
 
-        A tree search picks its trajectory after the fact, so the winning path's calls were
-        proposed by different assistant responses.  BFCL scores one response's call batch,
-        so the selected trajectory is republished under a single response boundary -- the
-        first record's -- instead of being truncated at the first id change.
+        An explicit Actor id is used by SA to adopt one speculative read. It may
+        never relabel a different response as a BFCL declaration.
         """
-
-        batch_id = (
-            assistant_response_id
-            if assistant_response_id is not None
-            else records[0].get("assistant_response_id")
-            if records
-            else None
-        )
+        if self.declaration_only and records:
+            source_ids = {record.get("assistant_response_id") for record in records}
+            if len(source_ids) != 1 or None in source_ids:
+                raise ValueError("Cannot merge different assistant responses into one declaration batch")
+            source_id = next(iter(source_ids))
+            if assistant_response_id is not None and assistant_response_id != source_id:
+                raise ValueError("Cannot relabel a declaration response")
         for record in records:
             name = str(record["name"])
             arguments = record["arguments"]
             tool = self.tools.get(name)
             if tool is None or not tool.read_only:
                 raise ValueError(f"Cannot commit non-isolated tool record {name!r}")
-            record = {**record, "assistant_response_id": batch_id}
-            response_id = batch_id
+            response_id = record.get("assistant_response_id")
+            if assistant_response_id is not None:
+                record = {**record, "source_assistant_response_id": response_id,
+                          "assistant_response_id": assistant_response_id}
+                response_id = assistant_response_id
             if not self._accept_declaration_call(response_id):
                 await self.trace.emit(
                     "declaration_call_ignored",
@@ -649,6 +668,9 @@ class ToolEnvironment:
         return rendered
 
     async def _invoke(self, tool: ToolSpec, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self.declaration_only:
+            from ..bridges.bfcl import declaration_only_result
+            return {"ok": True, "result": declaration_only_result(tool.name, arguments)}
         if handler := self.handlers.get(tool.name):
             try:
                 value = await handler(arguments)
@@ -828,6 +850,8 @@ class RunContext:
         if channel == "actor":
             self.last_actor_response_id = response_id
         _ASSISTANT_RESPONSE_ID.set(response_id)
+        if channel == "actor":
+            self.environment.commit_declaration_response(response_id)
         self.prompt_tokens += completion.prompt_tokens
         self.completion_tokens += completion.completion_tokens
         await self.trace.emit(
@@ -890,6 +914,7 @@ class RunContext:
         response_id = self.llm_calls
         self.last_actor_response_id = response_id
         _ASSISTANT_RESPONSE_ID.set(response_id)
+        self.environment.commit_declaration_response(response_id)
         self.prompt_tokens += completion.prompt_tokens
         self.completion_tokens += completion.completion_tokens
         self.actor_prompt_tokens += completion.prompt_tokens

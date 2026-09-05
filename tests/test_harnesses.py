@@ -735,71 +735,15 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(client.max_active, 1)
         self.assertEqual(context.llm_calls, 10)
 
-    def test_lats_declaration_only_commits_the_winning_path_as_one_batch(self) -> None:
-        async def declaration(arguments):
-            return {
-                "recorded_function_call": "lookup",
-                "arguments": arguments,
-                "declaration_only": True,
-                "execution": "not_run",
-                "terminate": True,
-            }
-
+    def test_lats_declaration_only_rejected_before_search(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            tools = tool_specs()
-            environment = ToolEnvironment(
-                tools,
-                trace,
-                {tool.name: declaration for tool in tools},
-                declaration_only=True,
-            )
-            client = ScriptedClient(
-                [
-                    '{"thought":"declare alpha","tool":"lookup","arguments":{"key":"alpha"}}',
-                    '{"score":0.8,"success":false,"feedback":"continue"}',
-                    '{"thought":"declare beta","tool":"lookup","arguments":{"key":"beta"}}',
-                    '{"score":0.9,"success":false,"feedback":"finish"}',
-                    '{"thought":"answer","final":"42"}',
-                    '{"score":1.0,"success":true,"feedback":"complete"}',
-                ]
-            )
-            context = RunContext(
-                "lats",
-                "declare alpha and beta",
-                client,
-                environment,
-                trace,
-                {
-                    "lats_iterations": 1,
-                    "lats_generate_samples": 1,
-                    "lats_value_samples": 1,
-                    "lats_rollout_width": 1,
-                    "lats_tree_depth": 3,
-                    "lats_rollout_depth": 3,
-                },
-            )
-            answer = asyncio.run(run_profile(context))
-            events = [
-                json.loads(line)
-                for line in trace.path.read_text(encoding="utf-8").splitlines()
-            ]
-
-        # BFCL scores one assistant response's call batch. The calls on the winning
-        # trajectory were proposed by different responses, so committing them must not stop
-        # at the first response-id change.
-        self.assertEqual(answer, "42")
-        self.assertEqual(
-            environment.committed_calls,
-            [
-                {"name": "lookup", "arguments": {"key": "alpha"}},
-                {"name": "lookup", "arguments": {"key": "beta"}},
-            ],
-        )
-        self.assertEqual(
-            [event["arguments"] for event in events if event["event"] == "tool_request"],
-            [{"key": "alpha"}, {"key": "beta"}],
-        )
+            environment = ToolEnvironment(tool_specs(), trace, declaration_only=True)
+            context = RunContext("lats", "declare calls", ScriptedClient([]), environment, trace, {})
+            with self.assertRaisesRegex(ValueError, "multi-response"):
+                asyncio.run(run_profile(context))
+            self.assertEqual(context.llm_calls, 0)
+            self.assertEqual(environment.calls, [])
 
     def test_lats_rejects_non_snapshotable_mutating_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

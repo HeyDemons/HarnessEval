@@ -4,6 +4,7 @@ from typing import Any, Iterable
 
 from .catalog import Benchmark
 from .harnesses.profiles import HarnessProfile
+from .harnesses.declaration import SINGLE_TURN_PROFILES
 
 
 BRIDGE_CAPABILITIES = {
@@ -42,6 +43,14 @@ def compatibility_rows(
             runnable = bridge_status.startswith("implemented")
             if profile.id == "lats":
                 runnable = runnable and benchmark.id == "bfcl"
+            if benchmark.id == "bfcl" and profile.id not in SINGLE_TURN_PROFILES:
+                runnable = False
+                baseline_requirement = "requires_multi_response_agent_protocol"
+            elif profile.id == "magentic-one" and lifecycle not in {
+                "single-turn-workspace", "single-turn-artifact-workspace", "task-container"
+            }:
+                runnable = False
+                baseline_requirement = "magentic_requires_workspace_code_execution"
             if profile.tool_contract == "no-external-tools" and benchmark.id == "gdpval":
                 # GDPVal grades files created in the writable attempt workspace. The
                 # published DyLAN and Multi-Persona profiles only exchange text between
