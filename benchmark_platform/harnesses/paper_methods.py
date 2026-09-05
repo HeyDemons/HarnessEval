@@ -71,9 +71,13 @@ async def run_aflow_custom_init(ctx: RunContext) -> str:
             "aflow-custom-init requires policy.aflow_workflow == ['Custom']; "
             "optimized AFlow graphs need a separate canonical profile"
         )
-    from .methods import _json_tool_loop
-
-    return await _json_tool_loop(ctx, "aflow_custom_initialization")
+    # AFlow 3f457218: round_1/graph.py calls Custom(input=problem,
+    # instruction=""). Custom uses TextFormatter/single_fill, which sends
+    # the unmodified prompt once and returns its text, without a tool loop.
+    return await ctx.complete(
+        "aflow_custom_initialization",
+        [{"role": "user", "content": ctx.prompt}],
+    )
 
 
 def _dylan_most_frequent(candidates: list[str]) -> tuple[str, int]:
