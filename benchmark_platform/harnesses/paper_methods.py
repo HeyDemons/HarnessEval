@@ -211,8 +211,17 @@ def _resolve_reference(
     be resolved stays visible instead of being silently dropped.
     """
     if isinstance(value, str):
-        if _PLAN_REFERENCE.fullmatch(value):
-            return _reference_value(value, results)
+        # The pinned compiler accepts both $1 and ${1}. Keep shell environment
+        # variables intact unless their name is an actual task-result id.
+        value = re.sub(
+            r"\$\{([A-Za-z0-9_-]+)\}",
+            lambda match: "$" + match.group(1) if match.group(1) in results else match.group(0),
+            value,
+        )
+        if match := _PLAN_REFERENCE.fullmatch(value):
+            if match.group(1) in results or match.group(1).isdigit() or re.fullmatch(r"E\d+", match.group(1)):
+                return _reference_value(value, results)
+            return value
         if interpolate_strings:
 
             def replace(match: re.Match[str]) -> str:
@@ -280,6 +289,11 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                         f"Available tools: {ctx.environment.schema}\n"
                         'Return JSON: {"tasks":[{"id":"1","tool":"name","arguments":{},'
                         '"dependencies":[]}]}.\n'
+                        "Use unique positive integer task ids. List all prerequisite task ids in dependencies. "
+                        "Reference an earlier tool observation with $1 or ${1}; for a field in its JSON result "
+                        "use $1.result.field or $1.result[0]. References can occupy an entire argument "
+                        "(preserving its JSON type) or appear inside a string (inserting text). "
+                        "Never guess an observation that a prerequisite tool must supply.\n"
                         f"Task: {ctx.prompt}{planner_context}"
                     ),
                 }
@@ -295,36 +309,49 @@ async def run_llmcompiler(ctx: RunContext) -> str:
             if isinstance(item, dict)
         }
         results: dict[str, Any] = {}
-        while pending:
-            ready = [
-                (task_id, item)
-                for task_id, item in pending.items()
-                if all(str(dep) in results for dep in item.get("dependencies", []))
-            ]
-            if not ready:
-                results["_scheduler"] = {
+        async def execute(task_id: str, item: dict[str, Any]) -> tuple[str, Any]:
+            name = item.get("tool")
+            if not isinstance(name, str) or not name:
+                return task_id, {
                     "ok": False,
-                    "error": "dependency_deadlock",
-                    "pending": sorted(pending),
+                    "error": "malformed_task",
+                    "detail": "task omitted a tool name",
                 }
-                break
+            arguments = _resolve_reference(item.get("arguments") or {}, results, interpolate_strings=True)
+            return task_id, await ctx.environment.call(name, arguments)
 
-            async def execute(task_id: str, item: dict[str, Any]) -> tuple[str, Any]:
-                name = item.get("tool")
-                if not isinstance(name, str) or not name:
-                    return task_id, {
+        # Upstream TaskFetchingUnit.schedule releases successors as each
+        # prerequisite completes, even while unrelated tasks are still running.
+        running: set[asyncio.Task] = set()
+        try:
+            while pending or running:
+                ready = [
+                    (task_id, item)
+                    for task_id, item in pending.items()
+                    if all(str(dep) in results for dep in item.get("dependencies", []))
+                ]
+                for task_id, item in ready:
+                    running.add(asyncio.create_task(execute(task_id, item)))
+                    pending.pop(task_id)
+                if not running:
+                    results["_scheduler"] = {
                         "ok": False,
-                        "error": "malformed_task",
-                        "detail": "task omitted a tool name",
+                        "error": "dependency_deadlock",
+                        "pending": sorted(pending),
                     }
-                arguments = _resolve_reference(item.get("arguments") or {}, results)
-                return task_id, await ctx.environment.call(name, arguments)
-
-            for task_id, result in await asyncio.gather(
-                *(execute(tid, item) for tid, item in ready)
-            ):
-                results[task_id] = result
-                pending.pop(task_id)
+                    break
+                done, _ = await asyncio.wait(running, return_when=asyncio.FIRST_COMPLETED)
+                for task in done:
+                    task_id, result = task.result()
+                    results[task_id] = result
+                running.difference_update(done)
+        finally:
+            # Do not leave tool operations behind when the arm is cancelled or
+            # an unexpected exception escapes. Retrieve completed exceptions too.
+            for task in running:
+                task.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
 
         await ctx.trace.emit(
             "llmcompiler_dag_complete",
