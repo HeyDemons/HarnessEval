@@ -83,6 +83,19 @@ container, preserving proxy/environment handling and the official verifier's
 state. The wrapper is not a sandbox; the existing benchmark runtime supplies
 isolation. No host-scorer subprocess or separate task container is introduced.
 
+Execution budgets differ from the pinned AutoGen executor. Its
+`LocalCommandLineCodeExecutor` defaults to **60 seconds per code block**. Here
+all blocks in one Executor dispatch share **one run_command budget**. Workspace
+bridges default to 180 seconds, configurable by `HARNESS_COMMAND_TIMEOUT_S`;
+Terminal uses the task's agent budget, with the outer agent phase enforcing the
+remaining time. This is not a fresh task budget per block or per dispatch.
+The verifier has its independent official phase budget. These differences can
+change timeouts and end-to-end latency; neither timing nor failure boundaries
+should be described as identical to the upstream per-block executor.
+This adapter deliberately retains benchmark-owned budgets.
+
+Reference: [pinned LocalCommandLineCodeExecutor](https://github.com/microsoft/autogen/blob/bd5a24ba72ba01c4ec7509f027caaa7454b5f6d0/python/packages/autogen-ext/src/autogen_ext/code_executors/local/__init__.py).
+
 References: [AutoGen team](https://github.com/microsoft/autogen/blob/bd5a24ba72ba01c4ec7509f027caaa7454b5f6d0/python/packages/autogen-ext/src/autogen_ext/teams/magentic_one.py),
 [CodeExecutorAgent](https://github.com/microsoft/autogen/blob/bd5a24ba72ba01c4ec7509f027caaa7454b5f6d0/python/packages/autogen-agentchat/src/autogen_agentchat/agents/_code_executor_agent.py).
 This restores specialist responsibilities and the non-LLM Executor. It remains
