@@ -20,6 +20,13 @@ BRIDGE_CAPABILITIES = {
     "osworld": ("external-vm", "blocked_external_runtime"),
 }
 
+# Native baseline support does not imply support in the Product HTTP server.
+# Candidate PERSEUS runners list AutomationBench, but the shared product_server
+# and adapters.load_case do not implement its controller-owned world yet.
+PRODUCT_BRIDGE_BLOCKERS = {
+    "automationbench": "automationbench_product_http_bridge_not_implemented",
+}
+
 
 def compatibility_rows(
     profiles: Iterable[HarnessProfile], benchmarks: Iterable[Benchmark]
