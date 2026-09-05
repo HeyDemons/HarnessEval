@@ -109,7 +109,10 @@ def _resolve_reference(
     *,
     interpolate_strings: bool = False,
 ) -> Any:
-    """Resolve a "$step.field" plan reference against the results already collected.
+    """Legacy JSON-field dialect, selected only by explicit compatibility policy.
+
+    This is not a superset of the pinned text substitution language: `.field`
+    suffixes and whole-reference JSON types have different meanings here.
 
     A reference that does not resolve yields a marker rather than raising. The planner
     prompts state only the "$E1.result.field" form, so a model naturally writes
@@ -176,6 +179,20 @@ async def run_llmcompiler(ctx: RunContext) -> str:
     max_planning_passes = int(ctx.policy.get("llmcompiler_max_replans", 1))
     if max_planning_passes < 1:
         raise ValueError("llmcompiler_max_replans must be positive")
+    reference_mode = ctx.policy.get("llmcompiler_reference_mode", "upstream")
+    if reference_mode not in {"upstream", "legacy-json-fields"}:
+        raise ValueError("llmcompiler_reference_mode must be upstream or legacy-json-fields")
+    await ctx.trace.emit("llmcompiler_config", implementation="declared-text-references-v2",
+                         reference_mode=reference_mode, max_planning_passes=max_planning_passes)
+    reference_instructions = (
+        "Reference a declared dependency's complete observation with $1 or ${1}. "
+        "References insert str(observation), even when they occupy the whole argument. "
+        "Suffixes are literal text: $1.txt appends .txt; field/index selection is not supported. "
+        if reference_mode == "upstream" else
+        "Legacy JSON-field references: use $1 or ${1} for a complete observation, "
+        "$1.result.field or $1.result[0] for a JSON field. Whole references preserve JSON types; "
+        "embedded references insert text. Dot suffixes are field paths, not literal filenames. "
+    )
     prior_runs: list[dict[str, Any]] = []
     feedback = ""
 
@@ -200,10 +217,8 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                         'Return JSON: {"tasks":[{"id":"1","tool":"name","arguments":{},'
                         '"dependencies":[]}]}.\n'
                         "Use unique positive integer task ids. List all prerequisite task ids in dependencies. "
-                        "Reference an earlier tool observation with $1 or ${1}; for a field in its JSON result "
-                        "use $1.result.field or $1.result[0]. References can occupy an entire argument "
-                        "(preserving its JSON type) or appear inside a string (inserting text). "
-                        "Never guess an observation that a prerequisite tool must supply.\n"
+                        + reference_instructions
+                        + "Never guess an observation that a prerequisite tool must supply.\n"
                         f"Task: {ctx.prompt}{planner_context}"
                     ),
                 }
@@ -227,7 +242,11 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                     "error": "malformed_task",
                     "detail": "task omitted a tool name",
                 }
-            arguments = _resolve_reference(item.get("arguments") or {}, results, interpolate_strings=True)
+            if reference_mode == "upstream":
+                from .compiler_references import resolve_arguments
+                arguments = resolve_arguments(item.get("arguments") or {}, item.get("dependencies", []), results)
+            else:
+                arguments = _resolve_reference(item.get("arguments") or {}, results, interpolate_strings=True)
             return task_id, await ctx.environment.call(name, arguments)
 
         # Upstream TaskFetchingUnit.schedule releases successors as each

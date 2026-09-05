@@ -1321,6 +1321,7 @@ class HarnessTests(unittest.TestCase):
                 ),
                 '{"action":"finish","answer":"42"}',
             ],
+            policy={"llmcompiler_reference_mode": "legacy-json-fields"},
         )
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls[-1]["result"]["result"]["product"], 42)

@@ -7,6 +7,7 @@ from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.paper_methods import _resolve_reference
+from benchmark_platform.harnesses.compiler_references import resolve_arguments
 
 
 class Trace:
@@ -37,6 +38,35 @@ def make_context(tasks, handlers):
 
 
 class CompilerFidelityTests(unittest.IsolatedAsyncioTestCase):
+    def test_upstream_preserves_literal_suffixes_and_string_types(self):
+        results = {"1": "report", "10": {"ok": True}}
+        self.assertEqual(resolve_arguments("read $1.txt ${1}.csv", [1], results),
+                         "read report.txt report.csv")
+        self.assertEqual(resolve_arguments("${10}", [10], results), "{'ok': True}")
+        self.assertEqual(resolve_arguments(["$10", "$1", "$PATH", "${HOME}"], [1, 10], results),
+                         ["{'ok': True}", "report", "$PATH", "${HOME}"])
+
+    def test_only_declared_dependencies_are_substituted(self):
+        self.assertEqual(resolve_arguments({"q": "$2 ${2} $1"}, [1], {"1": "yes", "2": "no"}),
+                         {"q": "$2 ${2} yes"})
+        self.assertEqual(resolve_arguments("$1", [1], {"1": None}), "$1")
+
+    async def test_default_runner_uses_pinned_text_substitution(self):
+        received = []
+        async def lookup(args):
+            return "report"
+        async def consume(args):
+            received.append(args)
+            return "done"
+        ctx = make_context([
+            {"id": "1", "tool": "lookup", "arguments": {}, "dependencies": []},
+            {"id": "2", "tool": "consume", "arguments": {"q": "$1.txt", "other": "$9"}, "dependencies": ["1"]},
+        ], {"lookup": lookup, "consume": consume})
+        await run_profile(ctx)
+        self.assertEqual(received, [{"q": "{'ok': True, 'result': 'report'}.txt", "other": "$9"}])
+        config = next(e for e in ctx.trace.events if e["event"] == "llmcompiler_config")
+        self.assertEqual(config["reference_mode"], "upstream")
+
     def test_interpolates_braced_nested_and_embedded_references_without_shell_variables(self):
         values = {"1": {"result": {"city": "Paris", "n": 42}}, "10": {"result": ["France"]}}
         result = _resolve_reference({
@@ -74,6 +104,7 @@ class CompilerFidelityTests(unittest.IsolatedAsyncioTestCase):
             {"id": "2", "tool": "slow", "arguments": {}, "dependencies": []},
             {"id": "3", "tool": "dependent", "arguments": {"q": "population of $1.result.city"}, "dependencies": ["1"]},
         ], {"fast": fast, "slow": slow, "dependent": dependent})
+        ctx.policy["llmcompiler_reference_mode"] = "legacy-json-fields"
         task = asyncio.create_task(run_profile(ctx))
         try:
             await asyncio.wait_for(successor.wait(), 1)
