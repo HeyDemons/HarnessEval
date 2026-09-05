@@ -63,21 +63,41 @@ Now identify the participants, provide their profiles, and collaboratively solve
 Task: {task}"""
 
 
-async def run_aflow_custom_init(ctx: RunContext) -> str:
-    """Execute only AFlow's disclosed, unoptimized round-1 Custom control."""
+async def run_aflow(ctx: RunContext) -> str:
+    """Execute a frozen AFlow operator graph supplied as an evaluation artifact."""
     workflow = ctx.policy.get("aflow_workflow")
-    if workflow != ["Custom"]:
+    if workflow is None:
         raise ValueError(
-            "aflow-custom-init requires policy.aflow_workflow == ['Custom']; "
-            "optimized AFlow graphs need a separate canonical profile"
+            "AFlow evaluation requires policy.aflow_workflow from a disjoint optimization split"
         )
-    # AFlow 3f457218: round_1/graph.py calls Custom(input=problem,
-    # instruction=""). Custom uses TextFormatter/single_fill, which sends
-    # the unmodified prompt once and returns its text, without a tool loop.
-    return await ctx.complete(
-        "aflow_custom_initialization",
-        [{"role": "user", "content": ctx.prompt}],
-    )
+    if not isinstance(workflow, list) or not workflow:
+        raise ValueError("policy.aflow_workflow must be a non-empty operator list")
+    candidates: list[str] = []
+    for index, operator in enumerate(workflow):
+        if operator in {"Custom", "AnswerGenerate"}:
+            from .methods import _json_tool_loop
+
+            candidates.append(await _json_tool_loop(ctx, f"aflow_{operator}_{index + 1}"))
+        elif operator == "ScEnsemble" and candidates:
+            candidates = [
+                await ctx.complete(
+                    "aflow_ensemble",
+                    [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Select the most reliable complete answer for the task. Return the answer directly.\n"
+                                f"Task: {ctx.prompt}\nCandidates: {json.dumps(candidates, ensure_ascii=False)}"
+                            ),
+                        }
+                    ],
+                )
+            ]
+        else:
+            raise ValueError(f"Unsupported frozen AFlow operator: {operator}")
+    if not candidates:
+        raise RuntimeError("Frozen AFlow workflow produced no answer")
+    return candidates[-1]
 
 
 def _dylan_most_frequent(candidates: list[str]) -> tuple[str, int]:

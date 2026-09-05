@@ -301,7 +301,7 @@ async def run_profile(ctx: RunContext) -> str:
     if ctx.profile == "cmas":
         return await run_cmas(ctx)
     from .paper_methods import (
-        run_aflow_custom_init,
+        run_aflow,
         run_dylan,
         run_dmas,
         run_llmcompiler,
@@ -314,7 +314,7 @@ async def run_profile(ctx: RunContext) -> str:
     from .rewoo import run_rewoo
 
     extended = {
-        "aflow-custom-init": run_aflow_custom_init,
+        "aflow": run_aflow,
         "dylan": run_dylan,
         "dmas": run_dmas,
         "magentic-one": run_magentic_one,

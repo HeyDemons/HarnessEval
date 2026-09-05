@@ -55,7 +55,7 @@ PROFILE_RESPONSES = {
         '{"score":1.0,"success":true,"feedback":"complete"}',
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
-    "aflow-custom-init": ["ok"],
+    "aflow": ['{"final":"ok"}'],
     "dylan": ["ok", "ok", "ok"],
     "magentic-one": [
         "facts",
@@ -147,7 +147,7 @@ class EpisodeBrokerTests(unittest.TestCase):
                     with self.subTest(benchmark=benchmark, profile=profile.id):
                         client = ScriptedClient(list(PROFILE_RESPONSES[profile.id]))
                         policy = {"max_turns": 4}
-                        if profile.id == "aflow-custom-init":
+                        if profile.id == "aflow":
                             policy["aflow_workflow"] = ["Custom"]
                         broker = EpisodeBroker(
                             profile=profile.id,

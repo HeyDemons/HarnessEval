@@ -972,19 +972,16 @@ class HarnessTests(unittest.TestCase):
             events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(sum(event["event"] == "memgpt_active_memory_summarized" for event in events), 1)
 
-    def test_aflow_custom_initialization_control(self) -> None:
+    def test_aflow_frozen_custom_uses_tools(self) -> None:
         answer, environment = self.run_profile(
-            "aflow-custom-init",
-            ["6"],
+            "aflow",
+            ['{"tool":"lookup","arguments":{"key":"alpha"}}', '{"final":"6"}'],
             policy={"aflow_workflow": ["Custom"]},
         )
         self.assertEqual(answer, "6")
-        self.assertEqual(environment.calls, [])
-        self.assertEqual(self.last_context.llm_calls, 1)
-        self.assertEqual(self.last_client.messages, [[{
-            "role": "user", "content": "retrieve alpha and beta, multiply them",
-        }]])
-        self.assertEqual(self.last_client.json_modes, [False])
+        self.assertEqual(len(environment.calls), 1)
+        self.assertEqual(self.last_context.llm_calls, 2)
+        self.assertEqual(self.last_client.json_modes, [True, True])
 
     def test_dylan_published_text_network_has_no_hidden_tool_loop(self) -> None:
         answer, environment = self.run_profile("dylan", ["42", "42", "42"])

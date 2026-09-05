@@ -95,7 +95,7 @@ RESPONSES = {
         '{"score":1.0,"success":true,"feedback":"complete"}',
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
-    "aflow-custom-init": ["ok"],
+    "aflow": ['{"final":"ok"}'],
     "dylan": ["ok", "ok", "ok"],
     "magentic-one": [
         "facts",
@@ -1023,7 +1023,7 @@ class BridgeMatrixTests(unittest.TestCase):
             environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
             client = RecordingClient(list(RESPONSES[profile_id]))
             policy = {"max_turns": 4}
-            if profile_id == "aflow-custom-init":
+            if profile_id == "aflow":
                 policy["aflow_workflow"] = ["Custom"]
             if profile_id == "lats":
                 policy.update(

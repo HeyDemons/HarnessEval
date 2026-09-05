@@ -65,7 +65,7 @@ class TaskProfileMatrixTests(unittest.TestCase):
                 else None
             )
             policy = {"max_turns": 4}
-            if profile_id == "aflow-custom-init":
+            if profile_id == "aflow":
                 policy["aflow_workflow"] = ["Custom"]
             context = RunContext(
                 profile_id,

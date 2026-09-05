@@ -226,9 +226,13 @@ and tau keep the hidden user and mutable official environment outside the
 baseline. Terminal-Bench and SWE-bench give the baseline only the task
 workspace; verifier tests and reference solutions never enter its container.
 
-`aflow-custom-init` is explicitly an unoptimized control that executes AFlow's
-round-1 `Custom` starting operator. It must not be reported as AFlow; a canonical
-AFlow arm requires a frozen optimized graph produced on a disjoint split.
+`aflow` uses HarnessEval upstream's frozen workflow executor: `Custom` and
+`AnswerGenerate` run tool-using agents, and `ScEnsemble` selects among candidates.
+Pass the frozen operator list in `policy.aflow_workflow`. The parent workspace's
+batch runner currently supplies `["Custom"]`, an unoptimized initialization;
+results with that policy must not be described as an optimized AFlow workflow.
+Optimized graphs must come from a disjoint optimization split. Historical
+`aflow-custom-init` records are not renamed or merged into the restored `aflow` arm.
 DyLAN and Multi-Persona intentionally receive no external tools because their
 published protocols do not define a tool loop. Multi-Persona uses a generic SPP
 profile prompt with two complete demonstrations rather than a schematic example.

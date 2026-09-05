@@ -14,7 +14,7 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
 | LATS | Dynamic branch-isolated | Published MCTS proposal, value, rollout, reflection, and backpropagation; requires read-only tools or environment snapshots |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
-| AFlow Custom initialization | No external tools | Source round-1 Custom: one plain-text generation from the unchanged task; not an optimized AFlow workflow |
+| AFlow | Dynamic frozen workflow | HarnessEval upstream executor: tool-using Custom/AnswerGenerate and ScEnsemble; `["Custom"]` alone remains an unoptimized initialization |
 | DyLAN | No external tools | Open-ended consensus and final voting use upstream sacrebleu 2.3.1 with lowercase sentence BLEU >= 90; no external tool loop |
 | Magentic-One | Dynamic | Ledger, speaker selection, stall and replan topology |
 | Multi-Persona | No external tools | SPP profile protocol with two complete demonstrations, dynamic participant profiles, iterative criticism/revision, and one model call |
