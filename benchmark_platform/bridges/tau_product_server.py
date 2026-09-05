@@ -1,4 +1,5 @@
 from __future__ import annotations
+from benchmark_platform.budgets import native_steps, native_errors
 
 import argparse
 import json
@@ -197,8 +198,8 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
                     policy.get("native_user_temperature", TAU2_USER_TEMPERATURE)
                 )
             },
-            max_steps=int(policy.get("native_max_steps", TAU2_MAX_STEPS)),
-            max_errors=int(policy.get("native_max_errors", 10)),
+            max_steps=native_steps("tau2", policy),
+            max_errors=native_errors("tau2", policy),
             seed=seed,
             enforce_communication_protocol=True,
         )

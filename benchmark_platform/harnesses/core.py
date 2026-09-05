@@ -743,13 +743,28 @@ class RunContext:
         self.speculator_prompt_tokens = 0
         self.speculator_completion_tokens = 0
         self.last_actor_response_id: int | None = None
+        from ..budgets import ModelResponseBudget
+        self.model_budget = ModelResponseBudget(policy.get("model_response_limit"))
 
     @property
     def max_turns(self) -> int:
-        value = int(self.policy.get("max_turns", 8))
-        if value < 1:
-            raise ValueError("policy.max_turns must be positive")
-        return value
+        from ..budgets import DEFAULT_LOOP_SAFETY_LIMIT, positive_int
+        return positive_int(self.policy.get("max_turns", DEFAULT_LOOP_SAFETY_LIMIT), "policy.max_turns")
+
+    def should_finalize(self, loop_index: int) -> bool:
+        """Reserve the last permitted generation for an answer, not another action."""
+        return self.policy.get("finalize_on_loop_limit", False) is True and (
+            loop_index >= self.max_turns - 1 or self.model_budget.final_response
+        )
+
+    async def _reserve_model_response(self) -> None:
+        from ..budgets import ModelBudgetExceeded
+        try:
+            self.model_budget.reserve()
+        except ModelBudgetExceeded:
+            await self.trace.emit("budget_exhausted", scope="model_responses",
+                                  limit=self.model_budget.limit, used=self.model_budget.used)
+            raise
 
     @property
     def max_parallel(self) -> int | None:
@@ -823,6 +838,8 @@ class RunContext:
             raise DeclarationOnlyComplete(
                 "Declaration-only benchmark already received its committed call batch"
             )
+        if channel == "actor":
+            await self._reserve_model_response()
         messages = self.environment.with_images(messages)
         await self.trace.emit(
             "llm_request",
@@ -892,6 +909,7 @@ class RunContext:
             raise DeclarationOnlyComplete(
                 "Declaration-only benchmark already received its committed call batch"
             )
+        await self._reserve_model_response()
         messages = self.environment.with_images(messages)
         await self.trace.emit(
             "llm_request",
@@ -935,6 +953,7 @@ class RunContext:
 
     def usage_metrics(self) -> dict[str, int]:
         return {
+            "model_requests": self.model_budget.used,
             "llm_calls": self.llm_calls,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,

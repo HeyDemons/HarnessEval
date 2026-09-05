@@ -255,6 +255,10 @@ call. The workspace batch runner defaults to native-tool ReAct outside BFCL;
 `HARNESS_REACT_PROTOCOL=text` selects the corrected legacy text protocol.
 See [baseline protocol corrections](docs/BASELINE_PROTOCOLS.md).
 
+Benchmark-native limits and local timeout envelopes are resolved centrally;
+the batch runner no longer applies a generic 20-turn cutoff. See
+[budget authority, configuration and migration](docs/BUDGETS.md).
+
 ## Local Product CLIs
 
 HarnessEval can drive an installed Pi CLI without copying the user's Pi home or

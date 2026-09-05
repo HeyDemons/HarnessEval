@@ -31,7 +31,11 @@ async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = No
         {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
         {"role": "user", "content": ctx.prompt if prompt is None else prompt},
     ]
-    for _ in range(ctx.max_turns):
+    for turn in range(ctx.max_turns):
+        finalizing = ctx.should_finalize(turn)
+        if finalizing:
+            messages.append({"role": "user", "content": 'The action budget is exhausted. Return only {"final":"best answer supported by existing observations"}. Do not call another tool.'})
+            await ctx.trace.emit("budget_finalization", scope=role, model_requests=ctx.model_budget.used)
         raw = await ctx.complete(role, messages, json_mode=True)
         try:
             action = _normalize_action(extract_json(raw, expected_type=dict), ctx.environment.names)
@@ -45,6 +49,8 @@ async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = No
             continue
         if "final" in action:
             return str(action["final"])
+        if finalizing:
+            raise RuntimeError("Agent-loop turn budget exhausted: final response requested another tool")
         arguments = action.get("arguments")
         if not isinstance(arguments, dict):
             messages.extend(
@@ -166,7 +172,11 @@ async def run_react(ctx: RunContext) -> str:
         },
         {"role": "user", "content": ctx.prompt},
     ]
-    for _ in range(ctx.max_turns):
+    for turn in range(ctx.max_turns):
+        finalizing = ctx.should_finalize(turn)
+        if finalizing:
+            messages.append({"role": "user", "content": "The action budget is exhausted. Provide Final Answer using only existing observations. Do not select another Action."})
+            await ctx.trace.emit("budget_finalization", scope="react-text", model_requests=ctx.model_budget.used)
         raw = await ctx.complete("react", messages)
         consumed = _stop_react_observation(raw)
         if consumed != raw:
@@ -189,6 +199,8 @@ async def run_react(ctx: RunContext) -> str:
             continue
         if "final" in action:
             return str(action["final"])
+        if finalizing:
+            raise RuntimeError("ReAct turn budget exhausted: final response requested another action")
         result = await ctx.environment.call(action["tool"], action["arguments"])
         messages.extend(
             [

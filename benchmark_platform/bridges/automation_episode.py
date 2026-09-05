@@ -5,6 +5,7 @@ standalone product integration are exposed to the baseline tool transport.
 Assertions and initial state stay in the controller, never in the agent prompt.
 """
 from __future__ import annotations
+from benchmark_platform.budgets import baseline_limits, seconds, resolve_budget, Deadline
 
 import argparse
 import asyncio
@@ -108,6 +109,7 @@ class AutomationEpisode:
 
 
 async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *, episode=None, client=None):
+    policy = {**baseline_limits("automationbench"), **policy}
     arm_started = time.monotonic()
     profile = get_profile(profile_id)
     job.mkdir(parents=True, exist_ok=True)
@@ -124,12 +126,16 @@ async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *,
               "bridge": episode.metadata, "policy": policy}
     started = time.monotonic()
     try:
-        deadline = float(policy.get("automationbench_arm_timeout_s", os.environ.get("HARNESS_ARM_TIMEOUT_S", "890")))
-        reserve = float(policy.get("automationbench_finalize_grace_s", 10))
+        configured = policy.get("automationbench_arm_timeout_s", os.environ.get("HARNESS_ARM_TIMEOUT_S"))
+        duration = seconds(configured if configured is not None else resolve_budget("automationbench").process_seconds,
+                           "automationbench_arm_timeout_s")
+        reserve = seconds(policy.get("automationbench_finalize_grace_s", 10), "automationbench_finalize_grace_s", allow_zero=True)
+        if reserve >= duration:
+            raise ValueError("AutomationBench finalization reserve must be smaller than its execution timeout")
         # Dataset materialization can be expensive. It must consume the same
         # outer arm budget, leaving time to persist the native assertion score
         # before the host watchdog removes the container.
-        remaining = deadline - (time.monotonic() - arm_started) - reserve
+        remaining = Deadline(duration - reserve, started=arm_started).remaining
         if remaining <= 0:
             raise TimeoutError
         result["final_answer"] = await asyncio.wait_for(run_profile(context), remaining)

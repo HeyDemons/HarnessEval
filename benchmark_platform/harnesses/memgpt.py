@@ -256,10 +256,14 @@ async def run_memgpt(ctx: RunContext) -> str:
         raise ValueError(f"Unknown MemGPT function: {function}")
 
     for turn in range(ctx.max_turns):
+        finalizing = ctx.should_finalize(turn)
         messages = [
             {"role": "system", "content": _system_message(ctx, core, recall, archival)},
             *active,
         ]
+        if finalizing:
+            messages.append({"role": "user", "content": "The action budget is exhausted. Call send_message with the best answer supported by existing observations. Do not call other functions."})
+            await ctx.trace.emit("budget_finalization", scope="memgpt", model_requests=ctx.model_budget.used)
         prompt_tokens_before = ctx.prompt_tokens
         try:
             action = await ctx.complete_json("memgpt_processor", messages)
@@ -279,6 +283,8 @@ async def run_memgpt(ctx: RunContext) -> str:
         arguments = action.get("arguments")
         if not isinstance(thought, str) or not isinstance(function, str) or not isinstance(arguments, dict):
             raise ValueError("MemGPT processor response omitted thought, function, or object arguments")
+        if finalizing and function != "send_message":
+            raise RuntimeError("MemGPT turn budget exhausted: final response requested another function")
         active.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})
         recall.append(_event("assistant", action))
 

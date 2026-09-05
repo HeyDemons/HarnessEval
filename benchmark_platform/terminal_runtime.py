@@ -7,10 +7,12 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, TextIO
+from .budgets import (DEFAULT_TERMINAL_AGENT_SECONDS, DEFAULT_TERMINAL_VERIFIER_SECONDS,
+                      terminal_phase_seconds, seconds, Deadline)
 
 
-DEFAULT_AGENT_TIMEOUT_SEC = 600.0
-DEFAULT_VERIFIER_TIMEOUT_SEC = 600.0
+DEFAULT_AGENT_TIMEOUT_SEC = DEFAULT_TERMINAL_AGENT_SECONDS
+DEFAULT_VERIFIER_TIMEOUT_SEC = DEFAULT_TERMINAL_VERIFIER_SECONDS
 VERIFIER_MAX_ATTEMPTS = 3
 DOCKER_CLIENT_GRACE_SEC = 15.0
 TERMINAL_AGENT_ENVIRONMENT_HINT = (
@@ -110,6 +112,7 @@ def terminal_task_settings(metadata: dict[str, Any]) -> TerminalTaskSettings:
     environment = metadata.get("environment") or {}
     agent = metadata.get("agent") or {}
     verifier = metadata.get("verifier") or {}
+    agent_seconds, verifier_seconds = terminal_phase_seconds(metadata)
 
     network_mode = str(environment.get("network_mode") or "").strip().lower()
     if environment.get("allow_internet") is not None:
@@ -136,16 +139,8 @@ def terminal_task_settings(metadata: dict[str, Any]) -> TerminalTaskSettings:
         raise ValueError("environment.workdir must be an absolute container path")
 
     return TerminalTaskSettings(
-        agent_timeout_sec=_positive_float(
-            agent.get("timeout_sec"),
-            default=DEFAULT_AGENT_TIMEOUT_SEC,
-            field="agent.timeout_sec",
-        ),
-        verifier_timeout_sec=_positive_float(
-            verifier.get("timeout_sec"),
-            default=DEFAULT_VERIFIER_TIMEOUT_SEC,
-            field="verifier.timeout_sec",
-        ),
+        agent_timeout_sec=agent_seconds,
+        verifier_timeout_sec=verifier_seconds,
         cpus=_positive_int(environment.get("cpus"), field="environment.cpus"),
         memory_mb=_positive_int(
             environment.get("memory_mb"), field="environment.memory_mb"
@@ -176,7 +171,8 @@ def terminal_outer_timeout_sec(
 ) -> float:
     settings = terminal_task_settings(metadata)
     return (
-        settings.agent_timeout_sec + settings.verifier_timeout_sec + cleanup_grace_sec
+        settings.agent_timeout_sec + settings.verifier_timeout_sec
+        + seconds(cleanup_grace_sec, "cleanup_grace_sec", allow_zero=True)
     )
 
 
@@ -356,7 +352,7 @@ def run_shared_verifier(
     logs_dir.mkdir(parents=True, exist_ok=True)
     if max_attempts <= 0:
         raise ValueError("max_attempts must be positive")
-    deadline = time.monotonic() + timeout_sec
+    deadline = Deadline(timeout_sec)
     tests_dir = task_dir / "tests"
     if not (tests_dir / "test.sh").is_file():
         return _infrastructure_result(
@@ -376,7 +372,7 @@ def run_shared_verifier(
         ),
         timeout_sec=min(
             30.0,
-            max(0.001, deadline - time.monotonic()) + DOCKER_CLIENT_GRACE_SEC,
+            max(0.001, deadline.remaining) + DOCKER_CLIENT_GRACE_SEC,
         ),
     )
     _write_process_output(prepared, log, prefix=f"{prefix}setup ")
@@ -392,7 +388,7 @@ def run_shared_verifier(
         docker("cp", f"{tests_dir.resolve()}/.", f"{container}:/tests"),
         timeout_sec=min(
             60.0,
-            max(0.001, deadline - time.monotonic()) + DOCKER_CLIENT_GRACE_SEC,
+            max(0.001, deadline.remaining) + DOCKER_CLIENT_GRACE_SEC,
         ),
     )
     _write_process_output(uploaded, log, prefix=f"{prefix}upload ")
@@ -411,7 +407,7 @@ def run_shared_verifier(
     while attempts < max_attempts:
         attempts += 1
         network_pattern = None
-        remaining = deadline - time.monotonic()
+        remaining = deadline.remaining
         if remaining <= 0:
             timed_out = True
             checked = subprocess.CompletedProcess(
@@ -464,7 +460,7 @@ def run_shared_verifier(
             break
         if attempts >= max_attempts:
             break
-        delay = min(float(2 ** (attempts - 1)), max(0.0, deadline - time.monotonic()))
+        delay = min(float(2 ** (attempts - 1)), deadline.remaining)
         if delay <= 0:
             timed_out = True
             break

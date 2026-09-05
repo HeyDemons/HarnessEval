@@ -1,4 +1,5 @@
 from __future__ import annotations
+from benchmark_platform.budgets import native_steps, native_errors
 
 import argparse
 import json
@@ -219,8 +220,8 @@ def run_native_episode(bridge: ProductEpisodeBridge, case_id: str, policy: dict[
             # vita/cli.py passes DEFAULT_MAX_STEPS = 300; Orchestrator's class default of
             # 100 is never what an official run uses, and reaching it flattens the case to
             # 0.0 with no rubric grading (see vita_episode for the full note).
-            max_steps=int(policy.get("native_max_steps", 300)),
-            max_errors=int(policy.get("native_max_errors", 10)),
+            max_steps=native_steps("vitabench", policy),
+            max_errors=native_errors("vitabench", policy),
             seed=seed,
             language=language,
         ).run()

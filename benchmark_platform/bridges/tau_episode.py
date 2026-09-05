@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
+from benchmark_platform.budgets import TAU2_MAX_STEPS, native_steps, native_errors
 
 from .episode import EpisodeBroker, FinalResponse, NativeTool, visible_text
 
@@ -24,7 +25,6 @@ TASK_SET_DOMAINS = {
 # itself, and a silent upstream/default drift would otherwise change measurement.
 TAU2_USER_TEMPERATURE = 0.0
 TAU2_SEED = 300
-TAU2_MAX_STEPS = 200
 
 
 def _write(path: Path, value: Any) -> None:
@@ -401,8 +401,8 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                 policy.get("native_user_temperature", TAU2_USER_TEMPERATURE)
             )
         },
-        max_steps=int(policy.get("native_max_steps", TAU2_MAX_STEPS)),
-        max_errors=int(policy.get("native_max_errors", 10)),
+        max_steps=native_steps("tau2", policy),
+        max_errors=native_errors("tau2", policy),
         seed=seed,
         enforce_communication_protocol=True,
     )

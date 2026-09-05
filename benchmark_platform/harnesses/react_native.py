@@ -27,8 +27,12 @@ async def run_react_native(ctx: RunContext) -> str:
         "Do not output simulated Action/Observation transcripts; use the native tools.")},
         {"role": "user", "content": ctx.prompt}]
     await ctx.trace.emit("react_protocol", protocol="native", implementation="native-serial-tools-v1")
-    for _ in range(ctx.max_turns):
-        completion = await ctx.complete_native("react", messages, tools=tools, tool_choice="auto")
+    for turn in range(ctx.max_turns):
+        finalizing = ctx.should_finalize(turn)
+        if finalizing:
+            messages.append({"role": "user", "content": "The action budget is exhausted. Submit the best answer supported by the existing observations with react_finish. No further environment actions are permitted."})
+            await ctx.trace.emit("budget_finalization", scope="react", model_requests=ctx.model_budget.used)
+        completion = await ctx.complete_native("react", messages, tools=tools[-1:] if finalizing else tools, tool_choice="auto")
         choices = completion.raw.get("choices") or []
         if not choices or not isinstance(choices[0].get("message"), dict):
             raise ValueError("ReAct provider did not return a native assistant message")
@@ -41,7 +45,9 @@ async def run_react_native(ctx: RunContext) -> str:
         for call in calls:
             function = call.get("function") or {}
             name = function.get("name", "")
-            if len(calls) != 1:
+            if finalizing and name != finish:
+                result = {"ok": False, "error": "Only final submission is permitted at the budget boundary"}
+            elif len(calls) != 1:
                 result = {"ok": False, "error": "ReAct requires exactly one action per turn; no calls were executed"}
             else:
                 try:

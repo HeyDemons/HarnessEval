@@ -1,4 +1,5 @@
 from __future__ import annotations
+from benchmark_platform.budgets import native_steps, native_errors
 
 import argparse
 import asyncio
@@ -439,8 +440,8 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         # ceiling sets TerminationReason.MAX_STEPS, which evaluate_simulation turns into a
         # flat 0.0 with no rubric grading at all -- a harness budget silently overwriting the
         # benchmark's verdict. A 40-turn agent already produces ~90 orchestrator steps.
-        max_steps=int(policy.get("native_max_steps", 300)),
-        max_errors=int(policy.get("native_max_errors", 10)),
+        max_steps=native_steps("vitabench", policy),
+        max_errors=native_errors("vitabench", policy),
         seed=seed,
         language=language,
     )

@@ -450,11 +450,15 @@ async def run_sa(ctx: RunContext) -> str:
         {"role": "user", "content": ctx.prompt},
     ]
     for turn in range(1, ctx.max_turns + 1):
+        finalizing = ctx.should_finalize(turn - 1)
+        if finalizing:
+            messages.append({"role": "user", "content": 'The action budget is exhausted. Return only {"final":"answer supported by existing observations"}; do not call tools.'})
+            await ctx.trace.emit("budget_finalization", scope="sa", model_requests=ctx.model_budget.used)
         # Repeat the speculative window after every observation.  Starting only once at the
         # beginning is an initial prefetch control, not Speculative Actions.
         draft_task = (
             asyncio.create_task(predict_and_execute(turn, list(messages)))
-            if safe_names
+            if safe_names and not finalizing
             else None
         )
         try:
@@ -494,6 +498,8 @@ async def run_sa(ctx: RunContext) -> str:
                     entries=len(discarded),
                 )
             return str(action["final"])
+        if finalizing:
+            raise RuntimeError("Speculative Actions turn budget exhausted: final response requested another tool")
         name = str(action.get("tool", ""))
         arguments = action.get("arguments")
         if not isinstance(arguments, dict):
