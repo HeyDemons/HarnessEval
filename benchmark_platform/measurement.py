@@ -1,8 +1,8 @@
 """Reporting-only accounting. Never use these counters as benchmark budgets."""
 from __future__ import annotations
 
-METRICS_VERSION = 2
-TURN_DEFINITION = "completed-actor-model-response-v2"
+METRICS_VERSION = 3
+TURN_DEFINITION = "committed-task-decision-v3"
 TOKEN_DEFINITION = "uncached-input-plus-output-v2"
 TOKEN_FIELDS = ("input", "output", "cache_read", "cache_write", "total", "all_tokens")
 
@@ -55,7 +55,7 @@ def add_tokens(target: dict, source: dict) -> None:
 
 
 def product_actor_metrics(events: list[dict]) -> dict:
-    """Count completed Actor responses once, independently of tool fanout.
+    """Count outward Actor decisions once, independently of tool fanout.
 
     message_end and turn_end contain the same message: never sum both. Error and
     aborted placeholders are request outcomes, not completed model turns.
@@ -63,14 +63,21 @@ def product_actor_metrics(events: list[dict]) -> dict:
     usage = zero_tokens()
     messages = [e["message"] for e in events if e.get("type") == "message_end"
                 and isinstance(e.get("message"), dict) and e["message"].get("role") == "assistant"]
-    missing = turns = 0
+    missing = turns = responses = 0
     calls = []
     for message in messages:
         tokens, known = normalize_usage(message.get("usage"), product=True)
         add_tokens(usage, tokens)
         missing += not known
         if message.get("stopReason") not in {"error", "aborted"}:
-            turns += 1
+            responses += 1
+            content = message.get("content") or []
+            has_calls = any(isinstance(c, dict) and c.get("type") == "toolCall" for c in content)
+            has_text = any(isinstance(c, dict) and c.get("type") == "text" and str(c.get("text") or "").strip() for c in content)
+            # Pi tool declarations enter the authoritative trajectory as one batch.
+            # A text-only response is the answer/user message. Thinking-only and
+            # empty responses do not submit a task decision.
+            turns += has_calls or has_text
         # Preserve the runner's declaration evidence, even on a failed message;
         # execution/scoring eligibility is decided by the bridge, not accounting.
         calls.extend({"id": str(c.get("id") or ""), "name": str(c.get("name") or ""),
@@ -78,8 +85,8 @@ def product_actor_metrics(events: list[dict]) -> dict:
                      for c in message.get("content") or [] if isinstance(c, dict) and c.get("type") == "toolCall")
     starts = sum(e.get("type") == "turn_start" for e in events)
     missing += max(0, starts-len(messages))
-    return {"rounds": turns, "agent_turns": turns, "agent_turns_definition": TURN_DEFINITION,
-            "model_responses": turns, "model_attempts": max(starts, len(messages)),
+    return {"rounds": responses, "agent_turns": turns, "agent_turns_definition": TURN_DEFINITION,
+            "model_responses": responses, "model_attempts": max(starts, len(messages)),
             "committed_calls": calls, "usage": usage,
             "usage_missing_requests": missing, "usage_complete": missing == 0,
             "last_stop_reason": messages[-1].get("stopReason") if messages else None,

@@ -327,6 +327,12 @@ async def run_cmas(ctx: RunContext) -> str:
 
 
 async def run_profile(ctx: RunContext) -> str:
+    answer = await _dispatch_profile(ctx)
+    await ctx.commit_final_decision(answer)
+    return answer
+
+
+async def _dispatch_profile(ctx: RunContext) -> str:
     if ctx.environment.declaration_only:
         from .declaration import SINGLE_TURN_PROFILES, run_declaration
         if ctx.profile not in SINGLE_TURN_PROFILES:

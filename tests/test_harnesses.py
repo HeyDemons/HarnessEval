@@ -175,9 +175,9 @@ class HarnessTests(unittest.TestCase):
             self.last_events = [json.loads(line) for line in trace_text.splitlines()]
             return answer, environment
 
-    def test_agent_turns_includes_completed_protocol_repair_responses(self) -> None:
+    def test_agent_turns_excludes_internal_protocol_repair(self) -> None:
         # Three tool decisions plus the final answer, with one protocol repair in between:
-        # the repair is a completed Actor model turn too.
+        # the repair does not submit a task decision.
         answer, environment = self.run_profile(
             "actor-only",
             [
@@ -191,7 +191,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "42")
         metrics = self.last_context.usage_metrics()
         self.assertEqual(len(environment.calls), 3)
-        self.assertEqual(metrics["agent_turns"], 5)
+        self.assertEqual(metrics["agent_turns"], 4)
         self.assertEqual(metrics["llm_calls"], 5)
 
     def test_agent_turns_counts_a_parallel_action_set_once(self) -> None:
@@ -221,6 +221,22 @@ class HarnessTests(unittest.TestCase):
         )
         self.assertEqual(answer, "42")
         self.assertEqual(len(environment.calls), 3)
+
+    def test_submitted_decision_survives_cancelled_tool(self) -> None:
+        async def check():
+            with tempfile.TemporaryDirectory() as directory:
+                trace = JsonlTrace(Path(directory) / "trace.jsonl")
+                async def cancelled(_args):
+                    raise asyncio.CancelledError()
+                environment = ToolEnvironment(tool_specs(), trace, {"lookup": cancelled})
+                context = RunContext("actor-only", "p", ScriptedClient([
+                    '{"tool":"lookup","arguments":{"key":"alpha"}}']), environment, trace, {})
+                with self.assertRaises(asyncio.CancelledError):
+                    await run_profile(context)
+                self.assertEqual(context.agent_turns, 1)
+                events = [json.loads(line) for line in trace.path.read_text().splitlines()]
+                self.assertEqual(sum(e["event"] == "decision_committed" for e in events), 1)
+        asyncio.run(check())
 
     def test_react_protocol(self) -> None:
         answer, _ = self.run_profile(

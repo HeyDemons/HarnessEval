@@ -365,6 +365,7 @@ class ToolEnvironment:
             raise ValueError(f"Handlers reference unknown tools: {unknown_handlers}")
         self.trace = trace
         self.calls: list[dict[str, Any]] = []
+        self.decision_ids: set[str] = set()
         self.declaration_only = declaration_only
         self._declaration_committed = False
         self._committed_response_id: int | None = None
@@ -458,6 +459,17 @@ class ToolEnvironment:
             self._exclusive_active = False
             self._state_condition.notify_all()
 
+    async def commit_decision(self, kind: str, *, response_id: int | None = None) -> None:
+        # Calls sharing an Actor response are one batch. Final output is a
+        # separate outward submission, except BFCL's declaration-and-finish.
+        decision_id = (f"response:{response_id}" if response_id is not None
+                       else f"{kind}:{len(self.decision_ids)}")
+        if decision_id in self.decision_ids:
+            return
+        self.decision_ids.add(decision_id)
+        await self.trace.emit("decision_committed", decision_id=decision_id,
+                              kind=kind, assistant_response_id=response_id)
+
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         response_id = _ASSISTANT_RESPONSE_ID.get()
         if not self._accept_declaration_call(response_id):
@@ -475,6 +487,7 @@ class ToolEnvironment:
             )
             return result
         tool = self.tools.get(name)
+        await self.commit_decision("action_batch", response_id=response_id)
         await self.trace.emit(
             "tool_request",
             name=name,
@@ -593,6 +606,7 @@ class ToolEnvironment:
                 arguments=arguments,
                 assistant_response_id=response_id,
             )
+            await self.commit_decision("action_batch", response_id=response_id)
             self._remember_images(record["result"])
             self.calls.append(record)
             await self.trace.emit("tool_result", **record)
@@ -749,8 +763,8 @@ class RunContext:
         self.channel_requests = {"actor": 0, "speculator": 0}
         self.channel_tokens = {"actor": zero_tokens(), "speculator": zero_tokens()}
         self.channel_usage_missing = {"actor": 0, "speculator": 0}
-        # A reporting turn is a completed Actor-channel model response, including
-        # planning/repair and its tool batch. Runtime budgets remain independent.
+        # Turns belong to outward task decisions; internal model calls have
+        # separate counters and retain the existing budget semantics.
 
     @property
     def max_turns(self) -> int:
@@ -963,7 +977,13 @@ class RunContext:
 
     @property
     def agent_turns(self) -> int:
-        return self.actor_llm_calls
+        return len(self.environment.decision_ids)
+
+    async def commit_final_decision(self, answer: str) -> None:
+        if self.environment.declaration_only:
+            await self.environment.commit_decision("declaration", response_id=self.environment.declaration_response_id)
+        elif isinstance(answer, str) and answer.strip():
+            await self.environment.commit_decision("final_answer")
 
     def _record_usage(self, channel: str, completion: Completion) -> None:
         tokens, known = normalize_usage(completion.raw)

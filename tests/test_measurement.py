@@ -51,3 +51,12 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(metrics["usage"]["total"], 15)
         self.assertEqual(metrics["usage_missing_requests"], 3)
         self.assertFalse(metrics["usage_complete"])
+
+    def test_thinking_only_is_not_an_outward_decision(self):
+        events = [{"type": "message_end", "message": {"role": "assistant", "stopReason": "stop",
+                  "content": [{"type": "thinking", "thinking": "internal planning"}], "usage": {"input": 10, "output": 2}}},
+                  {"type": "message_end", "message": {"role": "assistant", "stopReason": "stop",
+                  "content": [{"type": "text", "text": "The answer is 42"}], "usage": {"input": 10, "output": 2}}}]
+        metrics = product_actor_metrics(events)
+        self.assertEqual(metrics["model_responses"], 2)
+        self.assertEqual(metrics["agent_turns"], 1)
