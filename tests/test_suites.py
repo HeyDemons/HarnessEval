@@ -28,7 +28,7 @@ class SuiteTests(unittest.TestCase):
             self.assertEqual(set(self.suites.ids(mode)), set(self.catalog.ids()))
 
     def test_light_manifests_are_frozen_and_outcome_independent(self) -> None:
-        for benchmark_id in ("gaia", "gdpval", "trajectory-bench", "vitabench", "tau2", "bfcl", "terminal-bench-2"):
+        for benchmark_id in ("gaia", "gdpval", "trajectory-bench", "vitabench", "tau2", "bfcl", "terminal-bench-2", "automationbench"):
             suite = self.suites.get(benchmark_id, "light")
             self.assertEqual(suite["status"], "ready")
             self.assertEqual(suite["declared_count"], len(suite["cases"]))
@@ -61,8 +61,8 @@ class SuiteTests(unittest.TestCase):
         self.assertEqual(vita["declared_count"], 60)
         self.assertEqual(set(Counter(case["domain"] for case in vita["cases"]).values()), {15})
         tau = self.suites.get("tau2", "light")
-        self.assertEqual(tau["declared_count"], 30)
-        self.assertEqual(Counter(case["domain"] for case in tau["cases"]), {"airline": 10, "retail": 10, "telecom": 10})
+        self.assertEqual(tau["declared_count"], 60)
+        self.assertEqual(Counter(case["domain"] for case in tau["cases"]), {"airline": 20, "retail": 20, "telecom": 20})
 
     def test_trajectory_inventory_is_executable_and_balanced(self) -> None:
         suite = self.suites.get("trajectory-bench", "light")
@@ -89,11 +89,17 @@ class SuiteTests(unittest.TestCase):
         self.assertNotIn("web_search", categories)
         self.assertTrue(all(isinstance(case["format_sensitive"], bool) for case in suite["cases"]))
 
-    def test_terminal_selection_is_frozen_but_runner_limit_is_disclosed(self) -> None:
+    def test_terminal_selection_uses_public_short_task_metadata(self) -> None:
         suite = self.suites.get("terminal-bench-2", "light")
-        self.assertEqual(suite["declared_count"], 20)
-        self.assertIn("adapter", suite["runner_note"])
-        self.assertEqual(self.suites.get("terminal-bench-2", "full")["runner_status"], "adapter_expansion_required")
+        self.assertEqual(suite["declared_count"], 34)
+        self.assertTrue(all(case["expert_time_estimate_min"] <= 30 for case in suite["cases"]))
+        self.assertTrue(all(case["agent_timeout_sec"] > 0 and case["verifier_timeout_sec"] > 0 for case in suite["cases"]))
+
+    def test_automationbench_has_six_formal_cases_per_domain(self) -> None:
+        suite = self.suites.get("automationbench", "light")
+        self.assertEqual(suite["declared_count"], 36)
+        self.assertEqual(set(Counter(case["domain"] for case in suite["cases"]).values()), {6})
+        self.assertNotIn("simple", {case["domain"] for case in suite["cases"]})
 
     def test_trajectory_full_and_swe_modes_are_explicitly_held(self) -> None:
         trajectory = self.suites.get("trajectory-bench", "full")

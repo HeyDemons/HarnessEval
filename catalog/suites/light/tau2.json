@@ -82,6 +82,86 @@
       "id": "airline:23"
     },
     {
+      "action_bin": "seven_plus",
+      "action_count": 11,
+      "communication_bin": "four_six",
+      "communication_count": 4,
+      "domain": "airline",
+      "id": "airline:39"
+    },
+    {
+      "action_bin": "zero",
+      "action_count": 0,
+      "communication_bin": "one_three",
+      "communication_count": 1,
+      "domain": "airline",
+      "id": "airline:46"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 2,
+      "communication_bin": "four_six",
+      "communication_count": 4,
+      "domain": "airline",
+      "id": "airline:38"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 6,
+      "communication_bin": "one_three",
+      "communication_count": 2,
+      "domain": "airline",
+      "id": "airline:43"
+    },
+    {
+      "action_bin": "zero",
+      "action_count": 0,
+      "communication_bin": "one_three",
+      "communication_count": 1,
+      "domain": "airline",
+      "id": "airline:34"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 8,
+      "communication_bin": "one_three",
+      "communication_count": 2,
+      "domain": "airline",
+      "id": "airline:41"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 5,
+      "communication_bin": "four_six",
+      "communication_count": 5,
+      "domain": "airline",
+      "id": "airline:7"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 3,
+      "communication_bin": "four_six",
+      "communication_count": 4,
+      "domain": "airline",
+      "id": "airline:2"
+    },
+    {
+      "action_bin": "zero",
+      "action_count": 0,
+      "communication_bin": "one_three",
+      "communication_count": 1,
+      "domain": "airline",
+      "id": "airline:0"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 4,
+      "communication_bin": "four_six",
+      "communication_count": 4,
+      "domain": "airline",
+      "id": "airline:8"
+    },
+    {
       "action_bin": "four_six",
       "action_count": 4,
       "communication_bin": "zero",
@@ -162,68 +242,84 @@
       "id": "retail:85"
     },
     {
-      "action_bin": "seven_plus",
-      "action_count": 8,
-      "communication_bin": "zero",
-      "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mms_issue]airplane_mode_on|break_apn_mms_setting|break_app_both_permissions|data_mode_off|data_usage_exceeded|unseat_sim_card[PERSONA:Hard]"
+      "action_bin": "four_six",
+      "action_count": 4,
+      "communication_bin": "four_six",
+      "communication_count": 4,
+      "domain": "retail",
+      "id": "retail:38"
     },
     {
       "action_bin": "four_six",
-      "action_count": 4,
+      "action_count": 6,
       "communication_bin": "zero",
       "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mms_issue]break_app_storage_permission|data_usage_exceeded|unseat_sim_card|user_abroad_roaming_enabled_off[PERSONA:None]"
+      "domain": "retail",
+      "id": "retail:25"
     },
     {
       "action_bin": "one_three",
-      "action_count": 3,
+      "action_count": 1,
+      "communication_bin": "one_three",
+      "communication_count": 1,
+      "domain": "retail",
+      "id": "retail:105"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 7,
+      "communication_bin": "four_six",
+      "communication_count": 4,
+      "domain": "retail",
+      "id": "retail:19"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 1,
       "communication_bin": "zero",
       "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mms_issue]break_app_sms_permission|data_usage_exceeded|unseat_sim_card[PERSONA:None]"
+      "domain": "retail",
+      "id": "retail:80"
     },
     {
       "action_bin": "four_six",
       "action_count": 5,
-      "communication_bin": "zero",
-      "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mms_issue]bad_wifi_calling|break_app_both_permissions|data_mode_off|data_usage_exceeded[PERSONA:Hard]"
+      "communication_bin": "one_three",
+      "communication_count": 2,
+      "domain": "retail",
+      "id": "retail:104"
     },
     {
       "action_bin": "seven_plus",
       "action_count": 7,
-      "communication_bin": "zero",
-      "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mms_issue]airplane_mode_on|bad_network_preference|break_apn_mms_setting|break_app_storage_permission|unseat_sim_card|user_abroad_roaming_disabled_on[PERSONA:None]"
-    },
-    {
-      "action_bin": "one_three",
-      "action_count": 2,
-      "communication_bin": "zero",
-      "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mobile_data_issue]airplane_mode_on|data_mode_off[PERSONA:None]"
+      "communication_bin": "four_six",
+      "communication_count": 6,
+      "domain": "retail",
+      "id": "retail:63"
     },
     {
       "action_bin": "four_six",
-      "action_count": 4,
+      "action_count": 5,
+      "communication_bin": "one_three",
+      "communication_count": 2,
+      "domain": "retail",
+      "id": "retail:45"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 1,
       "communication_bin": "zero",
       "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mms_issue]bad_wifi_calling|break_app_sms_permission|data_usage_exceeded|user_abroad_roaming_disabled_on[PERSONA:Easy]"
+      "domain": "retail",
+      "id": "retail:75"
     },
     {
       "action_bin": "seven_plus",
-      "action_count": 7,
-      "communication_bin": "zero",
-      "communication_count": 0,
-      "domain": "telecom",
-      "id": "telecom_full:[mms_issue]break_apn_mms_setting|break_app_both_permissions|data_usage_exceeded|user_abroad_roaming_disabled_off[PERSONA:None]"
+      "action_count": 12,
+      "communication_bin": "one_three",
+      "communication_count": 2,
+      "domain": "retail",
+      "id": "retail:3"
     },
     {
       "action_bin": "one_three",
@@ -231,7 +327,15 @@
       "communication_bin": "zero",
       "communication_count": 0,
       "domain": "telecom",
-      "id": "telecom_full:[mms_issue]break_app_storage_permission|user_abroad_roaming_disabled_on[PERSONA:Easy]"
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|data_mode_off[PERSONA:None]"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 7,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mms_issue]bad_network_preference|bad_wifi_calling|break_app_both_permissions|data_usage_exceeded|user_abroad_roaming_disabled_off[PERSONA:Hard]"
     },
     {
       "action_bin": "four_six",
@@ -239,21 +343,163 @@
       "communication_bin": "zero",
       "communication_count": 0,
       "domain": "telecom",
-      "id": "telecom_full:[mms_issue]airplane_mode_on|break_app_storage_permission|data_mode_off|data_usage_exceeded|unseat_sim_card|user_abroad_roaming_enabled_off[PERSONA:Easy]"
+      "id": "telecom:[mobile_data_issue]bad_network_preference|bad_vpn|data_mode_off|data_saver_mode_on|data_usage_exceeded|user_abroad_roaming_enabled_off[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 2,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|user_abroad_roaming_enabled_off[PERSONA:None]"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 7,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|bad_network_preference|bad_vpn|data_mode_off|data_saver_mode_on|user_abroad_roaming_disabled_off[PERSONA:Hard]"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 5,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]bad_vpn|data_mode_off|data_usage_exceeded|user_abroad_roaming_disabled_off[PERSONA:None]"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 3,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[service_issue]airplane_mode_on|break_apn_settings[PERSONA:Hard]"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 7,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|bad_network_preference|bad_vpn|data_mode_off|data_saver_mode_on|data_usage_exceeded|user_abroad_roaming_enabled_off[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 5,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mms_issue]airplane_mode_on|bad_network_preference|break_app_storage_permission|data_mode_off|user_abroad_roaming_enabled_off[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 2,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mms_issue]break_app_storage_permission|data_usage_exceeded[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 5,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|bad_network_preference|bad_vpn|data_saver_mode_on|user_abroad_roaming_disabled_on[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 8,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mms_issue]bad_network_preference|bad_wifi_calling|break_app_both_permissions|data_usage_exceeded|unseat_sim_card|user_abroad_roaming_disabled_off[PERSONA:None]"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 3,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|bad_network_preference|user_abroad_roaming_enabled_off[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 6,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|bad_network_preference|bad_vpn|data_mode_off|data_usage_exceeded|user_abroad_roaming_enabled_off[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 10,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mms_issue]airplane_mode_on|bad_network_preference|bad_wifi_calling|break_apn_mms_setting|break_app_sms_permission|data_mode_off|data_usage_exceeded|unseat_sim_card|user_abroad_roaming_disabled_on[PERSONA:None]"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 1,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[service_issue]airplane_mode_on|break_apn_settings|lock_sim_card_pin|overdue_bill_suspension[PERSONA:Hard]"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 6,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mms_issue]airplane_mode_on|bad_network_preference|bad_wifi_calling|data_usage_exceeded|unseat_sim_card|user_abroad_roaming_disabled_on[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "seven_plus",
+      "action_count": 10,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mms_issue]airplane_mode_on|bad_network_preference|bad_wifi_calling|break_apn_mms_setting|break_app_storage_permission|data_usage_exceeded|unseat_sim_card|user_abroad_roaming_disabled_off[PERSONA:Easy]"
+    },
+    {
+      "action_bin": "four_six",
+      "action_count": 5,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|bad_network_preference|data_mode_off|data_usage_exceeded|user_abroad_roaming_disabled_on[PERSONA:None]"
+    },
+    {
+      "action_bin": "one_three",
+      "action_count": 3,
+      "communication_bin": "zero",
+      "communication_count": 0,
+      "domain": "telecom",
+      "id": "telecom:[mobile_data_issue]airplane_mode_on|data_saver_mode_on|user_abroad_roaming_disabled_on[PERSONA:None]"
     }
   ],
-  "declared_count": 30,
+  "declared_count": 60,
   "mode": "light",
   "schema_version": 1,
   "selection_policy": {
     "frozen": true,
     "historical_runs_used": false,
-    "method": "Ten cases per main domain, balancing public action and communication criterion counts",
+    "method": "Twenty cases per main domain from the official base split, balancing public action and communication criterion counts",
     "model_outcomes_used": false,
     "seed": "harnesseval-light-v1"
   },
   "source": {
+    "official_split": "base",
     "revision": "79975ac5741e23fbb1d2ac44262d62398a6d87bd",
+    "split_file_sha256": {
+      "airline": "b22ced4d9a9850ac9aea31c53bdcb6d6009058140bd9acc7db37c1d36222ba8b",
+      "retail": "ed0580ec52575b63fbf76568af42490da6ee7783ecb4aa81af46961291358f20",
+      "telecom": "605b488bb9a6acb3c7f4505240a855fdc8681d09aadb16a8f38b2efcfc5c3aec"
+    },
     "task_file_sha256": {
       "airline": "ccd8ba737b4cc371415af70151187788f728d6108d0916e73bb4317b40542052",
       "retail": "8e03ebce7901bd6218e7a7dc3105faa9324091a68058f7fe61c65262868812e8",
@@ -262,8 +508,8 @@
   },
   "status": "ready",
   "strata_summary": {
-    "airline": 10,
-    "retail": 10,
-    "telecom": 10
+    "airline": 20,
+    "retail": 20,
+    "telecom": 20
   }
 }
