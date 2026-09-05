@@ -1,4 +1,4 @@
-# Reporting metrics, version 3
+# Reporting metrics, version 4
 
 These are reporting counters, not budget limits. Official BFCL responses,
 Tau2/VitaBench simulation steps, AutomationBench response limits, and Terminal
@@ -6,47 +6,42 @@ agent/verifier seconds retain their existing budget policies.
 
 ## Agent turns
 
-`agent_turns_definition = committed-task-decision-v3`.
-One decision submitted to the task environment or user is one agent turn:
-one tool batch, one user message, or a final answer. Planner, router, critic,
-protocol-repair and speculative work do not count until an outward decision is
-submitted. Parallel workers each count their submitted batches; the sum is not
-serial depth. Multiple tool calls from one response count as one batch.
-BFCL's one declaration response, including its end-of-task boundary, counts once.
-Failed API attempts, empty output and thinking-only messages do not count.
-An invalid tool request or a submitted call that times out still counts as a
-decision: success of execution is a different metric.
+`agent_turns_definition = inspect-completed-generation-v4`.
+One completed model generation in the metered main-algorithm scope counts once.
+This follows the generic log counter used by the requested
+[Inspect Evals repository](https://github.com/UKGovernmentBEIS/inspect_evals/tree/ac481c7a7b4fb05d6befdfea59b47fc61b839a4f),
+whose [lockfile](https://github.com/UKGovernmentBEIS/inspect_evals/blob/ac481c7a7b4fb05d6befdfea59b47fc61b839a4f/uv.lock)
+pins Inspect AI `ce5617d35a19a2f4ed0e30f00110126fe0be8f3e`.
+That version calls `record_turn()` after a completed generation, following
+retries/fallbacks; cache hits count too. See the pinned
+[generation path](https://github.com/UKGovernmentBEIS/inspect_ai/blob/ce5617d35a19a2f4ed0e30f00110126fe0be8f3e/src/inspect_ai/model/_model.py#L1499)
+and [turn meter](https://github.com/UKGovernmentBEIS/inspect_ai/blob/ce5617d35a19a2f4ed0e30f00110126fe0be8f3e/src/inspect_ai/util/_limit.py#L778).
+Inspect Evals GAIA uses framework `react()`, GDPval uses `generate()`, and BFCL
+single-turn uses `generate(..., tool_calls="none")`. Its BFCL multi-turn and
+Tau2 dialogue loops are task-specific counters, not this generic log metric.
 
-Example: 3 internal planning responses + 7 tool batches + 1 final answer =
-8 agent turns. A batch of 3 tools contributes 1 agent turn and 3 tool calls.
-User messages received from a simulator do not add agent turns.
+Our explicit `agent_turns_scope` includes Actor, planner, router, critic, workers
+and protocol repair. Speculation and benchmark-owned user simulation/scoring are
+outside this main-algorithm scope, with separate usage. Inspect provides scoped
+meters and `suspend_turn_limit()`; excluding these roles is our explicit scope
+choice, not an assumption that Inspect automatically excludes all subagents.
 
-Baseline tool dispatch emits `decision_committed` with a unique decision ID
-before waiting for the result. Calls sharing an assistant response ID reuse the
-same decision ID. Publishing a selected speculative/search result records its
-Actor decision once, without counting the unpublished branch. Final submission
-records a separate decision, except for BFCL, where it reuses the declaration's ID.
-Perseus counts outward tool batches or text messages in the authoritative Actor
-message stream once, excluding thinking-only and error/aborted messages.
+All completed generations count, including text-only, thinking-only, empty or
+output-length-limited responses. A failed/aborted transport attempt that produces
+no completed generation counts zero. Tool failures do not undo the generation.
+Multiple tools from one generation count as one turn. Returning a final answer
+does not add another turn. Do not sum both Pi message_end and turn_end events.
 
-There is no framework-independent definition of a turn:
+Example: 3 planning generations + 7 tool-generating responses + 1 final-answer
+generation = 11 turns. A text-only method with 17 generations has 17 turns, not
+one. No special suppression of turns is needed for no-external-tools profiles.
 
-- [OpenAI Agents SDK Runner](https://openai.github.io/openai-agents-python/ref/run/)
-  describes a turn as one AI invocation and its tool calls.
-- [Pi agent core](https://github.com/earendil-works/pi/blob/main/packages/agent/README.md)
-  exposes turn/message/tool events. The local Pi loop also ends failed turns, so
-  our completed-response reporting counter deliberately excludes error/aborted
-  events. Do not count both message_end and turn_end for the same response.
-- [AutoGen team turns](https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/human-in-the-loop.html)
-  count participant responses. An [AssistantAgent](https://microsoft.github.io/autogen/stable/user-guide/agentchat-user-guide/tutorial/agents.html)
-  can perform multiple model/tool iterations during one participant response.
-
-Version 3 deliberately chooses task decisions, as requested for this project,
-rather than OpenAI/Pi model-response turns or AutoGen participant turns.
-Version 2's completed-model-response counter remains available as a model-call
-diagnostic and must not be relabeled as task-decision turns. The older formula
-"distinct tool response IDs + final return" double-counted BFCL; version 3 uses
-the same decision ID for declaration and finish.
+Turns are neither a cost measure nor an efficiency ratio. Report model-call
+diagnostics and Actor/Speculator token buckets for spend; monetary comparisons
+also need model pricing. Never claim a method is cheaper solely from fewer turns.
+Only compute turn means within one benchmark. BFCL single-turn, GAIA workspaces
+and Tau2/VitaBench conversations are different task populations even when their
+generation counter has the same unit. Unknown benchmark provenance has no mean.
 
 `tool_calls` retains the benchmark bridge contract: main-algorithm benchmark tool
 invocations, excluding native user-message pseudo-tools. Declaration-only BFCL
@@ -85,9 +80,14 @@ Version is attached per record. Changing parser definitions does not change
 measurement identity or scores. A report may reconstruct a copy from the saved
 immutable attempt paths and stamp `metrics_recomputed_from_version`; original
 summaries and scorer artifacts remain untouched. Missing artifacts yield unknown
-fields, not legacy numbers relabeled as version 3. Legacy baseline tool-request
-response IDs plus the recorded final answer can reconstruct decision turns;
-the new explicit decision events are preferred. Preserve all recorded attempt
+fields, not legacy numbers relabeled as version 4. Version 2 counted completed
+Actor generations; version 3 counted outward task decisions; version 4 follows
+the pinned Inspect generation counter with explicit scope and report provenance.
+Never mix v3 values into a v4 mean. Reconstruct turns from llm_response/Actor
+message events or authoritative completed-generation counters, never from v3
+decision events. Reports display the target version and each row's source version;
+`metrics_recomputed_from_turn_definition` retains the original definition too.
+Preserve all recorded attempt
 paths when reconstructing the cost of an arm that retried.
 
 Cache statistics can be recovered where raw usage survived. The old Anthropic

@@ -175,9 +175,9 @@ class HarnessTests(unittest.TestCase):
             self.last_events = [json.loads(line) for line in trace_text.splitlines()]
             return answer, environment
 
-    def test_agent_turns_excludes_internal_protocol_repair(self) -> None:
+    def test_agent_turns_counts_completed_protocol_repair(self) -> None:
         # Three tool decisions plus the final answer, with one protocol repair in between:
-        # the repair does not submit a task decision.
+        # the repair is a completed generation even without an external action.
         answer, environment = self.run_profile(
             "actor-only",
             [
@@ -191,7 +191,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "42")
         metrics = self.last_context.usage_metrics()
         self.assertEqual(len(environment.calls), 3)
-        self.assertEqual(metrics["agent_turns"], 4)
+        self.assertEqual(metrics["agent_turns"], 5)
         self.assertEqual(metrics["llm_calls"], 5)
 
     def test_agent_turns_counts_a_parallel_action_set_once(self) -> None:
@@ -235,7 +235,20 @@ class HarnessTests(unittest.TestCase):
                     await run_profile(context)
                 self.assertEqual(context.agent_turns, 1)
                 events = [json.loads(line) for line in trace.path.read_text().splitlines()]
-                self.assertEqual(sum(e["event"] == "decision_committed" for e in events), 1)
+                self.assertEqual(sum(e["event"] == "llm_response" for e in events), 1)
+        asyncio.run(check())
+
+    def test_no_external_tools_still_meter_all_generations(self) -> None:
+        async def check():
+            for profile in ("aflow", "dylan", "dylan-query-local", "multi-persona"):
+                with tempfile.TemporaryDirectory() as directory:
+                    trace = JsonlTrace(Path(directory) / "trace.jsonl")
+                    context = RunContext(profile, "p", ScriptedClient(["plan"] * 17),
+                        ToolEnvironment([], trace), trace, {})
+                    for _ in range(17):
+                        await context.complete("planner", [{"role": "user", "content": "plan"}])
+                    self.assertEqual(context.agent_turns, 17, profile)
+                    self.assertEqual(len(context.environment.calls), 0)
         asyncio.run(check())
 
     def test_react_protocol(self) -> None:
