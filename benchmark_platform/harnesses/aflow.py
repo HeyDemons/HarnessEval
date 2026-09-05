@@ -111,10 +111,10 @@ class OperatorLLM:
         raw = await self.ctx.complete(f"aflow_{name}_{call}", [{"role": "user", "content": prompt}])
         if fields is None:
             return {"response": raw}
-        result = dict(re.findall(r"<(\w+)>(.*?)</\1>", raw, re.DOTALL))
-        if any(key not in result for key in fields):
-            raise ValueError(f"AFlow {name} response omitted required XML fields")
-        return {key: result[key].strip() for key in fields}
+        # Pinned XmlFormatter returns the parsed fields without filling defaults
+        # or requiring the optional model fields. A graph may use only `answer`
+        # or `solution_letter`; missing `thought` must not fail that graph.
+        return {key: value.strip() for key, value in re.findall(r"<(\w+)>(.*?)</\1>", raw, re.DOTALL)}
 
     def get_usage_summary(self):
         # The public SDK returns cost with the answer. We have no provider price
@@ -151,7 +151,7 @@ class ScEnsemble:
         value = await self.llm.generate(self.name, ENSEMBLE_PROMPT.format(solutions=text),
                                        {"thought": "The thought of the most consistent solution.",
                                         "solution_letter": "The letter of most consistent solution."})
-        letter = value["solution_letter"].strip().upper()
+        letter = value.get("solution_letter", "").strip().upper()
         mapping = {chr(65 + index): solution for index, solution in enumerate(solutions)}
         if letter not in mapping:
             raise ValueError("AFlow ScEnsemble returned an invalid candidate identifier")
@@ -199,7 +199,7 @@ async def run_aflow(ctx: RunContext) -> str:
                                  allow_initialization=ctx.policy.get("aflow_allow_initialization") is True,
                                  benchmark=ctx.policy.get("aflow_benchmark"), case_id=ctx.policy.get("aflow_case_id"))
     await ctx.trace.emit("aflow_artifact", code_sha256=artifact["code_sha256"],
-                         provenance=artifact["provenance"], implementation="qa-python-v1")
+                         provenance=artifact["provenance"], implementation="qa-python-v2")
     namespace = graph_namespace(artifact, OperatorLLM(ctx))
     workflow_type = namespace.get("Workflow")
     if not inspect.isclass(workflow_type):

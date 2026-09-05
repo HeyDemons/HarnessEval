@@ -52,6 +52,17 @@ class Workflow:
 
 
 class AFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_optional_thought_does_not_fail_answer_or_ensemble(self):
+        ctx = context(["alpha", "<answer> beta </answer><extra>retained</extra>",
+                       "<solution_letter>b</solution_letter>"], GRAPH, 'INSTRUCTION = ""')
+        self.assertEqual(await run_aflow(ctx), "beta")
+        self.assertEqual(ctx.llm_calls, 3)
+
+    async def test_missing_consumed_answer_still_fails_at_graph_access(self):
+        ctx = context(["alpha", "<thought>reason only</thought>"], GRAPH, 'INSTRUCTION = ""')
+        with self.assertRaisesRegex(KeyError, "answer"):
+            await run_aflow(ctx)
+
     async def test_custom_is_one_plain_generation_and_never_executes_tools(self):
         ctx = context(['{"tool":"lookup","arguments":{}}'])
         self.assertEqual(await run_aflow(ctx), '{"tool":"lookup","arguments":{}}')
