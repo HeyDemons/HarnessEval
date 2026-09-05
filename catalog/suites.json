@@ -2,6 +2,9 @@
   "schema_version": 1,
   "modes": {
     "light": {
+      "automationbench": {
+        "manifest": "${SUITE_DIR}/suites/light/automationbench.json"
+      },
       "gaia": {
         "manifest": "${SUITE_DIR}/suites/light/gaia.json"
       },
@@ -29,6 +32,10 @@
       }
     },
     "full": {
+      "automationbench": {
+        "status": "held",
+        "reason": "This integration was validated for the supplied frozen 36-case public light suite."
+      },
       "gaia": {
         "status": "ready",
         "selection": "official_full",

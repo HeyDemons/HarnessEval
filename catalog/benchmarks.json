@@ -2,6 +2,42 @@
   "schema_version": 1,
   "benchmarks": [
     {
+      "id": "automationbench",
+      "name": "AutomationBench public workflows",
+      "source": {
+        "url": "https://github.com/zapier/AutomationBench.git",
+        "revision": "4a8e1061254004d9dac807054eed33fad7d1ff14",
+        "release": "1.0.6"
+      },
+      "adapter": {
+        "kind": "docker-image",
+        "image": "orch-bench/automationbench:4a8e106",
+        "dockerfile": "${PLATFORM_ROOT}/images/automationbench.Dockerfile",
+        "build_context": "${PLATFORM_ROOT}",
+        "build_args": {"SOURCE_REV": "4a8e1061254004d9dac807054eed33fad7d1ff14"},
+        "source_checkout": {
+          "url": "https://github.com/zapier/AutomationBench.git",
+          "revision": "4a8e1061254004d9dac807054eed33fad7d1ff14",
+          "path": "${PLATFORM_ROOT}/.sources/automationbench"
+        },
+        "build_contexts": {"source": "${PLATFORM_ROOT}/.sources/automationbench"},
+        "image_labels": {"org.orch.benchmark.source-revision": "4a8e1061254004d9dac807054eed33fad7d1ff14"},
+        "pre_pull": ["ghcr.io/astral-sh/uv:python3.13-bookworm-slim"],
+        "read_only": false
+      },
+      "smoke": {
+        "case_id": "public-registry-and-native-tools",
+        "network": "none",
+        "command": ["python", "-c", "from automationbench.domains import PUBLIC_DOMAINS,get_domain_dataset; from automationbench.tools.api import API_TOOLS; from automationbench.rubric import partial_credit,task_completed_correctly; import json; print(json.dumps({'domains':{d:len(get_domain_dataset(d)) for d in PUBLIC_DOMAINS},'tools':[f.__name__ for f in API_TOOLS]}))"]
+      },
+      "scoring": {
+        "authority": "AutomationBench native task_completed_correctly and partial_credit assertions",
+        "comparability": "official_public_subset",
+        "note": "Strict task_completed_correctly is the reported score; partial credit is retained separately. The public suite is not the private leaderboard."
+      },
+      "env_allowlist": []
+    },
+    {
       "id": "gaia",
       "name": "GAIA 2023",
       "source": {

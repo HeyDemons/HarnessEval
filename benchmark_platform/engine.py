@@ -1110,6 +1110,7 @@ class Platform:
         pass_env: list[str],
     ) -> dict[str, Any]:
         supported = {
+            "automationbench",
             "gaia",
             "gdpval",
             "trajectory-bench",
@@ -1156,7 +1157,7 @@ class Platform:
             built = self.build(benchmark)
             if built["status"] != "completed":
                 raise RuntimeError(f"Benchmark image build failed: {built}")
-        native_episode = benchmark.id in {"vitabench", "tau2"}
+        native_episode = benchmark.id in {"vitabench", "tau2", "automationbench"}
         prepared = None if native_episode else self._prepare_bridge_case(benchmark, case_id, run_dir)
         harness_env = set(HARNESS_ENV)
         allowed = harness_env | set(benchmark.raw.get("env_allowlist", []))
@@ -1188,11 +1189,11 @@ class Platform:
             "runtime_image": self.image_identity(adapter["image"]),
         }
         if native_episode:
-            episode_module = (
-                "benchmark_platform.bridges.vita_episode"
-                if benchmark.id == "vitabench"
-                else "benchmark_platform.bridges.tau_episode"
-            )
+            episode_module = {
+                "vitabench": "benchmark_platform.bridges.vita_episode",
+                "tau2": "benchmark_platform.bridges.tau_episode",
+                "automationbench": "benchmark_platform.bridges.automation_episode",
+            }[benchmark.id]
             inner_command = [
                 "python",
                 "-m",

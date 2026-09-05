@@ -7,6 +7,7 @@ from .harnesses.profiles import HarnessProfile
 
 
 BRIDGE_CAPABILITIES = {
+    "automationbench": ("native-stateful-workflow", "implemented_native_assertion_episode"),
     "gaia": ("single-turn-workspace", "implemented"),
     "gdpval": ("single-turn-artifact-workspace", "implemented"),
     "trajectory-bench": ("single-turn-remote-tools", "implemented_external_tool_service_and_host_scorer"),
