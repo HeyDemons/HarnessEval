@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import AsyncMock
 
 from benchmark_platform.harnesses.lats import _Node, _SearchMemory, _value, _expand, _candidate_key
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
@@ -6,6 +7,21 @@ from test_aflow_upstream import Trace, Client
 
 
 class LatsCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_value_cache_is_not_a_cached_assistant_generation(self):
+        trace = Trace()
+        trace.emit = AsyncMock()
+        ctx = RunContext('lats', 'synthetic', Client(['{"score":0.5,"success":false,"feedback":"partial"}']),
+                         ToolEnvironment([], trace), trace, {})
+        node, memory = _Node(None), _SearchMemory()
+        first = await _value(ctx, node, 1, memory, 0.0)
+        before = ctx.usage_metrics()
+        self.assertEqual(first, await _value(ctx, node, 1, memory, 0.0))
+        self.assertEqual(ctx.usage_metrics(), before)
+        self.assertEqual(ctx.agent_turns, 1)
+        event = next(call for call in trace.emit.call_args_list if call.args[0] == 'lats_value_cache_hit')
+        self.assertFalse(event.kwargs['model_generation'])
+        self.assertEqual(event.kwargs['agent_turn_increment'], 0)
+
     async def test_multiple_proposals_keep_their_own_response_ids(self):
         trace = Trace()
         client = Client(['{"thought":"first","tool":"read","arguments":{"id":1}}',

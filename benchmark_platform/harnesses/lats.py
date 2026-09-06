@@ -203,6 +203,8 @@ async def _value(
 ) -> tuple[float, bool, str]:
     trajectory = node.trajectory(ctx.prompt)
     if trajectory in memory.value_cache:
+        await ctx.trace.emit('lats_value_cache_hit', cache_kind='algorithm_value',
+                             model_generation=False, agent_turn_increment=0)
         return memory.value_cache[trajectory]
     prompt = (
         "Evaluate this LATS trajectory. Judge whether a final answer, if present, fully solves the task and score "
