@@ -26,6 +26,7 @@ from benchmark_platform.harnesses.profiles import get_profile
 SOURCE_REVISION = "4a8e1061254004d9dac807054eed33fad7d1ff14"
 PROMPT_PROTOCOL = "native-task-roles-v1"
 NATIVE_ACTOR_PROTOCOL = "official-api-tools-v1"
+ARGUMENT_PROTOCOL = "official-function-defaults-v1"
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -102,7 +103,8 @@ class AutomationEpisode:
         self.metadata = {"source_revision": SOURCE_REVISION, "toolset": "api", "task_contract_sha256": self.contract,
                          "domain": domain, "task_name": self.info.get("task_name"),
                          "safe_for_prelaunch": ["api_search", "base64_encode"],
-                         "prompt_protocol": PROMPT_PROTOCOL, "tool_schema_protocol": NATIVE_ACTOR_PROTOCOL}
+                         "prompt_protocol": PROMPT_PROTOCOL, "tool_schema_protocol": NATIVE_ACTOR_PROTOCOL,
+                         "argument_protocol": ARGUMENT_PROTOCOL}
 
     def handlers(self):
         def bind(name):
@@ -130,6 +132,7 @@ class AutomationEpisode:
 
 async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *, episode=None, client=None):
     policy = {**baseline_limits("automationbench"), "automationbench_prompt_protocol": PROMPT_PROTOCOL,
+              "automationbench_argument_protocol": ARGUMENT_PROTOCOL,
               "automationbench_actor_protocol": "native", **policy}
     if policy["automationbench_prompt_protocol"] != PROMPT_PROTOCOL:
         raise ValueError("Unsupported AutomationBench prompt protocol")
@@ -141,7 +144,10 @@ async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *,
     job.mkdir(parents=True, exist_ok=True)
     episode = episode or AutomationEpisode(case_id)
     trace = JsonlTrace(job / "harness_trace.jsonl")
-    environment = ToolEnvironment(episode.tools, trace, episode.handlers())
+    # Upstream generates strict schemas (all fields required), but intentionally
+    # executes optional omissions/{} using Python defaults. The official handler
+    # owns argument validation; generic schema validation would reject valid calls.
+    environment = ToolEnvironment(episode.tools, trace, episode.handlers(), validate_schema=False)
     client = client or completion_client_from_env()
     context = RunContext(profile_id, episode.prompt, client, environment, trace, policy,
                          speculator_client=sa_speculator_client_from_env(client) if profile_id == "sa" else None,

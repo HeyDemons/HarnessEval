@@ -44,7 +44,7 @@ class NativeAutomationTests(unittest.IsolatedAsyncioTestCase):
             env = ToolEnvironment([ToolSpec("api_fetch", "API", {"type": "object"}, ())], trace, {"api_fetch": handler})
             ctx = RunContext("actor-only", "TASK", client, env, trace, {}, task_messages=messages)
             self.assertEqual(await run_native_actor(ctx), "done")
-            self.assertEqual(seen, [{"number": 1}, {"number": 2}])
+            self.assertEqual(seen, [{"number": 1, "optional": {}}, {"number": 2}])
             self.assertEqual(ctx.agent_turns, 2)
             self.assertEqual(len(env.calls), 2)
             self.assertEqual([c["assistant_response_id"] for c in env.calls], [1, 1])

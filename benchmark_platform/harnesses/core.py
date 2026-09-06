@@ -355,6 +355,7 @@ class ToolEnvironment:
         handlers: Mapping[str, ToolHandler] | None = None,
         *,
         declaration_only: bool = False,
+        validate_schema: bool = True,
     ):
         names = [tool.name for tool in tools]
         if len(names) != len(set(names)):
@@ -367,6 +368,7 @@ class ToolEnvironment:
         self.trace = trace
         self.calls: list[dict[str, Any]] = []
         self.declaration_only = declaration_only
+        self.validate_schema = validate_schema
         self._declaration_committed = False
         self._committed_response_id: int | None = None
         self._state_condition = asyncio.Condition()
@@ -485,7 +487,7 @@ class ToolEnvironment:
         state_before = self._state_version
         if tool is None:
             result = {"ok": False, "error": "unknown_tool", "available_tools": self.names}
-        elif errors := validate_arguments(normalize_json_schema(tool.parameters), arguments):
+        elif self.validate_schema and (errors := validate_arguments(normalize_json_schema(tool.parameters), arguments)):
             result = {"ok": False, "error": "invalid_arguments", "details": errors}
         elif tool.parallel and tool.read_only:
             await self._enter_shared()

@@ -49,9 +49,8 @@ async def run_native_actor(ctx: RunContext) -> str:
                     arguments = json.loads(arguments)
                 if not isinstance(arguments, dict):
                     raise ValueError("Tool arguments must be a JSON object")
-                # Same optional-value sentinel as official update_tool_args.
-                arguments = {key: value for key, value in arguments.items()
-                             if not (isinstance(value, dict) and not value)}
+                # Preserve model arguments in the trace. AutomationEpisode's
+                # official handler applies the optional {} sentinel before calling.
                 result = await ctx.environment.call(str(function.get("name", "")), arguments)
             except ValueError as error:
                 result = {"ok": False, "error": "invalid_arguments", "detail": str(error)}

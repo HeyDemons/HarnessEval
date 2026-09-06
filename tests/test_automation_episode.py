@@ -6,9 +6,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from benchmark_platform.bridges.automation_episode import api_specs, public_messages, public_prompt, run_episode
+from benchmark_platform.bridges.automation_episode import AutomationEpisode, api_specs, public_messages, public_prompt, run_episode
 from benchmark_platform.harnesses.api import Completion, ProviderError
-from benchmark_platform.harnesses.core import ToolSpec
+from benchmark_platform.harnesses.core import ToolSpec, ToolEnvironment, JsonlTrace
 
 
 class FakeEpisode:
@@ -130,3 +130,25 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(specs["api_fetch"].parallel)
         self.assertTrue(specs["api_search"].read_only)
         self.assertTrue(specs["base64_encode"].read_only)
+
+    async def test_official_optional_defaults_survive_strict_schema_and_empty_object(self):
+        episode = object.__new__(AutomationEpisode)
+        observed = []
+        def search(query, top_k=5):
+            observed.append((query, top_k))
+            return "official result"
+        episode.functions = {"api_search": search}
+        spec = ToolSpec("api_search", "search", {"type": "object", "properties": {
+            "query": {"type": "string"}, "top_k": {"type": "integer"}},
+            "required": ["query", "top_k"]}, ())
+        with tempfile.TemporaryDirectory() as tmp:
+            trace = JsonlTrace(Path(tmp) / "trace.jsonl")
+            env = ToolEnvironment([spec], trace, episode.handlers(), validate_schema=False)
+            for arguments in ({"query": "x"}, {"query": "x", "top_k": {}}, {"query": "x", "top_k": 0}):
+                self.assertTrue((await env.call("api_search", arguments))["ok"])
+            self.assertEqual(observed, [("x", 5), ("x", 5), ("x", 0)])
+            rejected = await env.call("api_search", {"query": "x", "world": {"injected": True}})
+            self.assertFalse(rejected["ok"])
+            self.assertIn("controller-owned", rejected["detail"])
+            regular = ToolEnvironment([spec], trace, episode.handlers())
+            self.assertEqual((await regular.call("api_search", {"query": "x"}))["error"], "invalid_arguments")

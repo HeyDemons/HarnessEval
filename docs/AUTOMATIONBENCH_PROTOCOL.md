@@ -33,6 +33,14 @@ native assertion scorer remain in use. One response with several calls is one
 Actor generation. Tool failures still produce observations; no scorer feedback
 is available during the agent loop.
 
+`automationbench_argument_protocol=official-function-defaults-v1` uses the native
+function's argument binding, like the official environment. The upstream model
+schema marks defaulted parameters as required; runtime calls may nevertheless omit
+them or provide the documented `{}` sentinel. AutomationBench therefore does not
+apply the generic controller schema validator ahead of the official handler.
+Other benchmarks retain their existing validation. Model-supplied `world` values
+remain rejected.
+
 The existing project budget remains 50 Actor-channel responses, with its final
 reserved response disallowing new actions. This local finalization convention is
 kept explicit; this control is not a claim that every official provider/default
