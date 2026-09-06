@@ -91,9 +91,17 @@ class SuiteTests(unittest.TestCase):
 
     def test_terminal_selection_uses_public_short_task_metadata(self) -> None:
         suite = self.suites.get("terminal-bench-2", "light")
-        self.assertEqual(suite["declared_count"], 34)
+        self.assertEqual(suite["declared_count"], 30)
+        self.assertEqual(len(suite["cases"]), suite["declared_count"])
         self.assertTrue(all(case["expert_time_estimate_min"] <= 30 for case in suite["cases"]))
         self.assertTrue(all(case["agent_timeout_sec"] > 0 and case["verifier_timeout_sec"] > 0 for case in suite["cases"]))
+        # The four removals are host capability and model-download exclusions, so they must
+        # stay declared rather than shrinking the suite silently.
+        excluded = suite["selection_policy"]["excluded_after_selection"]
+        self.assertEqual(excluded["previous_declared_count"], 34)
+        self.assertEqual(len(excluded["reason_by_case"]), 4)
+        self.assertFalse({case["id"] for case in suite["cases"]} & set(excluded["reason_by_case"]))
+        self.assertFalse(suite["selection_policy"]["model_outcomes_used"])
 
     def test_automationbench_has_six_formal_cases_per_domain(self) -> None:
         suite = self.suites.get("automationbench", "light")

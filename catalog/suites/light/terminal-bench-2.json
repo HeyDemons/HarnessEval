@@ -124,17 +124,6 @@
     },
     {
       "agent_timeout_sec": 900.0,
-      "category": "data-science",
-      "difficulty": "medium",
-      "docker_image": "alexgshaw/hf-model-inference:20251031",
-      "expert_time_estimate_min": 20.0,
-      "id": "hf-model-inference",
-      "internet_allowed": true,
-      "junior_time_estimate_min": 120.0,
-      "verifier_timeout_sec": 900.0
-    },
-    {
-      "agent_timeout_sec": 900.0,
       "category": "security",
       "difficulty": "medium",
       "docker_image": "alexgshaw/vulnerable-secret:20251031",
@@ -321,28 +310,6 @@
       "verifier_timeout_sec": 900.0
     },
     {
-      "agent_timeout_sec": 900.0,
-      "category": "system-administration",
-      "difficulty": "medium",
-      "docker_image": "alexgshaw/qemu-alpine-ssh:20251031",
-      "expert_time_estimate_min": 30.0,
-      "id": "qemu-alpine-ssh",
-      "internet_allowed": true,
-      "junior_time_estimate_min": 480.0,
-      "verifier_timeout_sec": 900.0
-    },
-    {
-      "agent_timeout_sec": 900.0,
-      "category": "system-administration",
-      "difficulty": "medium",
-      "docker_image": "alexgshaw/qemu-startup:20251031",
-      "expert_time_estimate_min": 30.0,
-      "id": "qemu-startup",
-      "internet_allowed": true,
-      "junior_time_estimate_min": 480.0,
-      "verifier_timeout_sec": 900.0
-    },
-    {
       "agent_timeout_sec": 1800.0,
       "category": "debugging",
       "difficulty": "medium",
@@ -363,29 +330,29 @@
       "internet_allowed": true,
       "junior_time_estimate_min": 60.0,
       "verifier_timeout_sec": 900.0
-    },
-    {
-      "agent_timeout_sec": 3600.0,
-      "category": "model-training",
-      "difficulty": "hard",
-      "docker_image": "alexgshaw/train-fasttext:20251031",
-      "expert_time_estimate_min": 30.0,
-      "id": "train-fasttext",
-      "internet_allowed": true,
-      "junior_time_estimate_min": 90.0,
-      "verifier_timeout_sec": 3600.0
     }
   ],
-  "declared_count": 34,
+  "declared_count": 30,
   "estimated_workload": {
-    "expert_total_min": 740.0,
-    "junior_total_min": 5635.0,
+    "expert_total_min": 630.0,
+    "junior_total_min": 4465.0,
     "maximum_expert_time_estimate_min": 30.0
   },
   "mode": "light",
-  "runner_note": "The cases are frozen, source-valid, and executable through the generic per-task container bridge. Expert and junior estimates are official task metadata, not model wall-clock guarantees.",
+  "runner_note": "The cases are frozen, source-valid, and executable through the generic per-task container bridge. Expert and junior estimates are official task metadata, not model wall-clock guarantees. Four cases were excluded after selection for host capability and model-download reasons; see selection_policy.excluded_after_selection.",
   "schema_version": 1,
   "selection_policy": {
+    "excluded_after_selection": {
+      "excluded_at": "2026-09-06",
+      "note": "Host capability and network exclusions, not task difficulty or model outcomes. Results measured on the 34-case suite are not comparable case-for-case with this one.",
+      "previous_declared_count": 34,
+      "reason_by_case": {
+        "hf-model-inference": "requires downloading model weights inside the task container",
+        "qemu-alpine-ssh": "nested QEMU is not supported by this evaluation host",
+        "qemu-startup": "nested QEMU is not supported by this evaluation host",
+        "train-fasttext": "requires downloading model weights inside the task container"
+      }
+    },
     "frozen": true,
     "historical_runs_used": false,
     "maximum_expert_time_estimate_min": 30.0,
@@ -402,7 +369,7 @@
   "status": "ready",
   "strata_summary": {
     "difficulty:easy": 3,
-    "difficulty:hard": 2,
-    "difficulty:medium": 29
+    "difficulty:hard": 1,
+    "difficulty:medium": 26
   }
 }
