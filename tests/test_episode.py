@@ -204,6 +204,35 @@ class EpisodeBrokerTests(unittest.TestCase):
                 self.assertFalse(row["runnable"])
                 self.assertEqual(row["baseline_requirement"], "magentic_requires_workspace_code_execution")
 
+    def test_tau_compiler_runs_one_dag_per_visible_assistant_turn(self) -> None:
+        from benchmark_platform.catalog import Catalog
+        from benchmark_platform.compatibility import compatibility_rows
+        root = Path(__file__).resolve().parents[1]
+        rows = compatibility_rows(PROFILES, Catalog(root / "catalog/benchmarks.json", root, root.parent))
+        row = next(r for r in rows if r['baseline'] == 'llmcompiler' and r['benchmark'] == 'tau2')
+        self.assertTrue(row['runnable'])
+        self.assertEqual(row['baseline_requirement'], 'turn_local_dag_with_visible_conversation')
+        client = ScriptedClient([
+            '{"tasks":[{"id":"1","tool":"native_lookup","arguments":{"id":"A"},"dependencies":[]}]}',
+            '{"action":"finish","answer":"first reply"}',
+            '{"tasks":[{"id":"1","tool":"native_lookup","arguments":{"id":"B"},"dependencies":[]}]}',
+            '{"action":"finish","answer":"second reply"}',
+        ])
+        with tempfile.TemporaryDirectory() as directory:
+            for index, identifier in enumerate(('A', 'B')):
+                broker = EpisodeBroker(profile='llmcompiler', prompt=f'Visible user identifier {identifier}',
+                    tools=[NativeTool('native_lookup', 'Look up one identifier', {'type': 'object'})],
+                    trace_path=Path(directory) / f'turn-{index}.jsonl', policy={}, client=client)
+                broker.start()
+                wave = broker.next_wave()
+                self.assertEqual(len(wave), 1)
+                self.assertEqual(wave[0].arguments, {'id': identifier})
+                final = broker.next_wave(tool_results={wave[0].id: ({'value': identifier}, False)})
+                self.assertIsInstance(final, FinalResponse)
+                self.assertEqual(broker.metrics()['llm_calls'], 2)
+            self.assertEqual(len(client.requests), 4)
+            self.assertNotIn('Visible user identifier B', json.dumps(client.requests[:2]))
+
     def test_parallel_profile_wave_is_one_native_wave(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = EpisodeBroker(

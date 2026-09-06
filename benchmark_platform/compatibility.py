@@ -82,14 +82,16 @@ def compatibility_rows(
                 runnable = False
                 baseline_requirement = "vitabench_rubrics_all_require_a_tool_mediated_order"
             if profile.id == "llmcompiler" and lifecycle == "native-conversation":
-                # LLMCompiler's premise is planning one parallel DAG of calls up front, which a
-                # conversation cannot supply: every user turn invalidates the plan, so each turn
-                # costs a new compiled plan. Raising the source's total planning-pass limit to
-                # cover a 14-32 turn episode turns the method into a very expensive
-                # ReAct -- planner, scheduler and joiner calls every turn -- which is no longer
-                # the published method. Inapplicable lifecycle, not a weak method.
-                runnable = False
-                baseline_requirement = "dag_planner_cannot_replan_per_conversation_turn"
+                if benchmark.id == "tau2":
+                    # tau_episode now treats a profile return as one assistant
+                    # reply and starts a fresh broker on the next user message.
+                    # Keep the original one-pass planner/scheduler/joiner inside
+                    # each invocation; do not expand a replan budget to span an
+                    # episode or reveal future user messages to its planner.
+                    baseline_requirement = "turn_local_dag_with_visible_conversation"
+                else:
+                    runnable = False
+                    baseline_requirement = "dag_planner_cannot_replan_per_conversation_turn"
             rows.append(
                 {
                     "baseline": profile.id,
