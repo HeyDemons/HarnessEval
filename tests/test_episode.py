@@ -56,9 +56,7 @@ PROFILE_RESPONSES = {
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
     "aflow": ["ok"],
-    "dylan": ["ok"] * 5,
-    "dylan-query-local": ["ok"] * 5,
-    "dylan-inference": ["ok"] * 5,
+    "dylan": ['{"final":"ok"}'] * 4,
     "magentic-one": [
         "facts",
         "plan",
@@ -184,8 +182,6 @@ class EpisodeBrokerTests(unittest.TestCase):
                     with self.subTest(benchmark=benchmark, profile=profile.id):
                         client = ScriptedClient(list(PROFILE_RESPONSES[profile.id]))
                         policy = {"max_turns": 4}
-                        if profile.id == "dylan":
-                            policy.update(frozen_dylan_policy(benchmark))
                         if profile.id == "aflow":
                             from benchmark_platform.harnesses.aflow import make_artifact
                             policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)

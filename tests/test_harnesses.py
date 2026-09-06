@@ -240,7 +240,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_no_external_tools_still_meter_all_generations(self) -> None:
         async def check():
-            for profile in ("aflow", "dylan", "dylan-query-local", "multi-persona"):
+            for profile in ("aflow", "multi-persona"):
                 with tempfile.TemporaryDirectory() as directory:
                     trace = JsonlTrace(Path(directory) / "trace.jsonl")
                     context = RunContext(profile, "p", ScriptedClient(["plan"] * 17),
@@ -999,16 +999,16 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(self.last_context.llm_calls, 1)
         self.assertEqual(self.last_client.json_modes, [False])
 
-    def test_dylan_published_text_network_has_no_hidden_tool_loop(self) -> None:
-        answer, environment = self.run_profile("dylan-query-local", ["42"] * 5)
+    def test_dylan_consensus_can_finish_without_tools(self) -> None:
+        answer, environment = self.run_profile("dylan", ['{"final":"42"}'] * 4)
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls, [])
         prompts = [messages[0]["content"] for messages in self.last_client.messages]
-        self.assertEqual(len(prompts), 5)
-        self.assertTrue(all("AI assistant" in prompt for prompt in prompts))
+        self.assertEqual(len(prompts), 4)
+        self.assertTrue(all("controller" in prompt for prompt in prompts))
 
     def test_dylan_preserves_complete_open_ended_candidate(self) -> None:
-        answer, _ = self.run_profile("dylan-query-local", ["7, 9"] * 5)
+        answer, _ = self.run_profile("dylan", ['{"final":"7, 9"}'] * 4)
         self.assertEqual(answer, "7, 9")
 
     def test_multi_persona_published_single_model_protocol(self) -> None:

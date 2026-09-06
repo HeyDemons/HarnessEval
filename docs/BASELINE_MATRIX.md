@@ -1,13 +1,37 @@
 # Baseline And Tool Compatibility
 
 HarnessEval separates source fidelity, tool transport, benchmark lifecycle, and
-scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
+scoring. Run `harnesseval matrix --json` for the current machine-readable table.
+
+## What a provenance label claims
+
+Every profile carries a `provenance` string. It describes **how the implemented
+algorithm relates to its source**, and nothing else. In particular, no label
+claims that a measurement here is comparable to a number printed in the source
+paper: every profile runs on benchmarks its authors did not use, under this
+project's common budget, transport and scoring.
+
+| Label | Claims | Does not claim |
+| --- | --- | --- |
+| `protocol-reproduction` | The algorithm matches the pinned `source`+`revision`, and any deliberate divergence is recorded in the profile notes | The paper's configuration, hyper-parameters, benchmark or reported results |
+| `paper-specification` | The algorithm follows the published specification | That a reference implementation existed to diff against |
+| `paper-configuration-transfer` | Reuses published optimized teams and declares the new benchmark adapter | Optimization on the target benchmark or reproduction of the original benchmark's results |
+| `local-adaptation` | An explicit, named departure from the published algorithm | To be the published method |
+| `local-control` | A control condition built for this project | Any upstream at all; `source` and `revision` are null |
+
+Two consequences worth stating plainly. Reproducing an algorithm is not
+reproducing an experiment: `dylan` transfers the published optimized decision
+teams to a new tool environment; its visible-state router is an explicit adapter.
+And a label is not a
+promise that the profile runs: LATS is a `protocol-reproduction` whose published
+reward channel this harness deliberately refuses to wire, and it participates
+nowhere. See [baseline protocol corrections](BASELINE_PROTOCOLS.md).
 
 ## Baselines
 
 | Profile | Tool contract | Fidelity boundary |
 | --- | --- | --- |
-| Actor-only | Dynamic | Shared JSON tool loop control |
+| Actor-only | Dynamic | Native API-tool loop on AutomationBench; single native declaration on BFCL; JSON control on other bridges |
 | ReAct | Dynamic | Batch default: native serial tool loop with explicit finish; optional text protocol with local Observation stop; separate single-response adapter on BFCL |
 | Plan-and-Execute | Dynamic | Minimal planner; sequential executors receive the original objective, previous steps and current objective (the source's optional include_task_in_prompt mode); last step response is returned |
 | CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
@@ -15,17 +39,16 @@ scoring. Run `harnesseval matrix --json` for the machine-readable 14 x 8 table.
 | LATS | Dynamic branch-isolated | **N/A — temporarily not participating** in the current batch; profile retained, no valid batch environment; historical records excluded from current comparisons |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
 | AFlow | No external tools (QA operators) | Frozen Python graph from a disjoint search; distinct Custom/AnswerGenerate and candidate-preserving ScEnsemble; see [artifact workflow](AFLOW_DYLAN.md) |
-| DyLAN | No external tools (text profile) | Frozen team from cross-query mean importance on a disjoint optimization split; evaluation performs only inference; see [configuration](AFLOW_DYLAN.md) |
-| DyLAN query-local | No external tools (local adaptation) | Explicit `dylan-query-local` variant: per-query trial, importance, selection and fresh solve; not offline team optimization |
+| DyLAN | Dynamic | Single published-team tool policy; exact action consensus and one controller commit per decision; generic state routing is an explicit [adapter](DYLAN_POLICY.md) |
 | Magentic-One | Workspace specialists | Ledger topology, separate file/web tools, tool-free Coder and non-LLM code Executor |
 | Multi-Persona | No external tools | SPP profile protocol with two complete demonstrations, dynamic participant profiles, iterative criticism/revision, and one model call |
 | LLMCompiler | Dynamic | Dependencies inferred from predecessor `$1`/`${1}` references plus explicit ordering edges; scheduling and text substitution share the effective graph; literal suffixes; legacy dialect requires explicit policy; non-streaming planner |
 | ReWOO | Dynamic | Source Plan/#E protocol; plan all calls first, execute explicit sequential Evidence Workers (dynamic tools or LLM worker), then solve from the complete evidence log |
 | SA | Dynamic read-only speculation | Independent `HARNESS_SA_MODEL` predicts top-k safe actions concurrently on every Actor turn; only an exact Actor match commits a pre-executed read |
 
-All source-backed revisions are stored as full 40-character commits in the
-profile registry. Protocol reproductions are not described as vendored upstream
-applications.
+Git-backed revisions use full 40-character commits in the profile registry;
+paper-backed configurations pin the paper version. Protocol reproductions are
+not described as vendored upstream applications.
 
 ## Benchmark Lifecycles
 
@@ -40,12 +63,11 @@ applications.
 | Terminal-Bench 2 | Task container filesystem | Implemented with separate agent and verifier containers | Official task reward |
 | SWE-bench Verified | Nested official task containers | Implemented through the official controller and fresh evaluator container | Official repository tests; macOS ARM64 currently supports the configured digest-pinned case |
 
-All 112 baseline x benchmark cells have an explicit lifecycle route, and each
-route is exercised by a scripted protocol subtest (56 single-turn, 28 native
-conversation, and 28 task-container). This proves bridge and tool-contract
-compatibility, not model task success. The selected AFlow QA, DyLAN text and
-Multi-Persona profiles execute without external tools. This does not imply that
-all experiments in the DyLAN paper prohibit tools. A tool-dependent task may end in a normal capability
+The matrix tests exercise lifecycle routes with scripted protocol responses.
+This proves bridge and tool-contract compatibility, not model task success.
+The selected AFlow QA and Multi-Persona profiles execute without external tools.
+The single DyLAN profile now executes its selected benchmark actions.
+A tool-dependent task may end in a normal capability
 failure. Exposing hidden user scenarios as prompts, replacing task containers
 with text questions, or silently giving either method a ReAct loop would produce
 an easier but invalid comparison.

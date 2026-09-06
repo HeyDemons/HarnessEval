@@ -6,7 +6,7 @@ import unittest
 from benchmark_platform.harnesses.aflow import digest
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment
 from benchmark_platform.harnesses.dylan_team import freeze_team, optimize_team, validate_team
-from benchmark_platform.harnesses.methods import run_profile
+from benchmark_platform.harnesses.dylan import run_legacy_text as run_profile
 from test_dylan_network import RecordingClient
 from test_dylan_fidelity import Trace
 

@@ -58,14 +58,16 @@ PROFILES = (
     HarnessProfile(
         id="cmas",
         name="Centralized multi-agent system",
-        topology="manager -> parallel worker wave -> manager synthesis",
+        topology="manager -> parallel worker wave -> tool-capable manager synthesis",
         provenance="local-control",
         source=None,
         revision=None,
         tool_contract="dynamic",
         notes=(
             "A local centralized control: the manager emits textual assignments, and independent tool-using "
-            "workers receive only their assigned subtask before manager synthesis."
+            "workers receive only their assigned subtask before manager synthesis. Synthesis runs the same "
+            "action loop as the workers, so the manager can act when a conversational turn leaves the task "
+            "unfinished instead of failing the episode; it is no longer a text-only summarizer."
         ),
     ),
     HarnessProfile(
@@ -89,7 +91,10 @@ PROFILES = (
         source="https://github.com/lapisrocks/LanguageAgentTreeSearch",
         revision="853d81614607dd27433faf17c7b0a7d660f95d22",
         tool_contract="dynamic-branch-isolated",
-        notes="Faithful branching requires read-only tools or benchmark-provided environment snapshots.",
+        notes=("Faithful branching requires read-only tools or benchmark-provided environment snapshots. "
+               "Not participating: no batch benchmark satisfies that, and the published reward is the gold "
+               "answer's exact match, which the search stops on. evaluate_terminal returns None by refusal, "
+               "so the model-value fallback changes the search signal rather than approximating it."),
     ),
     HarnessProfile(
         id="memgpt",
@@ -116,38 +121,16 @@ PROFILES = (
     HarnessProfile(
         id="dylan",
         name="DyLAN",
-        topology="offline mean importance -> frozen team -> task-solving network",
-        provenance="protocol-reproduction",
-        source="https://github.com/SALT-NLP/DyLAN",
-        revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
-        tool_contract="no-external-tools",
-        notes=("Requires a team frozen on a disjoint optimization split; evaluation only runs the selected text network. "
-               "Uses mean summed layer importance and stable top-k selection with demo BLEU consensus, not the MMLU "
-               "subject/subset selection scripts. The query-local variant has a separate profile."),
-    ),
-    HarnessProfile(
-        id="dylan-inference",
-        name="DyLAN inference without team optimization",
-        topology="preset initial team -> dynamic inference network -> early stopping",
-        provenance="protocol-reproduction",
-        source="https://github.com/SALT-NLP/DyLAN",
-        revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
-        tool_contract="no-external-tools",
-        notes=("Direct forward inference with four preset Assistant agents and three rounds by default. "
-               "Retains listwise activation and early stopping; no offline artifact, trial pass, "
-               "backward importance selection, or second solve. Initial team is fixed, not the active graph."),
-    ),
-    HarnessProfile(
-        id="dylan-query-local",
-        name="DyLAN query-local adaptation",
-        topology="per-query trial -> backward importance -> fresh solve",
-        provenance="local-adaptation",
-        source="https://github.com/SALT-NLP/DyLAN",
-        revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
-        tool_contract="no-external-tools",
-        notes=("Explicit variant retaining per-query trial+solve, with four Assistant candidates, a two-agent team, "
-               "and three rounds per phase. dylan_team_optimization=False is an inference-only ablation. "
-               "Neither configuration is cross-query offline team optimization."),
+        topology="published optimized state team -> dynamic T-FFN -> committed action -> observation",
+        provenance="paper-configuration-transfer",
+        source="https://arxiv.org/html/2310.02170v2",
+        revision="2310.02170v2",
+        tool_contract="dynamic",
+        notes=("Single tool-capable DyLAN profile. Transfers the three published optimized four-agent "
+               "decision-making teams with T=4, listwise top-2 reformation and exact action consensus. "
+               "The public-observation state router and generic tool encoding are benchmark adaptations. "
+               "Uses published team-selection results; does not claim optimization on the target benchmark. "
+               "Legacy frozen-text, query-local, inference and DM profile names are retired."),
     ),
     HarnessProfile(
         id="magentic-one",

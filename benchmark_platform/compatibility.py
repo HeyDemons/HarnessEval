@@ -40,7 +40,7 @@ def compatibility_rows(
             if profile.id == "aflow":
                 baseline_requirement = "frozen_workflow_from_disjoint_optimization_split"
             elif profile.id == "dylan":
-                baseline_requirement = "frozen_team_from_disjoint_optimization_split"
+                baseline_requirement = "published_optimized_teams_with_dynamic_tool_policy"
             elif profile.id == "dmas":
                 baseline_requirement = "agentnet_aligned_cold_start_without_cross_case_memory"
             elif profile.id == "lats":

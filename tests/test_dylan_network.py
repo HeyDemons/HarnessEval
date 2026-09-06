@@ -1,7 +1,7 @@
 import random
 import unittest
 
-from benchmark_platform.harnesses.dylan import Node, backward, edge_weights, parse_ranks, run_dylan
+from benchmark_platform.harnesses.dylan import Node, backward, edge_weights, parse_ranks, run_legacy_text as run_dylan
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment
 from test_dylan_fidelity import Trace, Client
 

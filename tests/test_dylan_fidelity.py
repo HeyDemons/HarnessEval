@@ -3,7 +3,7 @@ import unittest
 
 from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment
-from benchmark_platform.harnesses.methods import run_profile
+from benchmark_platform.harnesses.dylan import run_legacy_text as run_profile
 from benchmark_platform.harnesses.paper_methods import _dylan_most_frequent
 
 
