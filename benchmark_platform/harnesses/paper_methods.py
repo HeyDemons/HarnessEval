@@ -367,6 +367,7 @@ def _action_key(name: str, arguments: dict[str, Any]) -> str:
 
 async def run_sa(ctx: RunContext) -> str:
     """Lossless top-k Speculative Actions with an independent fast model each turn."""
+    from .reply_contracts import action_schema, object_schema
     safe_names = [name for name, tool in ctx.environment.tools.items() if tool.read_only and tool.parallel]
     policy_safe = ctx.policy.get("speculation_safe_tools")
     if isinstance(policy_safe, list):
@@ -406,6 +407,8 @@ async def run_sa(ctx: RunContext) -> str:
                 predictor_messages,
                 json_mode=True,
                 temperature=float(ctx.policy.get("sa_temperature", 0.1)),
+                response_schema=object_schema({"actions": {"type": "array", "items": object_schema({
+                    "tool": {"type": "string", "enum": safe_names}, "arguments": {"type": "object"}})}}),
             )
             draft = extract_json(raw, expected_type=dict)
         except Exception as exc:
@@ -461,7 +464,7 @@ async def run_sa(ctx: RunContext) -> str:
         )
         return cache
 
-    from .methods import ACTION_SYSTEM, _normalize_action  # methods imports this module
+    from .methods import ACTION_SYSTEM, parse_action_reply, action_protocol_error  # methods imports this module
 
     messages = [
         {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
@@ -480,7 +483,8 @@ async def run_sa(ctx: RunContext) -> str:
             else None
         )
         try:
-            raw = await ctx.complete("sa_actor", messages, json_mode=True)
+            raw = await ctx.complete("sa_actor", messages, json_mode=True,
+                                     response_schema=action_schema(ctx.environment.names, finalizing=finalizing))
         except asyncio.CancelledError:
             if draft_task is not None:
                 draft_task.cancel()
@@ -495,14 +499,14 @@ async def run_sa(ctx: RunContext) -> str:
                 await draft_task
             raise
         try:
-            action = _normalize_action(extract_json(raw, expected_type=dict), ctx.environment.names)
+            action = parse_action_reply(raw, ctx.environment.names)
         except ValueError as exc:
             if draft_task is not None:
                 await draft_task
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": f"Protocol error: {exc}. Return one complete action object."},
+                    {"role": "user", "content": action_protocol_error(str(exc))},
                 ]
             )
             continue
@@ -516,7 +520,7 @@ async def run_sa(ctx: RunContext) -> str:
                     entries=len(discarded),
                 )
             return str(action["final"])
-        if finalizing:
+        if finalizing or ctx.last_response_used_final_slot:
             raise RuntimeError("Speculative Actions turn budget exhausted: final response requested another tool")
         name = str(action.get("tool", ""))
         arguments = action.get("arguments")
@@ -526,7 +530,7 @@ async def run_sa(ctx: RunContext) -> str:
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": "Protocol error: arguments must be one JSON object."},
+                    {"role": "user", "content": action_protocol_error("arguments must be one JSON object")},
                 ]
             )
             continue

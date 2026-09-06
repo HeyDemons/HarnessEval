@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from .core import RunContext, extract_json, json_safe, tool_result_content
+from .reply_contracts import action_schema, instruction_list_schema, validate_reply
 
 
 ACTION_SYSTEM = """You are a tool-using agent. Work only from the task and complete tool observations.
@@ -17,7 +18,19 @@ is unavailable merely because this model request has no provider-side tool defin
 Return exactly one JSON object per turn, either:
 {{"tool":"tool_name","arguments":{{...}}}}
 or {{"final":"answer"}}.
-Do not invent a tool result."""
+Do not invent a tool result. All task requirements and constraints still apply to these actions."""
+
+# Benchmark-owned instructions can describe a native tool interface, so a rejected reply has to be
+# told what the envelope is, not only that it was wrong. AutomationBench replies drifted into
+# {"status": ...} progress objects and never recovered, exhausting the response budget on retries.
+ACTION_CONTRACT_REMINDER = (
+    'Return exactly one JSON object and nothing else, either {"tool":"tool_name","arguments":{...}} '
+    'or {"final":"answer"}. A status, progress, plan or summary object is not an action.'
+)
+
+
+def action_protocol_error(detail: str) -> str:
+    return f"Protocol error: {detail}. {ACTION_CONTRACT_REMINDER}"
 
 
 def _normalize_action(action: dict[str, Any], names: list[str]) -> dict[str, Any]:
@@ -30,6 +43,17 @@ def _normalize_action(action: dict[str, Any], names: list[str]) -> dict[str, Any
     return action
 
 
+def parse_action_reply(raw: str, names: list[str], *, finalizing: bool = False) -> dict:
+    action = _normalize_action(extract_json(raw, expected_type=dict), names)
+    validate_reply(action, action_schema(names, finalizing=finalizing))
+    return action
+
+
+def _validate_instructions(value: dict, key: str) -> None:
+    for index, item in enumerate(value[key], 1):
+        _instruction(item, kind=key, index=index)
+
+
 async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = None) -> str:
     messages = [
         {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
@@ -40,27 +64,28 @@ async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = No
         if finalizing:
             messages.append({"role": "user", "content": 'The action budget is exhausted. Return only {"final":"best answer supported by existing observations"}. Do not call another tool.'})
             await ctx.trace.emit("budget_finalization", scope=role, model_requests=ctx.model_budget.used)
-        raw = await ctx.complete(role, messages, json_mode=True)
+        raw = await ctx.complete(role, messages, json_mode=True,
+                                 response_schema=action_schema(ctx.environment.names, finalizing=finalizing))
         try:
-            action = _normalize_action(extract_json(raw, expected_type=dict), ctx.environment.names)
+            action = parse_action_reply(raw, ctx.environment.names)
         except ValueError as exc:
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": f"Protocol error: {exc}. Return one complete action object."},
+                    {"role": "user", "content": action_protocol_error(str(exc))},
                 ]
             )
             continue
         if "final" in action:
             return str(action["final"])
-        if finalizing:
+        if finalizing or ctx.last_response_used_final_slot:
             raise RuntimeError("Agent-loop turn budget exhausted: final response requested another tool")
         arguments = action.get("arguments")
         if not isinstance(arguments, dict):
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
-                    {"role": "user", "content": "Protocol error: arguments must be one JSON object."},
+                    {"role": "user", "content": action_protocol_error("arguments must be one JSON object")},
                 ]
             )
             continue
@@ -246,6 +271,10 @@ async def run_plan_execute(ctx: RunContext) -> str:
                 ),
             }
         ],
+        required_root_key="steps",
+        strict_single_object=True,
+        response_schema=instruction_list_schema("steps", nonempty=True),
+        validator=lambda value: _validate_instructions(value, "steps"),
     )
     steps = plan.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -279,6 +308,10 @@ async def run_cmas(ctx: RunContext) -> str:
                 ),
             }
         ],
+        required_root_key="assignments",
+        strict_single_object=True,
+        response_schema=instruction_list_schema("assignments", nonempty=False),
+        validator=lambda value: _validate_instructions(value, "assignments"),
     )
     assignments = plan.get("assignments")
     if not isinstance(assignments, list):
@@ -312,22 +345,21 @@ async def run_cmas(ctx: RunContext) -> str:
     reports = await asyncio.gather(
         *(worker(index, assignment) for index, assignment in enumerate(assignments, start=1))
     )
-    decision = await ctx.complete_json(
+    # A conversational benchmark restarts this profile on every user turn, so synthesis
+    # regularly lands mid-task where the honest next step is a tool call. A toolless
+    # synthesis step still received the domain policy telling it to call tools, emitted
+    # the action schema instead of `final` in 24 of 60 tau2 cases, and the raise scored
+    # each of those episodes 0. The manager now gets the loop its workers already use:
+    # it can act while work remains, and still returns `final`.
+    return await _json_tool_loop(
+        ctx,
         "manager_synthesis",
-        [
-            {
-                "role": "user",
-                "content": (
-                    "Synthesize the independent worker reports into the answer.\n"
-                    f"Task: {ctx.prompt}\nReports: {json.dumps(json_safe(reports), ensure_ascii=False)}\n"
-                    'Return JSON only: {"final":"answer"}'
-                ),
-            }
-        ],
+        prompt=(
+            "Synthesize the independent worker reports into the answer. The workers have "
+            "already acted; take further actions yourself only if the task is unfinished.\n"
+            f"Task: {ctx.prompt}\nReports: {json.dumps(json_safe(reports), ensure_ascii=False)}"
+        ),
     )
-    if "final" not in decision:
-        raise ValueError("CMAS manager synthesis omitted final")
-    return str(decision["final"])
 
 
 async def run_profile(ctx: RunContext) -> str:

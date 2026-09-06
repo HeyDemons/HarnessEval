@@ -20,6 +20,7 @@ _ASSISTANT_RESPONSE_ID: contextvars.ContextVar[int | None] = contextvars.Context
     "harnesseval_assistant_response_id",
     default=None,
 )
+_ACTOR_FINAL_SLOT = contextvars.ContextVar("harnesseval_actor_final_slot", default=None)
 
 
 class DeclarationOnlyComplete(RuntimeError):
@@ -462,6 +463,12 @@ class ToolEnvironment:
             self._state_condition.notify_all()
 
     async def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        final_slot = _ACTOR_FINAL_SLOT.get()
+        if (final_slot is not None and final_slot[0].environment is self and final_slot[1]
+                and not self.declaration_only and name != "send_message_to_user"):
+            from ..budgets import ModelBudgetExceeded
+            await self.trace.emit("budget_action_rejected", name=name, scope="final_model_response")
+            raise ModelBudgetExceeded("Final model response cannot commit a new environment action")
         response_id = _ASSISTANT_RESPONSE_ID.get()
         if not self._accept_declaration_call(response_id):
             result = {
@@ -770,6 +777,11 @@ class RunContext:
             loop_index >= self.max_turns - 1 or self.model_budget.final_response
         )
 
+    @property
+    def last_response_used_final_slot(self) -> bool:
+        value = _ACTOR_FINAL_SLOT.get()
+        return value is not None and value[0] is self and value[1]
+
     async def _reserve_model_response(self) -> None:
         from ..budgets import ModelBudgetExceeded
         try:
@@ -811,6 +823,7 @@ class RunContext:
         *,
         json_mode: bool = False,
         temperature: float | None = None,
+        response_schema: dict | None = None,
     ) -> str:
         return await self._complete_with(
             self.client,
@@ -819,6 +832,7 @@ class RunContext:
             messages,
             json_mode=json_mode,
             temperature=temperature,
+            response_schema=response_schema,
         )
 
     async def complete_speculator(
@@ -828,6 +842,7 @@ class RunContext:
         *,
         json_mode: bool = False,
         temperature: float | None = None,
+        response_schema: dict | None = None,
     ) -> str:
         if self.speculator_client is None:
             raise RuntimeError(
@@ -840,6 +855,7 @@ class RunContext:
             messages,
             json_mode=json_mode,
             temperature=temperature,
+            response_schema=response_schema,
         )
 
     async def _complete_with(
@@ -851,11 +867,15 @@ class RunContext:
         *,
         json_mode: bool,
         temperature: float | None,
+        response_schema: dict | None = None,
     ) -> str:
+        if response_schema is not None:
+            json_mode = True
         if self.environment.declaration_only and self.environment.declaration_committed:
             raise DeclarationOnlyComplete(
                 "Declaration-only benchmark already received its committed call batch"
             )
+        final_slot = (self.policy.get("finalize_on_loop_limit", False) is True and self.model_budget.final_response)
         if channel == "actor":
             await self._reserve_model_response()
         messages = self.environment.with_images(self.with_task_instructions(messages))
@@ -866,13 +886,14 @@ class RunContext:
             messages=messages,
             json_mode=json_mode,
             temperature=temperature,
+            response_schema=response_schema,
         )
         self.channel_requests[channel] += 1
-        completion: Completion = await client.complete(
-            messages,
-            json_mode=json_mode,
-            temperature=temperature,
-        )
+        constrained = getattr(client, "complete_constrained", None)
+        if response_schema is not None and callable(constrained):
+            completion = await constrained(messages, response_schema=response_schema, temperature=temperature)
+        else:
+            completion = await client.complete(messages, json_mode=json_mode, temperature=temperature)
         self.llm_calls += 1
         self._record_usage(channel, completion)
         if channel == "speculator":
@@ -886,6 +907,7 @@ class RunContext:
         response_id = self.llm_calls
         if channel == "actor":
             self.last_actor_response_id = response_id
+            _ACTOR_FINAL_SLOT.set((self, final_slot))
         _ASSISTANT_RESPONSE_ID.set(response_id)
         if channel == "actor":
             self.environment.commit_declaration_response(response_id)
@@ -929,6 +951,7 @@ class RunContext:
             raise DeclarationOnlyComplete(
                 "Declaration-only benchmark already received its committed call batch"
             )
+        final_slot = self.policy.get("finalize_on_loop_limit", False) is True and self.model_budget.final_response
         await self._reserve_model_response()
         messages = self.environment.with_images(self.with_task_instructions(messages))
         await self.trace.emit(
@@ -953,6 +976,7 @@ class RunContext:
         self.actor_llm_calls += 1
         response_id = self.llm_calls
         self.last_actor_response_id = response_id
+        _ACTOR_FINAL_SLOT.set((self, final_slot))
         _ASSISTANT_RESPONSE_ID.set(response_id)
         self.environment.commit_declaration_response(response_id)
         self.prompt_tokens += completion.prompt_tokens
@@ -1016,12 +1040,21 @@ class RunContext:
         temperature: float | None = None,
         required_root_key: str | None = None,
         strict_single_object: bool = False,
+        response_schema: dict | None = None,
+        validator: Callable[[dict], None] | None = None,
+        final_response_schema: dict | None = None,
     ) -> dict[str, Any]:
         conversation = list(messages)
+        from .reply_contracts import object_schema, validate_reply
+        if response_schema is None and required_root_key is not None:
+            response_schema = object_schema({required_root_key: {}})
         protocol_repairs = int(self.policy.get("protocol_repairs", 1))
         for attempt in range(protocol_repairs + 1):
+            attempt_schema = (final_response_schema if final_response_schema is not None
+                              and self.policy.get("finalize_on_loop_limit", False) is True
+                              and self.model_budget.final_response else response_schema)
             raw = await self.complete(
-                role, conversation, json_mode=True, temperature=temperature
+                role, conversation, json_mode=True, temperature=temperature, response_schema=attempt_schema
             )
             try:
                 if strict_single_object:
@@ -1030,16 +1063,27 @@ class RunContext:
                     value = _extract_json_object_with_root_key(raw, required_root_key)
                 else:
                     value = extract_json(raw, expected_type=dict)
+                if attempt_schema is not None:
+                    validate_reply(value, attempt_schema)
+                if validator is not None:
+                    validator(value)
                 return value
-            except ValueError:
+            except ValueError as error:
                 if attempt >= protocol_repairs:
                     raise
+                await self.trace.emit("json_reply_repair", role=role, attempt=attempt + 1,
+                                      error=str(error), response_schema=attempt_schema)
+                requirement = ("\nRequired reply schema: " + json.dumps(attempt_schema, ensure_ascii=False)
+                               if attempt_schema is not None else "")
                 conversation.extend(
                     [
                         {"role": "assistant", "content": raw},
                         {
                             "role": "user",
-                            "content": "Return one complete JSON object matching the requested schema. Preserve every field and argument.",
+                            "content": (
+                                f"Protocol error: {error}. Return one complete JSON object matching this "
+                                f"caller's requested format. Preserve all required fields and arguments.{requirement}"
+                            ),
                         },
                     ]
                 )

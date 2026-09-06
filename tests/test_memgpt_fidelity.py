@@ -65,3 +65,20 @@ class MemGPTFidelityTests(unittest.IsolatedAsyncioTestCase):
         ctx = RunContext("memgpt", "synthetic task", client, env, trace, {})
         self.assertEqual(await run_profile(ctx), "recovered")
         self.assertEqual(env.calls[0]["result"]["error"], "invalid_arguments")
+
+
+class MemGPTProtocolDriftTests(unittest.IsolatedAsyncioTestCase):
+    async def test_status_object_is_repaired_instead_of_ending_the_episode(self):
+        # AutomationBench injects its own agent instructions, which describe a native tool
+        # interface. One {"status": "in_progress"} reply used to raise and score the episode 0.
+        trace = Trace()
+        env = ToolEnvironment([ToolSpec("read", "read", {"type": "object"}, ())], trace, {"read": None})
+        client = Client({"status": "in_progress"})
+        ctx = RunContext("memgpt", "synthetic task", client, env, trace, {})
+        self.assertEqual(await run_profile(ctx), "recovered")
+        self.assertEqual(ctx.llm_calls, 2)
+        errors = [x for x in trace.events if x["event"] == "json_reply_repair"]
+        self.assertEqual([x["role"] for x in errors], ["memgpt_processor"])
+        feedback = client.messages[1][-1]["content"]
+        self.assertIn("reply.thought is required", feedback)
+        self.assertEqual(errors[0]["response_schema"]["required"], ["thought", "function", "arguments"])

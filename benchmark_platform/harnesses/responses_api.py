@@ -6,6 +6,7 @@ the existing bridge. Text action parsing stays with each harness method.
 from __future__ import annotations
 
 from collections import OrderedDict
+import asyncio
 import copy
 import hashlib
 import http.client
@@ -182,7 +183,12 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
             base = base[:-len("/chat/completions")]
         return base if base.endswith("/responses") else base + "/responses"
 
-    def _request(self, messages, *, temperature, seed, json_mode, tools, tool_choice):
+    async def complete_constrained(self, messages, *, response_schema, temperature=None):
+        """Use the caller's contract in the existing JSON transport envelope."""
+        return await asyncio.to_thread(self._complete_sync, messages, temperature=temperature,
+            seed=None, json_mode=True, response_schema=response_schema)
+
+    def _request(self, messages, *, temperature, seed, json_mode, tools, tool_choice, response_schema=None):
         if seed is not None:
             warnings.warn(
                 "Responses does not support provider seed; the requested value is recorded but not sent. "
@@ -252,14 +258,19 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
                 'description': ('Return the JSON object requested by the caller to the external benchmark controller. '
                                 'The controller executes any requested benchmark tool action and supplies its observation.'),
                 'parameters': {'type': 'object', 'properties': {
-                    'response': {'type': 'object', 'additionalProperties': True}},
+                    'response': copy.deepcopy(response_schema) if response_schema is not None
+                                else {'type': 'object', 'additionalProperties': True}},
                     'required': ['response'], 'additionalProperties': False},
                 'strict': False,
             }]
             body['tool_choice'] = {'type': 'function', 'name': 'submit_benchmark_json'}
             body['parallel_tool_calls'] = False
         elif json_mode:
-            body["text"] = {"format": {"type": "json_object"}}
+            body["text"] = {"format": (
+                {"type": "json_schema", "name": "harnesseval_reply", "schema": {
+                    "type": "object", "properties": {"response": copy.deepcopy(response_schema)},
+                    "required": ["response"], "additionalProperties": False}, "strict": False}
+                if response_schema is not None else {"type": "json_object"})}
             # Some compatible endpoints inspect input only, not instructions.
             if "json" not in json.dumps(items, ensure_ascii=False).lower():
                 items.append({"role": "user", "content": "Return JSON."})
@@ -276,9 +287,9 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
                                    if isinstance(choice, dict) else choice)
         return body, visible
 
-    def _complete_sync(self, messages, *, temperature, seed, json_mode, tools=None, tool_choice=None):
+    def _complete_sync(self, messages, *, temperature, seed, json_mode, tools=None, tool_choice=None, response_schema=None):
         body, visible = self._request(messages, temperature=temperature, seed=seed,
-                                      json_mode=json_mode, tools=tools, tool_choice=tool_choice)
+                                      json_mode=json_mode, tools=tools, tool_choice=tool_choice, response_schema=response_schema)
         encoded = json.dumps(body, ensure_ascii=False).encode()
         started, retries = time.perf_counter(), 0
         while True:
@@ -290,6 +301,17 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
                 with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                     original = _stream_response(response) if self.config.stream else json.loads(response.read().decode())
                 raw = _normalize(original)
+                if json_mode and response_schema is not None and body.get("text"):
+                    message = raw["choices"][0]["message"]
+                    try:
+                        wrapper = json.loads(message.get("content") or "")
+                    except ValueError:
+                        wrapper = None
+                    if isinstance(wrapper, dict) and isinstance(wrapper.get("response"), dict):
+                        message["content"] = json.dumps(wrapper["response"], ensure_ascii=False)
+                    # Keep malformed/truncated content for local protocol repair,
+                    # preserving its generation and usage instead of inventing a transport loss.
+                    raw["responses_json_transport"] = "schema-text"
                 if json_mode and body.get('tool_choice') == {'type': 'function', 'name': 'submit_benchmark_json'}:
                     # This function is a JSON transport envelope, never an
                     # environment action. Do not count or execute it as a tool.

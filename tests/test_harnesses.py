@@ -545,7 +545,7 @@ class HarnessTests(unittest.TestCase):
 
         self.assertEqual(answer, "6")
         worker_prompt = client.messages[1][1]["content"]
-        synthesis_prompt = client.messages[-1][0]["content"]
+        synthesis_prompt = client.messages[-1][1]["content"]
         self.assertIn("Assignment: retrieve alpha", worker_prompt)
         self.assertNotIn(context.prompt, worker_prompt)
         self.assertIn(context.prompt, synthesis_prompt)

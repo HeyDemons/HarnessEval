@@ -116,6 +116,19 @@ def _benchmark_function_schemas(ctx: RunContext) -> list[dict[str, Any]]:
     ]
 
 
+def _processor_schema(ctx: RunContext, *, finalizing: bool = False) -> dict:
+    from .reply_contracts import object_schema
+    names = ["send_message"] if finalizing else [*_MEMORY_FUNCTIONS, *(
+        name for name in ctx.environment.names if name != _NATIVE_USER_TOOL)]
+    return object_schema({"thought": {"type": "string"}, "function": {"type": "string", "enum": names},
+        "arguments": object_schema({"message": {"type": "string"}}) if finalizing else {"type": "object"}})
+
+
+def _validate_processor_reply(value: dict) -> None:
+    if value["function"] == "send_message" and not isinstance(value["arguments"].get("message"), str):
+        raise ValueError("send_message requires a string arguments.message")
+
+
 def _event(role: str, content: Any) -> dict[str, Any]:
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -266,7 +279,9 @@ async def run_memgpt(ctx: RunContext) -> str:
             await ctx.trace.emit("budget_finalization", scope="memgpt", model_requests=ctx.model_budget.used)
         prompt_tokens_before = ctx.prompt_tokens
         try:
-            action = await ctx.complete_json("memgpt_processor", messages)
+            action = await ctx.complete_json("memgpt_processor", messages,
+                response_schema=_processor_schema(ctx, finalizing=finalizing),
+                final_response_schema=_processor_schema(ctx, finalizing=True), validator=_validate_processor_reply)
         except RuntimeError as exc:
             message = str(exc).casefold()
             if "context" not in message or ("maximum" not in message and "length" not in message):
@@ -276,14 +291,14 @@ async def run_memgpt(ctx: RunContext) -> str:
                 {"role": "system", "content": _system_message(ctx, core, recall, archival)},
                 *active,
             ]
-            action = await ctx.complete_json("memgpt_processor", messages)
+            action = await ctx.complete_json("memgpt_processor", messages,
+                response_schema=_processor_schema(ctx, finalizing=finalizing),
+                final_response_schema=_processor_schema(ctx, finalizing=True), validator=_validate_processor_reply)
         prompt_tokens = ctx.prompt_tokens - prompt_tokens_before
         thought = action.get("thought")
         function = action.get("function")
         arguments = action.get("arguments")
-        if not isinstance(thought, str) or not isinstance(function, str) or not isinstance(arguments, dict):
-            raise ValueError("MemGPT processor response omitted thought, function, or object arguments")
-        if finalizing and function != "send_message":
+        if (finalizing or ctx.last_response_used_final_slot) and function != "send_message":
             raise RuntimeError("MemGPT turn budget exhausted: final response requested another function")
         active.append({"role": "assistant", "content": json.dumps(action, ensure_ascii=False)})
         recall.append(_event("assistant", action))

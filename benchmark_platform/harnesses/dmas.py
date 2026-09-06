@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .reply_contracts import object_schema
+
 import json
 import random
 from dataclasses import dataclass
@@ -109,6 +111,14 @@ def _agent_summary(agents: list[DmasAgent], *, exclude: str | None = None) -> li
     ]
 
 
+def _requirements_reply(mapped: dict) -> dict[str, float]:
+    raw = mapped["requirements"]
+    requirements = {name: _bounded_score(raw.get(name, 0.0), field=f"DMAS requirement {name}") for name in ABILITY_NAMES}
+    if not any(requirements.values()):
+        raise ValueError("DMAS capability mapper returned no positive requirement")
+    return requirements
+
+
 async def _task_requirements(ctx: RunContext) -> dict[str, float]:
     mapped = await ctx.complete_json(
         "dmas_capability_mapper",
@@ -122,17 +132,11 @@ async def _task_requirements(ctx: RunContext) -> dict[str, float]:
                 ),
             }
         ],
+        required_root_key="requirements",
+        response_schema=object_schema({"requirements": {"type": "object"}}),
+        validator=_requirements_reply,
     )
-    raw = mapped.get("requirements")
-    if not isinstance(raw, dict):
-        raise ValueError("DMAS capability mapper omitted requirements")
-    requirements = {
-        name: _bounded_score(raw.get(name, 0.0), field=f"DMAS requirement {name}")
-        for name in ABILITY_NAMES
-    }
-    if not any(requirements.values()):
-        raise ValueError("DMAS capability mapper returned no positive requirement")
-    return requirements
+    return _requirements_reply(mapped)
 
 
 async def _route(
@@ -173,6 +177,8 @@ async def _route(
                 ),
             },
         ],
+        required_root_key="decision",
+        response_schema=object_schema({"decision": {"type": "string", "enum": decisions.split("/")}}),
     )
 
 
@@ -256,6 +262,8 @@ async def _route_after_split(
                 ),
             }
         ],
+        required_root_key="status",
+        response_schema=object_schema({"status": {"type": "string", "enum": ["completed", "incompleted"]}}, extra=True),
     )
 
 
