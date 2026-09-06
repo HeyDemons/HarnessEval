@@ -226,6 +226,10 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
             # A minimal non-whitespace sentinel avoids an injected agent prompt.
             "instructions": system_instructions if system_instructions.strip() else ".",
             "store": False, "stream": self.config.stream,
+            # Some compatible gateways supply default hosted tools when this
+            # field is omitted. JSON/text protocols execute benchmark tools
+            # locally; no undeclared hosted tool may run on the provider.
+            "tools": [], "tool_choice": "none",
         }
         if self.config.reasoning_effort:
             body["reasoning"] = {"effort": self.config.reasoning_effort}

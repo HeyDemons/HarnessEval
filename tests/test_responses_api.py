@@ -64,6 +64,14 @@ class ResponsesTests(unittest.TestCase):
         for base in ["https://x/v1", "https://x/v1/", "https://x/v1/chat/completions", "https://x/v1/responses"]:
             self.assertEqual(OpenAIResponsesClient(ApiConfig(base, "test", "m")).endpoint, "https://x/v1/responses")
 
+    def test_text_protocols_explicitly_disable_gateway_default_tools(self):
+        for json_mode in (False, True):
+            with self.subTest(json_mode=json_mode), patch("urllib.request.urlopen", return_value=Response(envelope())) as request:
+                client().complete_sync([{"role": "user", "content": "Return JSON."}], json_mode=json_mode)
+                body = json.loads(request.call_args.args[0].data)
+                self.assertEqual(body['tools'], [])
+                self.assertEqual(body['tool_choice'], 'none')
+
     def test_explicit_instructions_json_guard_and_usage(self):
         c = client(reasoning_effort="high", max_output_tokens=123)
         messages = [{"role": "system", "content": "Return an action as JSON."}, {"role": "user", "content": "task"}]
