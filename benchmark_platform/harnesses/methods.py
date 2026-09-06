@@ -342,9 +342,21 @@ async def run_cmas(ctx: RunContext) -> str:
         async with semaphore:
             return await execute()
 
-    reports = await asyncio.gather(
-        *(worker(index, assignment) for index, assignment in enumerate(assignments, start=1))
-    )
+    # A bare gather returns the first exception while its siblings keep running: the bridge
+    # then finalizes, scores the world and writes the token counters with worker requests
+    # still in flight. Cancel and drain them first, the way the LLMCompiler scheduler does,
+    # so the measurement boundary is the same one the result claims.
+    running = [
+        asyncio.ensure_future(worker(index, assignment))
+        for index, assignment in enumerate(assignments, start=1)
+    ]
+    try:
+        reports = await asyncio.gather(*running)
+    except BaseException:
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
+        raise
     # A conversational benchmark restarts this profile on every user turn, so synthesis
     # regularly lands mid-task where the honest next step is a tool call. A toolless
     # synthesis step still received the domain policy telling it to call tools, emitted

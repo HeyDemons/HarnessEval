@@ -13,7 +13,7 @@ EVIDENCE_RE = re.compile(
     r"^\s*#E(\d+)\s*=\s*([A-Za-z_][\w.-]*)\s*\[",
     re.IGNORECASE | re.MULTILINE,
 )
-REFERENCE_RE = re.compile(r"#E\d+(?:\.(?:[A-Za-z_][\w]*|\d+))*", re.IGNORECASE)
+REFERENCE_RE = re.compile(r"#E\d+(?:\.(?:[A-Za-z_][\w]*|\d+)|\[\d+\])*", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -105,12 +105,23 @@ def parse_rewoo_plan(text: str) -> list[ReWOOStep]:
 
 
 def _select_reference(reference: str, evidence: dict[str, Any]) -> Any:
-    parts = reference[1:].split(".")
+    # `[0]` alongside `.0`: the planner prompt describes a field path, and a model writing a
+    # path into a JSON array reaches for the subscript it would use in any other language.
+    parts = [part for part in re.split(r"\.|\[(\d+)\]", reference[1:]) if part]
     evidence_id = parts[0].upper()
     if evidence_id not in evidence:
         raise ValueError(f"ReWOO reference {reference} is not available")
     selected = evidence[evidence_id]
     for part in parts[1:]:
+        # A benchmark tool answers with a JSON *string*, so the observation that a planner is
+        # told it may select a field from arrives as text. Walking it as a string used to fail
+        # every path reference into a real API result while the identical path over a Python
+        # dict succeeded -- an execution-boundary artefact, not a wrong plan.
+        if isinstance(selected, str):
+            try:
+                selected = json.loads(selected)
+            except json.JSONDecodeError:
+                pass
         try:
             if isinstance(selected, list):
                 selected = selected[int(part)]
@@ -183,9 +194,20 @@ def _tool_arguments(raw_input: str, evidence: dict[str, Any]) -> dict[str, Any]:
         value = json.loads(_quote_bare_references(raw_input))
     except json.JSONDecodeError as exc:
         raise ValueError(f"benchmark-tool input must be one complete JSON object: {exc.msg}") from exc
+    # Resolve before demanding an object. The published protocol lets a worker input *be* an
+    # earlier evidence variable -- `api_fetch[#E3]` where #E3 is the request the LLM worker
+    # built -- and checking the shape first rejected that plan while it was still literally
+    # the string "#E3". Upstream substitutes into the input text and only then hands it to
+    # the worker; this is the same order, with the object requirement this adapter adds.
+    value = _resolve_value(value, evidence)
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            pass
     if not isinstance(value, dict):
         raise ValueError("benchmark-tool input must be one complete JSON object")
-    return _resolve_value(value, evidence)
+    return value
 
 
 class EvidenceWorker:
@@ -310,9 +332,11 @@ async def run_rewoo(ctx: RunContext) -> str:
                 "worker executes. Each Plan must be followed by exactly one evidence assignment in this format:\n"
                 "Plan: rich description of this step\n"
                 "#E1 = Worker[input]\n\n"
-                "For a benchmark worker, input must be one complete JSON object matching its parameter schema. "
-                "References may be bare #E variables; append a field path such as #E1.value when a structured "
-                "evidence object must supply one scalar JSON field. For LLM, input is a plain-text instruction. "
+                "For a benchmark worker, input must resolve to one complete JSON object matching its parameter "
+                "schema: either write the object and reference evidence inside it, or name a single #E variable "
+                "whose evidence is already that object. Append a path such as #E1.value, #E1.results.0.url or "
+                "#E1.results[0].url to select one field from structured evidence. For LLM, input is a plain-text "
+                "instruction. "
                 "Do not solve the task or invent evidence in the plan.\n\n"
                 f"Workers:\n{_worker_descriptions(ctx)}\n\n"
                 f"Task: {ctx.prompt}"

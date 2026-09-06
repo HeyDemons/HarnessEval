@@ -300,6 +300,59 @@ class EpisodeBrokerTests(unittest.TestCase):
             self.assertIsInstance(result, FinalResponse)
             self.assertEqual(result.answer, "done")
 
+    def test_blank_user_message_is_a_tool_error_not_a_dead_episode(self) -> None:
+        """A native benchmark rejects an empty assistant message and ends the episode."""
+        with tempfile.TemporaryDirectory() as directory:
+            broker = EpisodeBroker(
+                profile="actor-only",
+                prompt="ask the hidden user",
+                tools=[],
+                trace_path=Path(directory) / "trace.jsonl",
+                policy={},
+                client=ScriptedClient(
+                    [
+                        json.dumps({"tool": SEND_MESSAGE_TOOL, "arguments": {"content": "   "}}),
+                        json.dumps({"tool": SEND_MESSAGE_TOOL, "arguments": {"content": "Which option?"}}),
+                        '{"final":"Option B"}',
+                    ]
+                ),
+            )
+            broker.start()
+            # The blank attempt never reaches the benchmark; the profile is told and retries.
+            wave = broker.next_wave()
+            self.assertEqual([item.name for item in wave], [SEND_MESSAGE_TOOL])
+            self.assertEqual(wave[0].arguments, {"content": "Which option?"})
+            result = broker.next_wave(user_message="B")
+            self.assertEqual(result.answer, "Option B")
+            errors = [
+                json.loads(line)
+                for line in (Path(directory) / "trace.jsonl").read_text(encoding="utf-8").splitlines()
+                if json.loads(line).get("event") == "tool_result"
+            ]
+            self.assertEqual(errors[0]["result"]["error"], "empty_user_message")
+
+    def test_provider_error_keeps_its_type_across_the_episode_thread(self) -> None:
+        """A lost provider measurement must stay classifiable as infrastructure."""
+        from benchmark_platform.harnesses.api import ProviderError
+
+        class FailingClient(ScriptedClient):
+            async def complete(self, messages, *, temperature=None, json_mode=False):
+                raise ProviderError("API transport failed after 3 retries", kind="transport")
+
+        with tempfile.TemporaryDirectory() as directory:
+            broker = EpisodeBroker(
+                profile="actor-only",
+                prompt="answer",
+                tools=[],
+                trace_path=Path(directory) / "trace.jsonl",
+                policy={},
+                client=FailingClient([]),
+            )
+            broker.start()
+            with self.assertRaises(ProviderError) as raised:
+                broker.next_wave()
+        self.assertEqual(raised.exception.kind, "transport")
+
     def test_user_simulator_reply_returns_to_same_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             broker = EpisodeBroker(
@@ -545,6 +598,8 @@ class TauTurnLifecycleTests(unittest.TestCase):
         created: list[object] = []
 
         class FakeBroker:
+            blank = False
+
             def __init__(self, *, prompt, **kwargs):
                 self.prompt = prompt
                 self.next_calls = 0
@@ -557,6 +612,8 @@ class TauTurnLifecycleTests(unittest.TestCase):
                 self.next_calls += 1
                 if self.next_calls != 1:
                     raise RuntimeError("a completed per-turn broker was reused")
+                if FakeBroker.blank:
+                    return FinalResponse("   ")
                 return FinalResponse(f"assistant turn {len(created)}")
 
             @staticmethod
@@ -660,52 +717,48 @@ class TauTurnLifecycleTests(unittest.TestCase):
                     self.assertEqual(configs[-1].seed, 300)
                     self.assertEqual(configs[-1].max_steps, 200)
 
+            # tau2 rejects an empty assistant message and the rejection ends the episode, so
+            # the baseline that produced nothing has to be named instead of the validator.
+            FakeBroker.blank = True
+            try:
+                created.clear()
+                with self.assertRaises(RuntimeError) as raised:
+                    tau_episode.run_episode(
+                        "rewoo", "retail:85", {"native_evaluate": False}, Path(directory)
+                    )
+                self.assertIn("empty final answer", str(raised.exception))
+                self.assertIn("rewoo", str(raised.exception))
+            finally:
+                FakeBroker.blank = False
 
-class TauGenerationTests(unittest.TestCase):
-    def test_tau_generation_hides_inline_reasoning_from_native_evaluator(self) -> None:
-        observed: dict[str, object] = {}
 
-        class AssistantMessage:
-            def __init__(self, *, role, content=None, tool_calls=None, **kwargs):
-                self.role = role
-                self.content = content
-                self.tool_calls = tool_calls
+class _TauAssistantMessage:
+    def __init__(self, *, role, content=None, tool_calls=None, **kwargs):
+        self.role = role
+        self.content = content
+        self.tool_calls = tool_calls
 
-        class ToolCall:
-            def __init__(self, *, id, name, arguments, requestor):
-                self.id = id
-                self.name = name
-                self.arguments = arguments
-                self.requestor = requestor
 
-        class Client:
-            def complete_sync(self, *args, **kwargs):
-                observed.update(kwargs)
-                return Completion(
-                    '<think>internal evaluator reasoning</think>{"results":[]}',
-                    3,
-                    2,
-                    0.1,
-                    0,
-                    {
-                        "choices": [
-                            {
-                                "message": {
-                                    "content": '<think>internal evaluator reasoning</think>{"results":[]}',
-                                }
-                            }
-                        ]
-                    },
-                )
+class _TauToolCall:
+    def __init__(self, *, id, name, arguments, requestor):
+        self.id = id
+        self.name = name
+        self.arguments = arguments
+        self.requestor = requestor
 
-        def module(name: str, **attributes: object) -> ModuleType:
-            value = ModuleType(name)
-            value.__dict__.update(attributes)
-            if name in {"tau2", "tau2.agent", "tau2.evaluator", "tau2.user", "tau2.utils"}:
-                value.__path__ = []
-            return value
 
-        fake_modules = {
+def _tau_generation_modules() -> dict[str, ModuleType]:
+    """The tau2 surface `_patch_tau_generation` imports and patches."""
+    AssistantMessage, ToolCall = _TauAssistantMessage, _TauToolCall
+
+    def module(name: str, **attributes: object) -> ModuleType:
+        value = ModuleType(name)
+        value.__dict__.update(attributes)
+        if name in {"tau2", "tau2.agent", "tau2.evaluator", "tau2.user", "tau2.utils"}:
+            value.__path__ = []
+        return value
+
+    return {
             "tau2": module("tau2"),
             "tau2.agent": module("tau2.agent"),
             "tau2.agent.llm_agent": module("tau2.agent.llm_agent", generate=None),
@@ -740,7 +793,25 @@ class TauGenerationTests(unittest.TestCase):
             "tau2.utils.llm_utils": module(
                 "tau2.utils.llm_utils", to_litellm_messages=lambda messages: messages
             ),
-        }
+    }
+
+
+def _tau_completion(message: dict[str, object]) -> Completion:
+    content = message.get("content") or ""
+    return Completion(content, 3, 2, 0.1, 0, {"choices": [{"message": message}]})
+
+
+class TauGenerationTests(unittest.TestCase):
+    def test_tau_generation_hides_inline_reasoning_from_native_evaluator(self) -> None:
+        observed: dict[str, object] = {}
+        reasoning = '<think>internal evaluator reasoning</think>{"results":[]}'
+
+        class Client:
+            def complete_sync(self, *args, **kwargs):
+                observed.update(kwargs)
+                return _tau_completion({"content": reasoning})
+
+        fake_modules = _tau_generation_modules()
         with patch.dict(sys.modules, fake_modules):
             tau_episode._patch_tau_generation(Client())
             result = fake_modules["tau2.evaluator.evaluator_nl_assertions"].generate(
@@ -750,6 +821,47 @@ class TauGenerationTests(unittest.TestCase):
         self.assertEqual(result.content, '{"results":[]}')
         self.assertEqual(observed["temperature"], 0.0)
         self.assertEqual(observed["seed"], 300)
+
+    def test_empty_completion_is_retried_then_fails_as_a_provider_error(self) -> None:
+        """tau2 cannot build a message from a reply with no text and no tool call."""
+        from benchmark_platform.harnesses.api import ProviderError
+
+        class Client:
+            def __init__(self, replies):
+                self.replies = list(replies)
+                self.calls = 0
+
+            def complete_sync(self, *args, **kwargs):
+                self.calls += 1
+                return _tau_completion(self.replies[min(self.calls - 1, len(self.replies) - 1)])
+
+        recovering = Client([{"content": ""}, {"content": "Airplane mode is on."}])
+        fake_modules = _tau_generation_modules()
+        with patch.dict(sys.modules, fake_modules):
+            tau_episode._patch_tau_generation(recovering)
+            generate = fake_modules["tau2.user.user_simulator"].generate
+            result = generate(model="user", messages=[], temperature=0.0, seed=300)
+            self.assertEqual(result.content, "Airplane mode is on.")
+            self.assertEqual(recovering.calls, 2)
+
+            # A reply carrying only a tool call is legal and must not be retried away.
+            tool_only = Client([{"content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "toggle_airplane_mode", "arguments": "{}"}}]}])
+            tau_episode._patch_tau_generation(tool_only)
+            call_only = fake_modules["tau2.user.user_simulator"].generate(
+                model="user", messages=[], temperature=0.0
+            )
+            self.assertEqual(tool_only.calls, 1)
+            self.assertEqual([item.name for item in call_only.tool_calls], ["toggle_airplane_mode"])
+
+            silent = Client([{"content": ""}])
+            tau_episode._patch_tau_generation(silent)
+            with self.assertRaises(ProviderError) as raised:
+                fake_modules["tau2.user.user_simulator"].generate(
+                    model="user", messages=[], temperature=0.0
+                )
+        self.assertEqual(silent.calls, tau_episode.TAU2_EMPTY_COMPLETION_ATTEMPTS)
+        self.assertEqual(raised.exception.kind, "empty_completion")
 
 
 if __name__ == "__main__":

@@ -438,6 +438,26 @@ class PlatformTests(unittest.TestCase):
             {row["baseline_requirement"] for row in gdpval_text_only},
             {"gdpval_requires_workspace_artifact_tools"},
         )
+        # AutomationBench and Terminal-Bench-2 grade only the world/container the agent
+        # leaves behind, so a published text-only method cannot reach the score at all.
+        for benchmark in ("automationbench", "terminal-bench-2"):
+            state_graded = [
+                row for row in rows if row["benchmark"] == benchmark and row["baseline"] in text_only
+            ]
+            self.assertEqual(len(state_graded), len(text_only), benchmark)
+            self.assertTrue(all(not row["runnable"] for row in state_graded), benchmark)
+            self.assertEqual(
+                {row["baseline_requirement"] for row in state_graded},
+                {"benchmark_scores_only_post_agent_world_state"},
+                benchmark,
+            )
+        # tau2 is the deliberate exception: 7 of its 60 light cases require zero actions and
+        # a text-only reply still becomes a graded assistant turn, so it stays eligible.
+        tau2_text_only = [
+            row for row in rows if row["benchmark"] == "tau2" and row["baseline"] in text_only
+        ]
+        self.assertTrue(all(row["runnable"] for row in tau2_text_only))
+
     def test_adapter_fingerprint_is_content_based(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
         benchmark = platform.catalog.get("swe-bench-verified")

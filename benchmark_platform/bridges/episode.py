@@ -14,6 +14,7 @@ from typing import Any, Mapping
 
 from benchmark_platform.harnesses.api import (
     CompletionClient,
+    ProviderError,
     completion_client_from_env,
     sa_speculator_client_from_env,
 )
@@ -149,6 +150,11 @@ class FinalResponse:
 @dataclass(frozen=True)
 class EpisodeFailure:
     error: str
+    # The profile runs on its own thread, so its exception has to cross back as data. Only
+    # the message used to survive, which flattened a lost provider measurement into an
+    # ordinary RuntimeError; the native bridges then had no way to classify it as
+    # infrastructure and the arm was scored 0 against the method.
+    exception: BaseException | None = None
 
 
 class EpisodeBroker:
@@ -223,8 +229,26 @@ class EpisodeBroker:
             parallel=False,
         )
         declared = [*self.native_tools, communication]
+
+        async def speak(arguments: dict[str, Any]) -> dict[str, Any]:
+            # A native benchmark rejects an assistant message with no content, and that
+            # rejection kills the whole episode rather than the turn. An ordinary tool error
+            # keeps the profile's own loop alive so it can send a real message instead.
+            content = arguments.get("content")
+            if not isinstance(content, str) or not content.strip():
+                return {
+                    "ok": False,
+                    "error": "empty_user_message",
+                    "detail": "content must be a non-empty message for the hidden user simulator",
+                }
+            return await self._request(SEND_MESSAGE_TOOL, arguments)
+
         handlers = {
-            tool.name: (lambda arguments, name=tool.name: self._request(name, arguments))
+            tool.name: (
+                speak
+                if tool.name == SEND_MESSAGE_TOOL
+                else (lambda arguments, name=tool.name: self._request(name, arguments))
+            )
             for tool in declared
         }
         environment = ToolEnvironment([tool.spec() for tool in declared], self.trace, handlers)
@@ -253,7 +277,7 @@ class EpisodeBroker:
         try:
             asyncio.run(self._run())
         except Exception as exc:
-            self._events.put(EpisodeFailure(f"{type(exc).__name__}: {exc}"))
+            self._events.put(EpisodeFailure(f"{type(exc).__name__}: {exc}", exc))
             self._ready.set()
 
     @staticmethod
@@ -321,6 +345,8 @@ class EpisodeBroker:
                 continue
             failures = [item for item in events if isinstance(item, EpisodeFailure)]
             if failures:
+                if isinstance(failures[0].exception, ProviderError):
+                    raise failures[0].exception
                 raise RuntimeError(failures[0].error)
             finals = [item for item in events if isinstance(item, FinalResponse)]
             actions = [item for item in events if isinstance(item, ActionRequest)]

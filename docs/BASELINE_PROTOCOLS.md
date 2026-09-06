@@ -136,6 +136,19 @@ is added. Its LLM capability mapper and weighted entry selection differ from
 upstream's task-type capability map. ReWOO requires worker evidence assignments,
 uses JSON tool inputs and typed field references, and omits the brackets that
 upstream adds around substituted evidence strings. These are adapter boundaries.
+
+ReWOO's evidence references are resolved before the worker input is required to
+be an object, so a single `#E` variable may be the whole input when the evidence
+it names is that object -- upstream substitutes into the input text and only then
+calls the worker, and demanding the object shape first rejected such a plan while
+it was still literally the string `#E3`. A field path may index an array as
+`#E1.results.0.url` or `#E1.results[0].url`, and a path is walked into a JSON
+*string* observation, which is the shape a benchmark tool actually returns; the
+identical path over a Python dict already resolved, so the difference was an
+execution boundary rather than a wrong plan. Measured on the 2026-09-06 tau2 sweep
+before this change: ReWOO scored 0.400 with 9 failed arms, the lowest of nine
+methods. This is a new measurement identity -- ReWOO results from before it are
+not comparable and must be re-run, not rescored.
 Plan-and-Execute's original-objective option, SPP's generic examples,
 LLMCompiler's non-streaming planner and SA's source-like waiting are declared
 configurations/adaptations, not modifications made in this correction.
@@ -146,6 +159,26 @@ lifecycle, no current batch benchmark is runnable for it. Its standalone
 model-value fallback is an adaptation; sequential proposal requests do not have
 the source's batched-sampling latency. Do not expose hidden gold to make it
 runnable or report these configurations as equivalent latency measurements.
+
+Two independent blockers, and the second is a principle rather than unfinished
+wiring. First, `run_lats` refuses any environment exposing a non-read-only tool,
+because MCTS backtracking needs branch-isolated snapshots that no benchmark here
+provides. Second, the published reward is the gold answer. In the pinned source
+the HotpotQA environment computes `score = normalize_answer(self.data[idx][1]) ==
+normalize_answer(info['answer'])`, where `self.data[idx][1]` is the labelled
+answer; the search stores that as `node.reward` and returns the moment a node
+reaches `reward == 1`. Wiring `RunContext.evaluate_terminal` to a scorer would
+therefore hand the agent the grader's verdict mid-search, so it returns `None`
+by deliberate refusal, not by omission, and the value-model fallback changes the
+algorithm's search signal rather than merely approximating it.
+
+This is not a defect to repair in code. A faithful LATS needs a benchmark that
+natively publishes an online reward to the agent -- as WebShop does with its
+item/instruction relevance score -- and whose tools are read-only or
+snapshottable. Adding one is separate integration work.
+
+Reference: [pinned HotpotQA reward](https://github.com/lapisrocks/LanguageAgentTreeSearch/blob/853d81614607dd27433faf17c7b0a7d660f95d22/hotpot/wrappers.py)
+and [its search loop](https://github.com/lapisrocks/LanguageAgentTreeSearch/blob/853d81614607dd27433faf17c7b0a7d660f95d22/hotpot/lats.py).
 
 **Decision: LATS is temporarily not participating in the current batch.** Keep
 its profile and compatibility gates registered, but display its participation

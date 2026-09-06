@@ -1494,6 +1494,94 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(steps[0].worker, "LLM")
         self.assertEqual(steps[0].worker_input, 'Compare [alpha] with {"literal": "]"}')
 
+    def test_cmas_leaves_no_worker_running_when_one_fails(self) -> None:
+        """The bridge scores and writes counters as soon as run_cmas returns."""
+
+        class BlockingClient:
+            def __init__(self) -> None:
+                self.messages = []
+                self.active = 0
+                self.blocked = None
+
+            async def complete(self, messages, *, temperature=None, json_mode=False):
+                self.messages.append(messages)
+                role = json.dumps(messages)
+                if "assignments" in role and len(self.messages) == 1:
+                    content = ('{"assignments":[{"id":"w1","instruction":"slow work"},'
+                               '{"id":"w2","instruction":"failing work"}]}')
+                    return Completion(content, 1, 1, 0.0, 0,
+                                      {"choices": [{"message": {"content": content}}]})
+                if "failing work" in role:
+                    raise RuntimeError("worker w2 lost its provider")
+                self.active += 1
+                try:
+                    self.blocked = self.blocked or asyncio.Event()
+                    await self.blocked.wait()
+                    raise AssertionError("the blocked worker was never released")
+                finally:
+                    self.active -= 1
+
+        with tempfile.TemporaryDirectory() as directory:
+            trace = JsonlTrace(Path(directory) / "trace.jsonl")
+            environment = ToolEnvironment(tool_specs(), trace)
+            client = BlockingClient()
+            context = RunContext("cmas", "decompose and answer", client, environment, trace,
+                                 {"max_turns": 8})
+
+            async def scenario() -> int:
+                # Measure inside the loop: the bridge finalizes, scores the world and reads
+                # the counters here, long before asyncio.run's shutdown reaps stragglers.
+                try:
+                    await run_profile(context)
+                except RuntimeError:
+                    return client.active
+                raise AssertionError("the failing worker did not end the wave")
+
+            self.assertEqual(asyncio.run(scenario()), 0)
+
+    def test_rewoo_resolves_paths_into_a_json_string_observation(self) -> None:
+        from benchmark_platform.harnesses.rewoo import _select_reference, _tool_arguments
+
+        # A benchmark tool answers with a JSON string, which is what a plan's field path has
+        # to reach through. Both spellings of the index must land on the same value.
+        evidence = {"E1": '{"results":[{"url":"https://example.test/a"}]}'}
+        for reference in ("#E1.results.0.url", "#E1.results[0].url"):
+            with self.subTest(reference=reference):
+                self.assertEqual(
+                    _select_reference(reference, evidence), "https://example.test/a"
+                )
+        self.assertEqual(
+            _tool_arguments('{"url":"#E1.results[0].url"}', evidence),
+            {"url": "https://example.test/a"},
+        )
+        # A whole-evidence reference is a legal worker input when the evidence is the object.
+        self.assertEqual(
+            _tool_arguments("#E2", {"E2": '{"key":"alpha"}'}), {"key": "alpha"}
+        )
+        self.assertEqual(_tool_arguments("#E3", {"E3": {"key": "beta"}}), {"key": "beta"})
+        with self.assertRaises(ValueError):
+            _tool_arguments("#E4", {"E4": "not an object"})
+
+    def test_rewoo_worker_input_may_be_an_llm_built_request(self) -> None:
+        answer, environment = self.run_profile(
+            "rewoo",
+            [
+                "\n".join(
+                    [
+                        "Plan: compose the lookup request",
+                        '#E1 = LLM[Return the JSON request for alpha]',
+                        "Plan: run the composed request",
+                        "#E2 = lookup[#E1]",
+                    ]
+                ),
+                '{"key":"alpha"}',
+                "6",
+            ],
+        )
+        self.assertEqual(answer, "6")
+        self.assertEqual(len(environment.calls), 1)
+        self.assertEqual(environment.calls[0]["arguments"], {"key": "alpha"})
+
     def test_rewoo_worker_failure_is_visible_to_solver(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")

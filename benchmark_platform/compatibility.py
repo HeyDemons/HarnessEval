@@ -67,6 +67,20 @@ def compatibility_rows(
                 # mislabel an inapplicable lifecycle as weak task performance.
                 runnable = False
                 baseline_requirement = "gdpval_requires_workspace_artifact_tools"
+            if profile.tool_contract == "no-external-tools" and benchmark.id in {
+                "automationbench", "terminal-bench-2"
+            }:
+                # Both grade world/container state after the agent exits and neither has a
+                # conversational channel a text-only method could earn credit through.
+                # AutomationBench: the official scorer was run over all 36 initialized light
+                # worlds with no model and no environment action -- strict 0/36 and partial
+                # 0/36 (reports/automationbench-baseline-audit-20260906/noop-suite.json).
+                # Terminal-Bench-2: every task's reward comes from tests/test.sh executed
+                # inside the container the agent never touched. Marking these eligible lets a
+                # structurally inapplicable lifecycle be read as a weak method, and it was
+                # only being avoided by hand-editing the campaign plan.
+                runnable = False
+                baseline_requirement = "benchmark_scores_only_post_agent_world_state"
             if profile.tool_contract == "no-external-tools" and benchmark.id == "vitabench":
                 # Checked against the suite, not assumed: all 60 light cases carry evaluation
                 # criteria, and every one of them requires at least one order to be created --
@@ -74,11 +88,14 @@ def compatibility_rows(
                 # so it cannot score at all here, and 60 structural zeros read as a weak method
                 # rather than an inapplicable one.
                 #
-                # Deliberately not extended to the other native conversation, tau2: its light
-                # suite contains at least one task with no evaluation criteria at all
-                # (airline:9), where evaluate_simulation returns a flat 1.0 and a method that
-                # called nothing scored full marks. Until that rate is measured there, the same
-                # reasoning is not established for it.
+                # Still not extended to the other native conversation, tau2, and the rate is
+                # now measured rather than merely unknown: 7 of its 60 light cases require
+                # zero actions (airline 10/31/46/34/0, retail 57/24) and are graded on
+                # communication alone. All nine methods in the 2026-09-06 sweep scored 1.0 on
+                # every one of them. tau2 also gives a text-only profile a real channel -- its
+                # reply becomes an assistant turn and the hidden user answers -- so such a
+                # method can earn credit there. It is a weak configuration on tau2, not an
+                # inapplicable one, and gating it would hide a measurable result.
                 runnable = False
                 baseline_requirement = "vitabench_rubrics_all_require_a_tool_mediated_order"
             if profile.id == "llmcompiler" and lifecycle == "native-conversation":

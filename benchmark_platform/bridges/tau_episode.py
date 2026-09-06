@@ -8,7 +8,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
+from benchmark_platform.harnesses.api import (
+    CompletionClient, ProviderError, completion_client_from_env,
+)
 from benchmark_platform.budgets import TAU2_MAX_STEPS, native_steps, native_errors
 from benchmark_platform.measurement import (
     METRICS_VERSION, TURN_DEFINITION, TURN_SCOPE, TOKEN_DEFINITION, add_tokens, zero_tokens,
@@ -28,6 +30,22 @@ TASK_SET_DOMAINS = {
 # itself, and a silent upstream/default drift would otherwise change measurement.
 TAU2_USER_TEMPERATURE = 0.0
 TAU2_SEED = 300
+
+# A completion with neither visible text nor a tool call cannot become a legal tau2 message:
+# Message.validate() raises, Orchestrator.run() does not catch it, and the whole episode is
+# lost. Measured on the 2026-09-06 sweep: 23 of 540 baseline arms died on this validation,
+# 17 of them because the *user simulator* returned nothing. 17 of the 23 were telecom, the
+# domain whose user simulator is expected to answer with tool calls and no prose, so a truly
+# empty reply there lands on a turn that has neither. The episode was then scored 0 against
+# whichever method happened to be running (rewoo 8, memgpt 5, dmas 3, sa 3, llmcompiler 2,
+# actor-only 1, react 1), which is a method-correlated bias, not a property of the methods.
+#
+# Upstream passes content through unchanged and would fail the same way; it is rarer there
+# because the published default user/judge model is gpt-4.1 at temperature 0 rather than a
+# relay-hosted reasoning model. Ask again instead of inventing a user utterance, and if the
+# relay keeps returning nothing, fail as a provider error so the arm stays eligible for an
+# infrastructure retry instead of being recorded as the baseline's own zero.
+TAU2_EMPTY_COMPLETION_ATTEMPTS = 3
 
 
 def _write(path: Path, value: Any) -> None:
@@ -248,38 +266,50 @@ def _patch_tau_generation(client: CompletionClient) -> None:
         compatible = to_litellm_messages(messages)
         schemas = [tool.openai_schema for tool in tools] if tools else None
         started = time.perf_counter()
-        # Called synchronously from tau2's own worker thread: go straight to the blocking
-        # client instead of spinning up an event loop per turn just to await a wrapper.
-        completion = client.complete_sync(
-            compatible,
-            tools=schemas,
-            tool_choice=tool_choice,
-            temperature=kwargs.get("temperature"),
-            seed=kwargs.get("seed"),
-        )
-        raw_message = completion.raw["choices"][0]["message"]
-        parsed_calls = []
-        for raw_call in raw_message.get("tool_calls") or []:
-            function = raw_call.get("function") or {}
-            arguments = function.get("arguments") or "{}"
-            if isinstance(arguments, str):
-                arguments = json.loads(arguments)
-            if not isinstance(arguments, dict):
-                raise TypeError("Native tool-call arguments must decode to an object")
-            parsed_calls.append(
-                ToolCall(
-                    id=str(raw_call.get("id") or uuid.uuid4().hex),
-                    name=str(function["name"]),
-                    arguments=arguments,
-                    requestor="assistant",
-                )
+        # The retry repeats the identical request, seed included: a different one would be a
+        # different measurement, and an empty body is a relay artefact rather than a choice.
+        for _attempt in range(TAU2_EMPTY_COMPLETION_ATTEMPTS):
+            # Called synchronously from tau2's own worker thread: go straight to the blocking
+            # client instead of spinning up an event loop per turn just to await a wrapper.
+            completion = client.complete_sync(
+                compatible,
+                tools=schemas,
+                tool_choice=tool_choice,
+                temperature=kwargs.get("temperature"),
+                seed=kwargs.get("seed"),
             )
-        return AssistantMessage(
-            role="assistant",
+            raw_message = completion.raw["choices"][0]["message"]
+            parsed_calls = []
+            for raw_call in raw_message.get("tool_calls") or []:
+                function = raw_call.get("function") or {}
+                arguments = function.get("arguments") or "{}"
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                if not isinstance(arguments, dict):
+                    raise TypeError("Native tool-call arguments must decode to an object")
+                parsed_calls.append(
+                    ToolCall(
+                        id=str(raw_call.get("id") or uuid.uuid4().hex),
+                        name=str(function["name"]),
+                        arguments=arguments,
+                        requestor="assistant",
+                    )
+                )
             # The relay may inline the model's reasoning as <think>...</think>. Tau2's
             # native evaluator expects a bare JSON object, so hidden user/evaluator
             # reasoning must not be fed back into its parser or graded transcript.
-            content=visible_text(raw_message.get("content")),
+            content = visible_text(raw_message.get("content"))
+            if content.strip() or parsed_calls:
+                break
+        else:
+            raise ProviderError(
+                f"Relay returned no content and no tool call for tau2 {model!r} in "
+                f"{TAU2_EMPTY_COMPLETION_ATTEMPTS} attempts; tau2 cannot build a legal message",
+                kind="empty_completion",
+            )
+        return AssistantMessage(
+            role="assistant",
+            content=content,
             tool_calls=parsed_calls or None,
             cost=0.0,
             usage={
@@ -377,6 +407,16 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                     user_message=_user_message(message),
                 )
             if isinstance(wave, FinalResponse):
+                if not (wave.answer or "").strip():
+                    # tau2 rejects an empty assistant message and the rejection ends the
+                    # episode, so name the cause here. The profile has already returned, so
+                    # there is nothing left to ask again: this is the baseline failing to
+                    # produce an answer, and it must not read like the provider-side
+                    # empty-completion failure that TAU2_EMPTY_COMPLETION_ATTEMPTS covers.
+                    raise RuntimeError(
+                        f"Baseline {profile!r} returned an empty final answer; tau2 requires "
+                        "a non-empty assistant message"
+                    )
                 response = AssistantMessage(role="assistant", content=wave.answer, cost=0.0)
                 self.broker = None
             else:
@@ -469,14 +509,22 @@ def main() -> None:
         policy = json.loads(args.policy)
         result = run_episode(args.profile, args.case, policy, args.job)
     except Exception as exc:
+        # Every other bridge classifies its own failure. Without this the root runner has to
+        # infer the kind from the error text, so a lost provider measurement was only ever
+        # rescued when the string happened to match an INFRA_MARKER, and everything else --
+        # including the empty-completion failure above -- was scored 0 against the method.
         result = {
             "schema_version": 1,
             "status": "failed",
             "benchmark": "tau2",
             "case_id": args.case,
             "profile": args.profile,
+            "failure_kind": "provider_error" if isinstance(exc, ProviderError) else "agent_runtime",
             "error": f"{type(exc).__name__}: {exc}",
         }
+        if isinstance(exc, ProviderError):
+            result["provider_error_kind"] = exc.kind
+            result["provider_status_code"] = exc.status_code
     _write(args.job / "harness_result.json", result)
     _write(args.job / "payload.json", result)
     raise SystemExit(0 if result["status"] == "completed" else 1)
