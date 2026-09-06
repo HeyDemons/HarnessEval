@@ -10,6 +10,10 @@ from .core import RunContext, extract_json, json_safe, tool_result_content
 
 ACTION_SYSTEM = """You are a tool-using agent. Work only from the task and complete tool observations.
 Available tools: {tools}
+These tools are executed by the external benchmark controller when you return a tool JSON object.
+They do not require provider-side function tools. Request an available tool by returning its JSON action;
+the controller will execute it and supply the observation on the next turn. Do not claim a listed tool
+is unavailable merely because this model request has no provider-side tool definitions.
 Return exactly one JSON object per turn, either:
 {{"tool":"tool_name","arguments":{{...}}}}
 or {{"final":"answer"}}.
