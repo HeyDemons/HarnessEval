@@ -72,6 +72,32 @@ class ResponsesTests(unittest.TestCase):
                 self.assertEqual(body['tools'], [])
                 self.assertEqual(body['tool_choice'], 'none')
 
+    def test_opt_in_json_function_envelope_is_not_an_environment_call(self):
+        action = {'tool': 'lookup', 'arguments': {'id': 'A'}}
+        item = {'type': 'function_call', 'call_id': 'json_call', 'name': 'submit_benchmark_json',
+                'arguments': json.dumps({'response': action})}
+        with patch.dict('os.environ', {'HARNESS_RESPONSES_JSON_TRANSPORT': 'function'}), \
+             patch('urllib.request.urlopen', return_value=Response(envelope(output=[item]))) as request:
+            result = client().complete_sync([{'role': 'user', 'content': 'Return the action JSON.'}], json_mode=True)
+        body = json.loads(request.call_args.args[0].data)
+        self.assertEqual(body['tool_choice'], {'type': 'function', 'name': 'submit_benchmark_json'})
+        self.assertFalse(body['parallel_tool_calls'])
+        self.assertNotIn('text', body)
+        self.assertEqual(json.loads(result.content), action)
+        self.assertNotIn('tool_calls', result.raw['choices'][0]['message'])
+        self.assertEqual(result.raw['responses_json_transport'], 'function')
+        self.assertEqual(result.prompt_tokens, 100)
+
+    def test_json_transport_rejects_wrong_or_duplicate_envelopes(self):
+        valid = {'type': 'function_call', 'call_id': 'c', 'name': 'submit_benchmark_json',
+                 'arguments': '{"response":{"final":"ok"}}'}
+        for output in ([{**valid, 'name': 'other'}], [valid, {**valid, 'call_id': 'd'}],
+                       [{**valid, 'arguments': '{"response":"not an object"}'}]):
+            with self.subTest(output=output), patch.dict('os.environ', {'HARNESS_RESPONSES_JSON_TRANSPORT': 'function'}), \
+                 patch('urllib.request.urlopen', return_value=Response(envelope(output=output))):
+                with self.assertRaises(ProviderError):
+                    client().complete_sync([{'role': 'user', 'content': 'Return JSON.'}], json_mode=True)
+
     def test_explicit_instructions_json_guard_and_usage(self):
         c = client(reasoning_effort="high", max_output_tokens=123)
         messages = [{"role": "system", "content": "Return an action as JSON."}, {"role": "user", "content": "task"}]

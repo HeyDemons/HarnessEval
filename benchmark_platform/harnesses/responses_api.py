@@ -10,6 +10,7 @@ import copy
 import hashlib
 import http.client
 import json
+import os
 import threading
 import time
 from typing import Any
@@ -240,7 +241,24 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
             body["temperature"] = self.config.temperature
         if self.config.max_output_tokens is not None:
             body["max_output_tokens"] = self.config.max_output_tokens
-        if json_mode:
+        json_transport = os.environ.get('HARNESS_RESPONSES_JSON_TRANSPORT', 'text')
+        if json_transport not in {'text', 'function'}:
+            raise ValueError('HARNESS_RESPONSES_JSON_TRANSPORT must be text or function')
+        if json_mode and json_transport == 'function':
+            if tools:
+                raise ValueError('JSON transport cannot also declare native benchmark tools')
+            body['tools'] = [{
+                'type': 'function', 'name': 'submit_benchmark_json',
+                'description': ('Return the JSON object requested by the caller to the external benchmark controller. '
+                                'The controller executes any requested benchmark tool action and supplies its observation.'),
+                'parameters': {'type': 'object', 'properties': {
+                    'response': {'type': 'object', 'additionalProperties': True}},
+                    'required': ['response'], 'additionalProperties': False},
+                'strict': False,
+            }]
+            body['tool_choice'] = {'type': 'function', 'name': 'submit_benchmark_json'}
+            body['parallel_tool_calls'] = False
+        elif json_mode:
             body["text"] = {"format": {"type": "json_object"}}
             # Some compatible endpoints inspect input only, not instructions.
             if "json" not in json.dumps(items, ensure_ascii=False).lower():
@@ -272,6 +290,20 @@ class OpenAIResponsesClient(OpenAICompatibleClient):
                 with urllib.request.urlopen(request, timeout=self.config.timeout_seconds) as response:
                     original = _stream_response(response) if self.config.stream else json.loads(response.read().decode())
                 raw = _normalize(original)
+                if json_mode and body.get('tool_choice') == {'type': 'function', 'name': 'submit_benchmark_json'}:
+                    # This function is a JSON transport envelope, never an
+                    # environment action. Do not count or execute it as a tool.
+                    message = raw['choices'][0]['message']
+                    calls = message.get('tool_calls') or []
+                    if len(calls) != 1 or calls[0]['function']['name'] != 'submit_benchmark_json':
+                        raise StreamInterrupted('JSON transport omitted its single declared envelope')
+                    value = json.loads(calls[0]['function']['arguments'])
+                    if not isinstance(value, dict) or not isinstance(value.get('response'), dict):
+                        raise StreamInterrupted('JSON transport response must contain one object')
+                    message['content'] = json.dumps(value['response'], ensure_ascii=False)
+                    message.pop('tool_calls', None)
+                    raw['choices'][0]['finish_reason'] = 'stop'
+                    raw['responses_json_transport'] = 'function'
                 break
             except urllib.error.HTTPError as exc:
                 status = exc.code

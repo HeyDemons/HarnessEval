@@ -202,6 +202,7 @@ def local_proxy_url() -> str | None:
 # was duplicated across four call sites, so HARNESS_API_STREAM reached the --pass-env
 # flags while every one of them still rejected it, and every arm died on the first case.
 HARNESS_ENV = frozenset({
+    "HARNESS_RESPONSES_JSON_TRANSPORT",
     "HARNESS_API_BASE",
     "HARNESS_API_TYPE",
     "HARNESS_API_AUTH",
