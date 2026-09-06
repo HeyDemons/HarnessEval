@@ -3,9 +3,10 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from benchmark_platform.bridges.automation_episode import api_specs, public_prompt, run_episode
+from benchmark_platform.bridges.automation_episode import api_specs, public_messages, public_prompt, run_episode
 from benchmark_platform.harnesses.api import Completion, ProviderError
 from benchmark_platform.harnesses.core import ToolSpec
 
@@ -13,6 +14,8 @@ from benchmark_platform.harnesses.core import ToolSpec
 class FakeEpisode:
     def __init__(self, order):
         self.prompt = "Complete the public task"
+        self.messages = [{"role": "system", "content": "PUBLIC_SYSTEM_POLICY"},
+                         {"role": "user", "content": self.prompt}]
         self.metadata = {"task_contract_sha256": "test-contract"}
         self.tools = [ToolSpec("work", "work", {"type": "object"}, ())]
         self.order = order
@@ -35,6 +38,8 @@ class Client:
 
     async def complete(self, messages, **kwargs):
         assert "PRIVATE_ASSERTION" not in json.dumps(messages)
+        assert messages[0] == {"role": "system", "content": "PUBLIC_SYSTEM_POLICY"}
+        assert all("PUBLIC_SYSTEM_POLICY" not in m["content"] for m in messages if m["role"] == "user")
         if self.fail:
             self.order.append("provider_failed")
             raise ProviderError("test provider failure", kind="transport")
@@ -42,6 +47,23 @@ class Client:
         self.order.append("agent_tool" if self.calls == 1 else "agent_final")
         text = '{"tool":"work","arguments":{}}' if self.calls == 1 else '{"final":"done"}'
         return Completion(text, 1, 1, 0, 0, {})
+
+    async def complete_native(self, messages, **kwargs):
+        assert "PRIVATE_ASSERTION" not in json.dumps(messages)
+        assert messages[0] == {"role": "system", "content": "PUBLIC_SYSTEM_POLICY"}
+        assert [tool["function"]["name"] for tool in kwargs["tools"]] == ["work"]
+        if self.fail:
+            self.order.append("provider_failed")
+            raise ProviderError("test provider failure", kind="transport")
+        self.calls += 1
+        self.order.append("agent_tool" if self.calls == 1 else "agent_final")
+        message = {"role": "assistant", "content": "done"}
+        if self.calls == 1:
+            message.update(content="", tool_calls=[{"id": "call_1", "type": "function", "function": {
+                "name": "work", "arguments": "{}"}}])
+        else:
+            assert messages[-1] == {"role": "tool", "tool_call_id": "call_1", "content": '{"done": true}'}
+        return Completion(message["content"], 1, 1, 0, 0, {"choices": [{"message": message}]})
 
 
 class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
@@ -84,8 +106,26 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
         row = {"prompt": [{"role": "user", "content": "public task"}], "info": {"assertions": "PRIVATE_ASSERTION", "initial_state": "PRIVATE_WORLD"}}
         self.assertEqual(public_prompt(row), "[USER]\npublic task")
 
+    def test_system_role_is_separate_from_text_algorithm_task(self):
+        row = {"prompt": [{"role": "system", "content": "PUBLIC_SYSTEM_POLICY", "private": "NO"},
+                          {"role": "user", "content": "public task"}], "info": {"assertions": "PRIVATE"}}
+        self.assertEqual(public_prompt(row), "[USER]\npublic task")
+        self.assertEqual(public_messages(row), [{"role": "system", "content": "PUBLIC_SYSTEM_POLICY"},
+                                                 {"role": "user", "content": "public task"}])
+
+    async def test_json_control_also_keeps_task_system_instructions(self):
+        order = []
+        with tempfile.TemporaryDirectory() as tmp:
+            result = await run_episode("actor-only", "sales:1", {"automationbench_actor_protocol": "json"},
+                                       Path(tmp), episode=FakeEpisode(order), client=Client(order))
+            self.assertEqual(order, ["agent_tool", "tool", "agent_final", "scorer"])
+            self.assertEqual(result["status"], "completed")
+            self.assertEqual(result["policy"]["automationbench_prompt_protocol"], "native-task-roles-v1")
+
     def test_stateful_api_fetch_is_not_safe_for_speculation(self):
-        specs = {tool.name: tool for tool in api_specs({name: lambda: None for name in ["api_search", "api_fetch", "base64_encode"]})}
+        with patch("benchmark_platform.bridges.automation_episode.official_tool_definition",
+                   return_value=SimpleNamespace(description="official description", parameters={"type": "object"})):
+            specs = {tool.name: tool for tool in api_specs({name: lambda: None for name in ["api_search", "api_fetch", "base64_encode"]})}
         self.assertFalse(specs["api_fetch"].read_only)
         self.assertFalse(specs["api_fetch"].parallel)
         self.assertTrue(specs["api_search"].read_only)

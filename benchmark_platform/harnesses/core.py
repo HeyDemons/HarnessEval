@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import json
 import os
 import re
@@ -726,6 +727,7 @@ class RunContext:
         policy: dict[str, Any],
         *,
         speculator_client: CompletionClient | None = None,
+        task_messages: list[dict[str, Any]] | None = None,
     ):
         self.profile = profile
         self.prompt = prompt
@@ -734,6 +736,9 @@ class RunContext:
         self.trace = trace
         self.policy = policy
         self.speculator_client = speculator_client
+        # Benchmark-owned public instructions retain their role in every planner,
+        # worker and Actor request. Other bridges keep their existing empty default.
+        self.task_messages = copy.deepcopy(task_messages or [])
         self.llm_calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
@@ -771,6 +776,11 @@ class RunContext:
             await self.trace.emit("budget_exhausted", scope="model_responses",
                                   limit=self.model_budget.limit, used=self.model_budget.used)
             raise
+
+    def with_task_instructions(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        instructions = [message for message in self.task_messages
+                        if message.get("role") in {"system", "developer"} and message not in messages]
+        return [*copy.deepcopy(instructions), *messages]
 
     @property
     def max_parallel(self) -> int | None:
@@ -846,7 +856,7 @@ class RunContext:
             )
         if channel == "actor":
             await self._reserve_model_response()
-        messages = self.environment.with_images(messages)
+        messages = self.environment.with_images(self.with_task_instructions(messages))
         await self.trace.emit(
             "llm_request",
             role=role,
@@ -918,7 +928,7 @@ class RunContext:
                 "Declaration-only benchmark already received its committed call batch"
             )
         await self._reserve_model_response()
-        messages = self.environment.with_images(messages)
+        messages = self.environment.with_images(self.with_task_instructions(messages))
         await self.trace.emit(
             "llm_request",
             role=role,

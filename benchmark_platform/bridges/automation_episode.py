@@ -24,6 +24,8 @@ from benchmark_platform.harnesses.profiles import get_profile
 
 
 SOURCE_REVISION = "4a8e1061254004d9dac807054eed33fad7d1ff14"
+PROMPT_PROTOCOL = "native-task-roles-v1"
+NATIVE_ACTOR_PROTOCOL = "official-api-tools-v1"
 
 
 def write_json(path: Path, value: Any) -> None:
@@ -33,25 +35,41 @@ def write_json(path: Path, value: Any) -> None:
     pending.replace(path)
 
 
+def public_messages(row: dict) -> list[dict]:
+    """Copy only public message fields, never task info or authority state."""
+    messages = []
+    for message in row.get("prompt", []):
+        role, content = message.get("role"), message.get("content")
+        if role not in {"system", "developer", "user", "assistant"} or not isinstance(content, str):
+            raise ValueError("AutomationBench prompt requires text messages with explicit roles")
+        messages.append({"role": role, "content": content})
+    return messages
+
+
 def public_prompt(row: dict) -> str:
+    # Text-protocol algorithms still need a task string; privileged instructions
+    # are supplied separately by RunContext, never demoted into this user text.
     return "\n\n".join(
-        f"[{str(message.get('role') or 'message').upper()}]\n{message.get('content') or ''}"
-        for message in row.get("prompt", [])
+        f"[{message['role'].upper()}]\n{message['content']}"
+        for message in public_messages(row) if message["role"] not in {"system", "developer"}
     )
 
 
+def official_tool_definition(function):
+    # Exactly the schema conversion used by pinned StatefulToolEnv.add_tool.
+    from verifiers.envs.stateful_tool_env import filter_signature
+    from verifiers.utils.tool_utils import convert_func_to_tool_def
+    skipped = ["world"] if "world" in inspect.signature(function).parameters else []
+    return convert_func_to_tool_def(filter_signature(function, skipped))
+
+
 def api_specs(functions: dict) -> list[ToolSpec]:
-    parameters = {
-        "api_search": {"type": "object", "properties": {"query": {"type": "string"}, "top_k": {"type": "integer", "minimum": 1}}, "required": ["query"]},
-        "api_fetch": {"type": "object", "properties": {
-            "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
-            "url": {"type": "string"}, "params": {"type": ["string", "null"]}, "body": {"type": ["string", "null"]},
-        }, "required": ["method", "url"]},
-        "base64_encode": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]},
-    }
-    return [ToolSpec(name, inspect.getdoc(functions[name]) or name, schema, (),
-                     parallel=name != "api_fetch", read_only=name != "api_fetch")
-            for name, schema in parameters.items()]
+    specs = []
+    for name, function in functions.items():
+        definition = official_tool_definition(function)
+        specs.append(ToolSpec(name, definition.description, definition.parameters, (),
+                              parallel=name != "api_fetch", read_only=name != "api_fetch"))
+    return specs
 
 
 class AutomationEpisode:
@@ -78,11 +96,13 @@ class AutomationEpisode:
         self.world = WorldState(**self.initial)
         self.world.meta.allowed_services = compute_allowed_services(self.initial, self.info["assertions"], self.info.get("zapier_tools", []))
         self.prompt = public_prompt(row)
+        self.messages = public_messages(row)
         self.functions = {"api_search": api_search, "api_fetch": api_fetch, "base64_encode": base64_encode}
         self.tools = api_specs(self.functions)
         self.metadata = {"source_revision": SOURCE_REVISION, "toolset": "api", "task_contract_sha256": self.contract,
                          "domain": domain, "task_name": self.info.get("task_name"),
-                         "safe_for_prelaunch": ["api_search", "base64_encode"]}
+                         "safe_for_prelaunch": ["api_search", "base64_encode"],
+                         "prompt_protocol": PROMPT_PROTOCOL, "tool_schema_protocol": NATIVE_ACTOR_PROTOCOL}
 
     def handlers(self):
         def bind(name):
@@ -109,7 +129,13 @@ class AutomationEpisode:
 
 
 async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *, episode=None, client=None):
-    policy = {**baseline_limits("automationbench"), **policy}
+    policy = {**baseline_limits("automationbench"), "automationbench_prompt_protocol": PROMPT_PROTOCOL,
+              "automationbench_actor_protocol": "native", **policy}
+    if policy["automationbench_prompt_protocol"] != PROMPT_PROTOCOL:
+        raise ValueError("Unsupported AutomationBench prompt protocol")
+    actor_protocol = policy["automationbench_actor_protocol"]
+    if actor_protocol not in {"native", "json"}:
+        raise ValueError("automationbench_actor_protocol must be native or json")
     arm_started = time.monotonic()
     profile = get_profile(profile_id)
     job.mkdir(parents=True, exist_ok=True)
@@ -118,9 +144,11 @@ async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *,
     environment = ToolEnvironment(episode.tools, trace, episode.handlers())
     client = client or completion_client_from_env()
     context = RunContext(profile_id, episode.prompt, client, environment, trace, policy,
-                         speculator_client=sa_speculator_client_from_env(client) if profile_id == "sa" else None)
+                         speculator_client=sa_speculator_client_from_env(client) if profile_id == "sa" else None,
+                         task_messages=getattr(episode, "messages", [{"role": "user", "content": episode.prompt}]))
     write_json(job / "bridge_manifest.json", {"benchmark": "automationbench", "case_id": case_id,
-               "prompt": episode.prompt, "tools": [tool.prompt_schema() for tool in episode.tools], "metadata": episode.metadata})
+               "prompt": episode.prompt, "messages": context.task_messages,
+               "tools": [tool.prompt_schema() for tool in episode.tools], "metadata": episode.metadata})
     result = {"schema_version": 1, "benchmark": "automationbench", "profile": profile.id, "case_id": case_id,
               "status": "completed", "native_score_status": "not_requested", "native_score": None,
               "bridge": episode.metadata, "policy": policy}
@@ -138,7 +166,12 @@ async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *,
         remaining = Deadline(duration - reserve, started=arm_started).remaining
         if remaining <= 0:
             raise TimeoutError
-        result["final_answer"] = await asyncio.wait_for(run_profile(context), remaining)
+        if profile_id == "actor-only" and actor_protocol == "native":
+            from .automation_native import run_native_actor
+            run = run_native_actor(context)
+        else:
+            run = run_profile(context)
+        result["final_answer"] = await asyncio.wait_for(run, remaining)
     except ProviderError as error:
         result.update(status="failed", failure_kind="provider_error", error=str(error))
     except TimeoutError:
