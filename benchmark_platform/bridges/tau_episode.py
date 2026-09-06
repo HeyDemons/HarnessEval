@@ -10,6 +10,9 @@ from typing import Any
 
 from benchmark_platform.harnesses.api import CompletionClient, completion_client_from_env
 from benchmark_platform.budgets import TAU2_MAX_STEPS, native_steps, native_errors
+from benchmark_platform.measurement import (
+    METRICS_VERSION, TURN_DEFINITION, TURN_SCOPE, TOKEN_DEFINITION, add_tokens, zero_tokens,
+)
 
 from .episode import EpisodeBroker, FinalResponse, NativeTool, visible_text
 
@@ -35,6 +38,42 @@ def _write(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     pending.replace(path)
+
+
+def _merge_broker_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum counters across user-turn brokers while preserving metric metadata."""
+    totals: dict[str, Any] = dict.fromkeys((
+        'agent_turns', 'llm_calls', 'prompt_tokens', 'completion_tokens', 'model_requests',
+        'actor_llm_calls', 'actor_prompt_tokens', 'actor_completion_tokens',
+        'speculator_llm_calls', 'speculator_prompt_tokens', 'speculator_completion_tokens',
+        'tool_calls', 'user_messages'), 0)
+    metadata = {'metrics_version': METRICS_VERSION, 'agent_turns_definition': TURN_DEFINITION,
+                'agent_turns_scope': TURN_SCOPE, 'token_definition': TOKEN_DEFINITION}
+    totals.update(metadata)
+    totals.update(actor_tokens=zero_tokens(), speculator_tokens=zero_tokens(),
+                  usage_coverage={channel: {'usage_missing_requests': 0, 'usage_complete': True}
+                                  for channel in ('actor', 'speculator')})
+    for row in rows:
+        if not row:
+            continue
+        for name, value in row.items():
+            if name in metadata:
+                if value != metadata[name]:
+                    raise ValueError(f'Tau2 broker metrics disagree on {name}')
+            elif type(value) is int:
+                totals[name] = totals.get(name, 0) + value
+        for channel in ('actor', 'speculator'):
+            add_tokens(totals[channel + '_tokens'], row.get(channel + '_tokens') or {})
+            coverage = (row.get('usage_coverage') or {}).get(channel) or {}
+            merged = totals['usage_coverage'][channel]
+            missing = coverage.get('usage_missing_requests')
+            if type(missing) is int and merged['usage_missing_requests'] is not None:
+                merged['usage_missing_requests'] += missing
+            else:
+                merged['usage_missing_requests'] = None
+            merged['usage_complete'] = (merged['usage_complete'] and
+                                        coverage.get('usage_complete') is True and missing == 0)
+    return totals
 
 
 # tau2 declares tool semantics upstream via @is_tool(tool_type=ToolType.*,
@@ -364,28 +403,8 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
             self.history.append(response)
             return response, state
 
-        def metrics(self) -> dict[str, int]:
-            totals = {
-                "agent_turns": 0,
-                "llm_calls": 0,
-                "prompt_tokens": 0,
-                "completion_tokens": 0,
-                "actor_llm_calls": 0,
-                "actor_prompt_tokens": 0,
-                "actor_completion_tokens": 0,
-                "speculator_llm_calls": 0,
-                "speculator_prompt_tokens": 0,
-                "speculator_completion_tokens": 0,
-                "tool_calls": 0,
-                "user_messages": 0,
-            }
-            for broker in self.brokers:
-                for name, value in broker.metrics().items():
-                    # RunContext may add a new counter without changing the
-                    # native adapter. Do not lose an already-scored simulation
-                    # during final metrics collection (e.g. agent_turns).
-                    totals[name] = totals.get(name, 0) + int(value)
-            return totals
+        def metrics(self) -> dict[str, Any]:
+            return _merge_broker_metrics([broker.metrics() for broker in self.brokers])
 
     registry.register_agent_factory(HarnessAgent, agent_name)
     config = TextRunConfig(

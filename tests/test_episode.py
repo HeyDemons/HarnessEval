@@ -140,6 +140,33 @@ class ScriptedClient:
 
 
 class EpisodeBrokerTests(unittest.TestCase):
+    def test_tau_metrics_merge_v4_metadata_tokens_and_missing_usage(self):
+        from benchmark_platform.harnesses.core import RunContext, ToolEnvironment
+        from benchmark_platform.measurement import METRICS_VERSION, TURN_DEFINITION
+        from benchmark_platform.bridges.tau_episode import _merge_broker_metrics
+        with tempfile.TemporaryDirectory() as directory:
+            broker = EpisodeBroker(profile='actor-only', prompt='test', tools=[],
+                trace_path=Path(directory) / 'trace.jsonl', policy={}, client=ScriptedClient([]))
+            ctx = RunContext('actor-only', 'test', broker.client, ToolEnvironment([], broker.trace), broker.trace, {})
+            first = ctx.usage_metrics()
+            first.update(agent_turns=2, llm_calls=2, actor_llm_calls=2, tool_calls=1)
+            first['actor_tokens'].update(input=10, output=3, cache_read=7, cache_write=2, total=13, all_tokens=22)
+            second = json.loads(json.dumps(first))
+            second['usage_coverage']['actor'] = {'usage_missing_requests': 1, 'usage_complete': False}
+            result = _merge_broker_metrics([first, second])
+            self.assertEqual(result['metrics_version'], METRICS_VERSION)
+            self.assertEqual(result['agent_turns_definition'], TURN_DEFINITION)
+            self.assertEqual(result['agent_turns'], 4)
+            self.assertEqual(result['actor_tokens']['input'], 20)
+            self.assertEqual(result['actor_tokens']['cache_read'], 14)
+            self.assertEqual(result['actor_tokens']['cache_write'], 4)
+            self.assertEqual(result['actor_tokens']['total'], 26)
+            self.assertEqual(result['usage_coverage']['actor']['usage_missing_requests'], 1)
+            self.assertFalse(result['usage_coverage']['actor']['usage_complete'])
+            second['metrics_version'] = 3
+            with self.assertRaisesRegex(ValueError, 'metrics_version'):
+                _merge_broker_metrics([first, second])
+
     def test_product_episode_status_exposes_pre_manifest_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             bridge = ProductEpisodeBridge("tau2", "case", Path(directory))
