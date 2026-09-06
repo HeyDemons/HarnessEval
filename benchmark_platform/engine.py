@@ -100,6 +100,11 @@ def docker_host_gateway_flags(network: str, urls: list[str]) -> list[str]:
     """Expose Docker's host gateway when a container URL explicitly targets it."""
     if network != "bridge":
         return []
+    # A rootless engine may need the outer host at 10.0.2.2 instead of the
+    # Docker bridge gateway. Do not shadow an explicit operator host pin.
+    if any(value.startswith("host.docker.internal:")
+           for value in docker_add_host_flags(network)[1::2]):
+        return []
     for url in urls:
         if urlsplit(url).hostname == "host.docker.internal":
             return ["--add-host", "host.docker.internal:host-gateway"]
@@ -1578,6 +1583,11 @@ class Platform:
         network = (spec or {}).get("network", adapter.get("network", "none"))
         command.extend(["--network", network])
         container_api_url = _container_reachable_proxy(os.environ.get("API_URL", ""))
+        model_api_urls = {
+            name: _container_reachable_proxy(os.environ[name])
+            for name in ("HARNESS_API_BASE", "HARNESS_SA_API_BASE")
+            if name in env_names and name in os.environ
+        }
         egress_env = self._egress_env(network)
         proxy_urls = [
             assignment.split("=", 1)[1]
@@ -1588,7 +1598,7 @@ class Platform:
         # A local ToolBench-compatible endpoint is hosted outside the benchmark
         # container. The same translation is used for a host-local outbound proxy. Docker
         # Desktop provides this name itself; Linux needs the explicit host-gateway mapping.
-        command.extend(docker_host_gateway_flags(network, [container_api_url, *proxy_urls]))
+        command.extend(docker_host_gateway_flags(network, [container_api_url, *model_api_urls.values(), *proxy_urls]))
         command.extend(docker_add_host_flags(network))
         if adapter.get("platform"):
             command.extend(["--platform", adapter["platform"]])
@@ -1603,7 +1613,9 @@ class Platform:
         for name in env_names:
             # localhost in operator-facing configuration means the Docker host, while
             # localhost inside the benchmark image would mean the image itself.
-            command.extend(["-e", f"API_URL={container_api_url}" if name == "API_URL" else name])
+            assignment = (f"API_URL={container_api_url}" if name == "API_URL" else
+                          f"{name}={model_api_urls[name]}" if name in model_api_urls else name)
+            command.extend(["-e", assignment])
         for host, container, mode in self._validated_mounts([*benchmark.raw.get("mounts", []), *extra_mounts]):
             command.extend(["-v", f"{host}:{container}:{mode}"])
         command.extend(["-v", f"{attempt.resolve()}:/job:rw"])

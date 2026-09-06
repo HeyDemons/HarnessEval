@@ -291,6 +291,15 @@ class PlatformTests(unittest.TestCase):
             [],
         )
 
+    def test_rootless_host_pin_is_not_shadowed_by_bridge_gateway(self) -> None:
+        from benchmark_platform.engine import _container_reachable_proxy
+        for port in (8317, 18317):
+            self.assertEqual(_container_reachable_proxy(f"http://127.0.0.1:{port}/v1"),
+                             f"http://host.docker.internal:{port}/v1")
+        with patch.dict(os.environ, {"BENCHMARK_DOCKER_ADD_HOSTS": "host.docker.internal:10.0.2.2"}):
+            self.assertEqual(docker_host_gateway_flags("bridge", ["http://host.docker.internal:18317/v1"]), [])
+            self.assertEqual(docker_add_host_flags("bridge"), ["--add-host", "host.docker.internal:10.0.2.2"])
+
     def test_pre_pull_uses_local_base_unless_refresh_is_explicit(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")
         adapter = {"pre_pull": ["example/base:fixed"]}
