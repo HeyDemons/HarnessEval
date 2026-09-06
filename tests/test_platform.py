@@ -384,8 +384,19 @@ class PlatformTests(unittest.TestCase):
         react = next(profile for profile in PROFILES if profile.id == "react")
         self.assertEqual(len(react.revision or ""), 40)
         for profile in PROFILES:
-            if profile.revision is not None:
+            if profile.revision is None:
+                continue
+            if (profile.source or "").startswith("https://github.com/"):
                 self.assertEqual(len(profile.revision), 40, profile.id)
+            else:
+                # A paper-backed configuration pins the paper version, since there is no
+                # commit to pin. Only those provenances may skip the 40-character commit.
+                self.assertIn(
+                    profile.provenance,
+                    {"paper-specification", "paper-configuration-transfer"},
+                    profile.id,
+                )
+                self.assertTrue(profile.revision.strip(), profile.id)
 
     def test_compatibility_matrix_is_complete_and_does_not_overclaim_scores(self) -> None:
         from benchmark_platform.compatibility import compatibility_rows
@@ -414,13 +425,14 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertFalse(lats_gaia["runnable"])
         self.assertEqual(lats_gaia["baseline_requirement"], "branch_snapshot_or_all_tools_read_only")
+        # Derived from the registry so a profile that gains tools cannot leave a stale
+        # literal behind: GDPval grades files, so only a text-only method is blocked.
+        text_only = {profile.id for profile in PROFILES if profile.tool_contract == "no-external-tools"}
         gdpval_text_only = [
-            row
-            for row in rows
-            if row["benchmark"] == "gdpval"
-            and row["baseline"] in {"dylan", "multi-persona"}
+            row for row in rows if row["benchmark"] == "gdpval" and row["baseline"] in text_only
         ]
-        self.assertEqual(len(gdpval_text_only), 2)
+        self.assertTrue(text_only)
+        self.assertEqual(len(gdpval_text_only), len(text_only))
         self.assertTrue(all(not row["runnable"] for row in gdpval_text_only))
         self.assertEqual(
             {row["baseline_requirement"] for row in gdpval_text_only},
