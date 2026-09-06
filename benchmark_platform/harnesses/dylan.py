@@ -174,8 +174,8 @@ async def run_dylan(ctx: RunContext) -> str:
         answer, _ = await forward(ctx, roles, artifact["selected_agents"][:], artifact["rounds"],
                                   random.Random(artifact["seed"]), "solve")
         return answer
-    if ctx.profile != "dylan-query-local":
-        raise ValueError("Query-local DyLAN must use the explicit dylan-query-local profile")
+    if ctx.profile not in {"dylan-query-local", "dylan-inference"}:
+        raise ValueError("DyLAN requires an explicit frozen, query-local, or inference-only profile")
     population = int(ctx.policy.get("dylan_agents", 4))
     rounds = int(ctx.policy.get("dylan_rounds", 3))
     if population < 1 or rounds < 1:
@@ -186,15 +186,18 @@ async def run_dylan(ctx: RunContext) -> str:
     ):
         raise ValueError("dylan_roles must contain one supported role per agent")
     roles = [ROLE_PROMPTS[role] for role in role_names]
-    optimize = ctx.policy.get("dylan_team_optimization", True)
+    inference_only = ctx.profile == "dylan-inference"
+    optimize = ctx.policy.get("dylan_team_optimization", not inference_only)
     if not isinstance(optimize, bool):
         raise ValueError("dylan_team_optimization must be a boolean")
-    team_size = int(ctx.policy.get("dylan_team_size", min(2, population)))
+    if inference_only and optimize:
+        raise ValueError("dylan-inference cannot enable team optimization")
+    team_size = int(ctx.policy.get("dylan_team_size", population if inference_only else min(2, population)))
     if not 1 <= team_size <= population:
         raise ValueError("dylan_team_size must be between 1 and population")
     rng = random.Random(int(ctx.policy.get("dylan_seed", ctx.policy.get("seed", 0))))
     active = list(range(population))
-    await ctx.trace.emit("dylan_config", implementation="text-team-optimization-v2", roles=role_names,
+    await ctx.trace.emit("dylan_config", implementation="text-inference-v1" if inference_only else "text-team-optimization-v2", roles=role_names,
                          rounds=rounds, team_size=team_size, team_optimization=optimize)
     if optimize:
         answer, layers = await forward(ctx, roles, active, rounds, rng, "trial")

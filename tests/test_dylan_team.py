@@ -22,6 +22,23 @@ def artifact():
 
 
 class FrozenTeamTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inference_profile_needs_no_artifact_or_optimization_pass(self):
+        trace = Trace()
+        client = RecordingClient(["answer"] * 4)
+        ctx = RunContext("dylan-inference", "public question", client,
+                         ToolEnvironment([], trace), trace, {})
+        self.assertEqual(await run_profile(ctx), "answer")
+        nodes = [event for event in trace.events if event['event'] == 'dylan_node']
+        self.assertEqual({event['phase'] for event in nodes}, {'solve'})
+        self.assertEqual(ctx.llm_calls, 3)
+        self.assertFalse(any(event['event'] == 'dylan_team_selected' for event in trace.events))
+        config = next(event for event in trace.events if event['event'] == 'dylan_config')
+        self.assertFalse(config['team_optimization'])
+        self.assertEqual(config['implementation'], 'text-inference-v1')
+        ctx.policy['dylan_team_optimization'] = True
+        with self.assertRaisesRegex(ValueError, 'cannot enable'):
+            await run_profile(ctx)
+
     def test_aggregates_across_queries_and_freezes_one_team(self):
         team = artifact()
         self.assertEqual(team["importance_scores"], [1.5, 2.0, 1.0])

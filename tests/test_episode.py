@@ -58,6 +58,7 @@ PROFILE_RESPONSES = {
     "aflow": ["ok"],
     "dylan": ["ok"] * 5,
     "dylan-query-local": ["ok"] * 5,
+    "dylan-inference": ["ok"] * 5,
     "magentic-one": [
         "facts",
         "plan",

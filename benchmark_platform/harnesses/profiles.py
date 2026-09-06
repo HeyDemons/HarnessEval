@@ -126,6 +126,18 @@ PROFILES = (
                "subject/subset selection scripts. The query-local variant has a separate profile."),
     ),
     HarnessProfile(
+        id="dylan-inference",
+        name="DyLAN inference without team optimization",
+        topology="preset initial team -> dynamic inference network -> early stopping",
+        provenance="protocol-reproduction",
+        source="https://github.com/SALT-NLP/DyLAN",
+        revision="006e440a519f7cf21e2826f3b8033d84ae9bf07c",
+        tool_contract="no-external-tools",
+        notes=("Direct forward inference with four preset Assistant agents and three rounds by default. "
+               "Retains listwise activation and early stopping; no offline artifact, trial pass, "
+               "backward importance selection, or second solve. Initial team is fixed, not the active graph."),
+    ),
+    HarnessProfile(
         id="dylan-query-local",
         name="DyLAN query-local adaptation",
         topology="per-query trial -> backward importance -> fresh solve",
