@@ -36,4 +36,8 @@ JSON-contract identity. Old affected results require new measurements; they
 cannot silently resume as this version. Scorers, task data and official budgets
 are unchanged.
 
+`final_response_action_contract=task-local-final-slot-v1` separately versions
+the shared environment guard for baselines with a reserved final model response,
+including non-JSON planners. BFCL declaration-only and product arms are excluded.
+
 API format reference: [OpenAI structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs).
