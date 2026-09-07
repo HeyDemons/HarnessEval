@@ -362,6 +362,7 @@ class ToolEnvironment:
         *,
         declaration_only: bool = False,
         validate_schema: bool = True,
+        isolated_calls_supported: bool = True,
     ):
         names = [tool.name for tool in tools]
         if len(names) != len(set(names)):
@@ -375,6 +376,8 @@ class ToolEnvironment:
         self.calls: list[dict[str, Any]] = []
         self.declaration_only = declaration_only
         self.validate_schema = validate_schema
+        # Read-only business data does not imply transcript/budget isolation.
+        self.isolated_calls_supported = isolated_calls_supported
         self._declaration_committed = False
         self._committed_response_id: int | None = None
         self._state_condition = asyncio.Condition()
@@ -548,6 +551,8 @@ class ToolEnvironment:
         second time.
         """
 
+        if not self.isolated_calls_supported:
+            raise RuntimeError("This environment has no isolated tool execution/commit channel")
         tool = self.tools.get(name)
         if tool is None:
             raise ValueError(f"Cannot isolate unknown tool {name!r}")
@@ -575,6 +580,8 @@ class ToolEnvironment:
         An explicit Actor id is used by SA to adopt one speculative read. It may
         never relabel a different response as a BFCL declaration.
         """
+        if records and not self.isolated_calls_supported:
+            raise RuntimeError("This environment has no isolated tool execution/commit channel")
         if self.declaration_only and records:
             source_ids = {record.get("assistant_response_id") for record in records}
             if len(source_ids) != 1 or None in source_ids:

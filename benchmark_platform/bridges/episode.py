@@ -259,7 +259,8 @@ class EpisodeBroker:
         # episode steps for tool attempts, including rejected arguments. Rejecting
         # them locally both changes native behavior and hides attempts from its budget.
         environment = ToolEnvironment([tool.spec() for tool in declared], self.trace, handlers,
-                                      validate_schema=self.validate_schema)
+                                      validate_schema=self.validate_schema,
+                                      isolated_calls_supported=False)
         if not self.validate_schema:
             await self.trace.emit('native_argument_protocol', implementation='benchmark-controller-v2')
         self.context = RunContext(

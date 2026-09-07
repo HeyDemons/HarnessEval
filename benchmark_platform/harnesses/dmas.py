@@ -384,4 +384,9 @@ async def run_dmas(ctx: RunContext) -> str:
         visited = set()
         forward_count = 0
 
-    raise RuntimeError("DMAS execution budget exhausted")
+    # Pinned Experiment returns its TaskChain at this algorithmic limit;
+    # TaskChain.final_result retains the last completed executor result.
+    # Official model/wall budgets still raise at their own boundaries.
+    await ctx.trace.emit("dmas_execution_limit", implementation="retained-executor-result-v2",
+                         execution_count=execution_count, limit=max_executions)
+    return progress[-1]["result"]

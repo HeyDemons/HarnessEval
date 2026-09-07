@@ -461,7 +461,7 @@ def _ledger_error(ledger: Any, workers: dict[str, str]) -> str | None:
             return f"progress ledger field {key!r} omitted answer or reason"
     if (
         not ledger["is_request_satisfied"]["answer"]
-        and ledger["next_speaker"]["answer"] not in workers
+        and ledger["next_speaker"]["answer"] not in list(workers)
     ):
         return (
             f"invalid next speaker {ledger['next_speaker']['answer']!r}; "
@@ -611,7 +611,7 @@ async def run_magentic_one(ctx: RunContext) -> str:
     # Pinned _orchestrate_step tests n_rounds > max_turns BEFORE incrementing.
     # Consequently a configured N permits N+1 ledger rounds, not N. Keep this
     # source boundary rather than silently tightening its algorithmic limit.
-    await ctx.trace.emit('magentic_config', implementation='source-ledger-truthiness-v3',
+    await ctx.trace.emit('magentic_config', implementation='typed-speaker-validation-v4',
                          max_rounds=max_rounds, ledger_round_limit=max_rounds + 1)
     for round_id in range(1, max_rounds + 2):
         ledger = await _progress_ledger(ctx, workers, team, thread)

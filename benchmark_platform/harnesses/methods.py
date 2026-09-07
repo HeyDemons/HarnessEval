@@ -27,6 +27,7 @@ ACTION_CONTRACT_REMINDER = (
     'Return exactly one JSON object and nothing else, either {"tool":"tool_name","arguments":{...}} '
     'or {"final":"answer"}. A status, progress, plan or summary object is not an action.'
 )
+FINAL_ACTION_INSTRUCTION = 'The action budget is exhausted. Return only {"final":"best answer supported by existing observations"}. Do not call another tool.'
 
 
 def action_protocol_error(detail: str) -> str:
@@ -62,7 +63,7 @@ async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = No
     for turn in range(ctx.max_turns):
         finalizing = ctx.should_finalize(turn)
         if finalizing:
-            messages.append({"role": "user", "content": 'The action budget is exhausted. Return only {"final":"best answer supported by existing observations"}. Do not call another tool.'})
+            messages.append({"role": "user", "content": FINAL_ACTION_INSTRUCTION})
             await ctx.trace.emit("budget_finalization", scope=role, model_requests=ctx.model_budget.used)
         raw = await ctx.complete(role, messages, json_mode=True,
                                  response_schema=action_schema(ctx.environment.names, finalizing=finalizing))

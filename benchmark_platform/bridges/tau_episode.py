@@ -339,6 +339,8 @@ def _patch_tau_generation(client: CompletionClient) -> None:
 
 
 def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -> dict[str, Any]:
+    if profile == "sa":
+        raise ValueError("SA/Tau2 is incompatible: no isolated native execution/commit channel; read-only requests still enter the transcript")
     from tau2.agent.base_agent import HalfDuplexAgent
     from tau2.data_model.message import AssistantMessage, ToolCall
     from tau2.data_model.simulation import TextRunConfig

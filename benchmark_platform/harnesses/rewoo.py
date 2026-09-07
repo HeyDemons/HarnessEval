@@ -9,6 +9,7 @@ from .core import RunContext
 
 
 PLAN_RE = re.compile(r"^\s*Plan\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+PLAN_HEADER_RE = re.compile(r"^[ \t]*Plan\s*:", re.IGNORECASE | re.MULTILINE)
 EVIDENCE_RE = re.compile(
     r"^\s*#E(\d+)\s*=\s*([A-Za-z_][\w.-]*)\s*\[",
     re.IGNORECASE | re.MULTILINE,
@@ -101,7 +102,7 @@ def parse_rewoo_plan(text: str) -> list[ReWOOStep]:
     # A malformed evidence assignment is not a zero-step plan, however.
     if not steps and re.search(r"^\s*#E\d+", text, re.IGNORECASE | re.MULTILINE):
         raise ValueError("ReWOO Planner contains a malformed evidence call")
-    if re.search(r"^\s*Plan\s*:", text[cursor:], re.IGNORECASE | re.MULTILINE):
+    if PLAN_HEADER_RE.search(text, cursor):
         raise ValueError("ReWOO Planner ended with a Plan that has no evidence call")
     return steps
 

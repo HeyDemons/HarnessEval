@@ -50,6 +50,9 @@ def compatibility_rows(
             else:
                 baseline_requirement = "dynamic_tool_schema"
             runnable = bridge_status.startswith("implemented")
+            if profile.id == "sa" and benchmark.id == "tau2":
+                runnable = False
+                baseline_requirement = "sa_requires_isolated_native_execution_and_commit"
             if profile.id == "lats":
                 runnable = runnable and benchmark.id == "bfcl"
             if benchmark.id == "bfcl" and profile.id not in SINGLE_TURN_PROFILES:

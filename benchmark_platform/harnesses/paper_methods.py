@@ -413,6 +413,8 @@ async def run_sa(ctx: RunContext) -> str:
     if isinstance(policy_safe, list):
         allowed = {str(name) for name in policy_safe}
         safe_names = [name for name in safe_names if name in allowed]
+    if safe_names and not ctx.environment.isolated_calls_supported:
+        raise RuntimeError("SA requires an isolated tool execution/commit channel; native dialogue requests are not isolated")
     top_k = int(ctx.policy.get("sa_top_k", 3))
     if top_k < 1:
         raise ValueError("sa_top_k must be positive")
@@ -504,7 +506,7 @@ async def run_sa(ctx: RunContext) -> str:
         )
         return cache
 
-    from .methods import ACTION_SYSTEM, parse_action_reply, action_protocol_error  # methods imports this module
+    from .methods import ACTION_SYSTEM, FINAL_ACTION_INSTRUCTION, parse_action_reply, action_protocol_error  # methods imports this module
 
     messages = [
         {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
@@ -513,7 +515,7 @@ async def run_sa(ctx: RunContext) -> str:
     for turn in range(1, ctx.max_turns + 1):
         finalizing = ctx.should_finalize(turn - 1)
         if finalizing:
-            messages.append({"role": "user", "content": 'The action budget is exhausted. Return only {"final":"answer supported by existing observations"}; do not call tools.'})
+            messages.append({"role": "user", "content": FINAL_ACTION_INSTRUCTION})
             await ctx.trace.emit("budget_finalization", scope="sa", model_requests=ctx.model_budget.used)
         # Repeat the speculative window after every observation.  Starting only once at the
         # beginning is an initial prefetch control, not Speculative Actions.
