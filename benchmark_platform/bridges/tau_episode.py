@@ -361,6 +361,9 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
     native_environment: Any = None
     shadow_results: dict[str, Any] = {}
     adopted_results: dict[str, Any] = {}
+    shadow_metrics = {"executions": 0, "adoptions_registered": 0,
+                      "adoptions_served": 0, "adoption_fallbacks": 0}
+    adoption_request_ids: set[str] = set()
     isolation_lock = threading.Lock()
 
     def action_key(name: str, arguments: dict[str, Any]) -> str:
@@ -376,13 +379,16 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         response = shadow.get_response(call)
         with isolation_lock:
             shadow_results[action_key(name, arguments)] = response
+            shadow_metrics["executions"] += 1
         return EpisodeBroker._decode_native_result(response.content, response.error)
 
     def adopt_shadow_read(name: str, arguments: dict[str, Any], request_id: str) -> None:
         with isolation_lock:
+            adoption_request_ids.add(request_id)
             response = shadow_results.pop(action_key(name, arguments), None)
             if response is not None:
                 adopted_results[request_id] = response
+                shadow_metrics["adoptions_registered"] += 1
 
     class HarnessAgent(HalfDuplexAgent[dict[str, Any]]):
         def __init__(self, tools, domain_policy, **kwargs):
@@ -505,13 +511,20 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         def get_response_with_adoption(message):
             with isolation_lock:
                 response = adopted_results.pop(message.id, None)
+                requested = message.id in adoption_request_ids
+                adoption_request_ids.discard(message.id)
             if response is None:
+                if requested:
+                    with isolation_lock:
+                        shadow_metrics["adoption_fallbacks"] += 1
                 return original_get_response(message)
             # The speculative ToolMessage was created before the authoritative
             # Actor call. Reusing its timestamp would make Tau2's timestamp-sorted
             # trajectory place the result before its ToolCall, which then breaks
             # native evaluator replay. Reconstruct it now so causal order and the
             # Actor's call id are both canonical.
+            with isolation_lock:
+                shadow_metrics["adoptions_served"] += 1
             return _retime_adopted_tool_message(response, message.id)
 
         native_environment.get_response = get_response_with_adoption
@@ -543,6 +556,7 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         "native_score_status": "completed" if reward is not None else "not_requested",
         "simulation": simulation.model_dump(mode="json"),
         "tool_contract": _tool_contract(getattr(orchestrator.agent, "tools", None) or []),
+        "native_shadow_metrics": dict(shadow_metrics) if profile == "sa" else None,
         **orchestrator.agent.metrics(),
     }
 
