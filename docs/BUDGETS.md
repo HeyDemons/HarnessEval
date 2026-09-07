@@ -16,7 +16,7 @@ alone is not a wall-time guarantee.
 | BFCL single-turn suite | One assistant response, including its complete declaration batch | 900 s |
 | Tau2 | 200 simulation steps, 10 consecutive errors by the pinned native defaults | 900 s |
 | VitaBench | 300 simulation steps, 10 consecutive errors by the pinned CLI defaults | 1200 s |
-| AutomationBench public | 50 model-response steps by the pinned CLI default | 900 s |
+| AutomationBench public | 200 model-response steps (local setting; pinned CLI default is 50) | 900 s |
 | Terminal-Bench-2 | Independent agent/verifier timeout_sec from each task.toml | Agent + verifier + local 120 s overhead |
 | GAIA | No universal wall deadline is supplied by this public task/scorer adapter | 900 s |
 | GDPVal | No universal wall deadline is supplied by this public dataset/scorer adapter | 1200 s |
@@ -78,7 +78,7 @@ time; the guard is explicitly named baseline_loop_safety_limit in the record.
 PERSEUS's internal loop implementation is not silently assigned this baseline
 guard. Any guard hit must remain visible rather than being assumed negligible.
 
-For AutomationBench the shared RunContext additionally enforces 50 Actor-channel
+For AutomationBench the shared RunContext additionally enforces 200 Actor-channel
 generation requests, across internal workers/planners. Speculator usage stays
 separate; it is not silently counted as an authoritative Actor response. Provider
 transport retries inside one generation are distinct from this response counter.

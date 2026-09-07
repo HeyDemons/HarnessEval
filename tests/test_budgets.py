@@ -12,7 +12,7 @@ from test_harnesses import ScriptedClient, native_tool_call
 class BudgetTests(unittest.TestCase):
     def test_official_units_are_not_all_agent_turns(self):
         self.assertEqual(baseline_limits("bfcl", {})["model_response_limit"], 1)
-        self.assertEqual(baseline_limits("automationbench", {})["model_response_limit"], 50)
+        self.assertEqual(baseline_limits("automationbench", {})["model_response_limit"], 200)
         self.assertEqual(baseline_limits("tau2", {})["native_max_steps"], 200)
         self.assertEqual(baseline_limits("vitabench", {})["native_max_steps"], 300)
         for benchmark in ("gaia", "gdpval", "trajectory-bench", "tau2", "vitabench"):

@@ -20,7 +20,7 @@ DEFAULT_TERMINAL_VERIFIER_SECONDS = 600.0
 TAU2_MAX_STEPS = 200
 VITA_MAX_STEPS = 300
 NATIVE_MAX_ERRORS = 10
-AUTOMATION_MAX_RESPONSES = 50
+AUTOMATION_MAX_RESPONSES = 200
 
 OFFICIAL = {
     "gaia": {"kind": "workspace", "source": "gaia-benchmark/GAIA", "universal_time_limit": None},

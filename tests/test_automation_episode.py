@@ -125,7 +125,7 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result["tool_calls"], expected_tools)
                 self.assertEqual(result["native_score"], 0)
                 self.assertEqual(result["native_partial_credit"], 0.5)
-                self.assertEqual(result["policy"]["model_response_limit"], 50)
+                self.assertEqual(result["policy"]["model_response_limit"], 200)
                 transcript = json.dumps(actor.requests)
                 self.assertNotIn("PRIVATE_ASSERTION", transcript)
                 self.assertIn("PUBLIC_SYSTEM_POLICY", transcript)
