@@ -97,9 +97,11 @@ def parse_rewoo_plan(text: str) -> list[ReWOOStep]:
                 worker_input=worker_input.strip(),
             )
         )
-    if not steps:
-        raise ValueError("ReWOO Planner produced no `Plan:` / `#E = Worker[input]` steps")
-    if PLAN_RE.search(text, cursor):
+    # Pinned PWS runs Solver with an empty worker log for a zero-step plan.
+    # A malformed evidence assignment is not a zero-step plan, however.
+    if not steps and re.search(r"^\s*#E\d+", text, re.IGNORECASE | re.MULTILINE):
+        raise ValueError("ReWOO Planner contains a malformed evidence call")
+    if re.search(r"^\s*Plan\s*:", text[cursor:], re.IGNORECASE | re.MULTILINE):
         raise ValueError("ReWOO Planner ended with a Plan that has no evidence call")
     return steps
 

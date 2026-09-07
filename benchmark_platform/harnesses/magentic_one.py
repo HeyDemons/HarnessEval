@@ -460,7 +460,7 @@ def _ledger_error(ledger: Any, workers: dict[str, str]) -> str | None:
         if not isinstance(field, dict) or "answer" not in field or "reason" not in field:
             return f"progress ledger field {key!r} omitted answer or reason"
     if (
-        ledger["is_request_satisfied"]["answer"] is not True
+        not ledger["is_request_satisfied"]["answer"]
         and ledger["next_speaker"]["answer"] not in workers
     ):
         return (
@@ -611,11 +611,11 @@ async def run_magentic_one(ctx: RunContext) -> str:
     # Pinned _orchestrate_step tests n_rounds > max_turns BEFORE incrementing.
     # Consequently a configured N permits N+1 ledger rounds, not N. Keep this
     # source boundary rather than silently tightening its algorithmic limit.
-    await ctx.trace.emit('magentic_config', implementation='source-round-guard-v2',
+    await ctx.trace.emit('magentic_config', implementation='source-ledger-truthiness-v3',
                          max_rounds=max_rounds, ledger_round_limit=max_rounds + 1)
     for round_id in range(1, max_rounds + 2):
         ledger = await _progress_ledger(ctx, workers, team, thread)
-        if ledger["is_request_satisfied"]["answer"] is True:
+        if ledger["is_request_satisfied"]["answer"]:
             return await _final_answer(
                 ctx,
                 thread,
@@ -624,8 +624,8 @@ async def run_magentic_one(ctx: RunContext) -> str:
 
         previous_stalls = stalls
         if (
-            ledger["is_progress_being_made"]["answer"] is not True
-            or ledger["is_in_loop"]["answer"] is True
+            not ledger["is_progress_being_made"]["answer"]
+            or ledger["is_in_loop"]["answer"]
         ):
             stalls += 1
         else:

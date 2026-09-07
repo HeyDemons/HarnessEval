@@ -13,8 +13,9 @@ from dataclasses import dataclass, field
 
 from .core import RunContext, extract_json, tool_result_content
 from .dylan import DM_ROLE_PROMPTS, parse_ranks
+from .reply_contracts import action_schema, validate_reply
 
-IMPLEMENTATION = "published-teams-tool-policy-v2"
+IMPLEMENTATION = "annotated-action-consensus-v3"
 ROLES = {**DM_ROLE_PROMPTS,
          "ProductExplorer": DM_ROLE_PROMPTS["StateExplorer"],
          "DescriptionReader": DM_ROLE_PROMPTS["DetailReader"],
@@ -61,13 +62,12 @@ def parse_action(reply: str, names: list[str], *, finalizing: bool = False) -> t
     ratings = payload.get("ratings") if isinstance(payload.get("ratings"), list) else []
     if not isinstance(action, dict):
         return None, ratings
-    if set(action) == {"final"} and isinstance(action["final"], str):
-        accepted = action
-    elif (not finalizing and set(action) == {"tool", "arguments"}
-          and action["tool"] in names and isinstance(action["arguments"], dict)):
-        accepted = action
-    else:
+    try:
+        validate_reply(action, action_schema(names, finalizing=finalizing))
+    except ValueError:
         return None, ratings
+    accepted = ({"final": action["final"]} if "final" in action else
+                {"tool": action["tool"], "arguments": action["arguments"]})
     return json.dumps(accepted, ensure_ascii=False, sort_keys=True, separators=(",", ":")), ratings
 
 

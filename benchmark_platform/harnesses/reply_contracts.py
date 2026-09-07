@@ -4,7 +4,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-VERSION = "role-schema-v1"
+VERSION = "role-schema-v2"
 
 
 def object_schema(properties: dict, required: list[str] | None = None, *, extra: bool = True) -> dict:
@@ -13,12 +13,13 @@ def object_schema(properties: dict, required: list[str] | None = None, *, extra:
 
 
 def action_schema(names: list[str], *, finalizing: bool = False) -> dict:
-    optional = {"thought": {"type": "string"}, "reasoning": {"type": "string"}}
-    final = object_schema({"final": {"type": "string"}, **optional}, ["final"], extra=False)
+    # Parsers consume the action, not unrelated model annotations. Reserved
+    # action keys remain mutually exclusive even when extra fields are allowed.
+    final = object_schema({"final": {"type": "string"}, "tool": False, "arguments": False}, ["final"])
     if finalizing or not names:
         return final
     tool = object_schema({"tool": {"type": "string", "enum": names},
-                          "arguments": {"type": "object"}, **optional}, ["tool", "arguments"], extra=False)
+                          "arguments": {"type": "object"}, "final": False}, ["tool", "arguments"])
     return {"type": "object", "anyOf": [tool, final]}
 
 
@@ -31,17 +32,22 @@ def instruction_list_schema(key: str, *, nonempty: bool) -> dict:
     return object_schema({key: {"type": "array", "items": item, "minItems": 1 if nonempty else 0}})
 
 
-def validate_reply(value: Any, schema: dict, path: str = "reply") -> None:
+def validate_reply(value: Any, schema: dict | bool, path: str = "reply") -> None:
     """Validate the subset used by our reply contracts, without tightening tool schemas."""
+    if schema is False:
+        raise ValueError(f"{path} is not permitted in this reply shape")
+    if schema is True:
+        return
     if "anyOf" in schema:
+        errors = []
         for branch in schema["anyOf"]:
             try:
                 validate_reply(value, branch, path)
                 break
-            except ValueError:
-                pass
+            except ValueError as exc:
+                errors.append(str(exc))
         else:
-            raise ValueError(f"{path} does not match any permitted reply shape")
+            raise ValueError(f"{path} does not match any permitted reply shape: " + "; ".join(errors))
     kind = schema.get("type")
     types = kind if isinstance(kind, list) else [kind] if kind else []
     checks = {"object": lambda x: isinstance(x, dict), "array": lambda x: isinstance(x, list),

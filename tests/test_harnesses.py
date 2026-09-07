@@ -1013,7 +1013,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_multi_persona_published_single_model_protocol(self) -> None:
         answer, environment = self.run_profile("multi-persona", ["Final answer: 42"])
-        self.assertEqual(answer, "Final answer: 42")
+        self.assertEqual(answer, "42")
         self.assertEqual(environment.calls, [])
         prompt = self.last_client.messages[0][0]["content"]
         self.assertNotIn("Structural example", prompt)

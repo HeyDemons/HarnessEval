@@ -76,3 +76,55 @@ removed the extra metadata, but no old artifact is silently upgraded.
 Full test and real-smoke evidence is recorded separately in the workspace audit
 report. A successful matrix component test is not a claim that every method/task
 combination or every external environment has completed a real scored run.
+
+## Independent review follow-up
+
+The additional source review identified defects beyond the initial table above:
+
+- SPP now applies the pinned `tasks/trivia_creative_writing.py::prompt_unwrap`,
+  preserving multiline final answers and the raw collaboration in the trace.
+  No marker means return the original response; no extra generation is added.
+  Identity: `source-final-answer-unwrapping-v2`.
+- LLMCompiler validates numeric positive IDs, uniqueness, task/dependency list
+  shape before scheduling, inside the existing JSON protocol repair loop. Numeric
+  strings are normalized to the same integer ID used by source substitution.
+  Missing IDs retain the existing positional default. No task is executed from
+  a partially invalid plan; no new planning passes are allowed. Raw observations
+  from v4 remain intact. Identity: `validated-planner-ids-v5`.
+- ReWOO accepts a zero-step plan and calls Solver with an empty worker log, as
+  pinned PWS does. Malformed evidence, unmatched Plan lines and unclosed brackets
+  still use the existing bounded repair. **Declared source-parser deviation:**
+  pinned PWS blindly removes the last character of an unclosed worker input;
+  the dynamic JSON adapter does not reproduce that truncation, which would alter
+  the requested API arguments. This is not a claim of byte-for-byte parser parity.
+  Identity: `empty-plan-solver-v2`.
+- Magentic-One uses source truthiness for satisfaction, speaker validation and
+  stall decisions. In particular, both nonempty strings `"true"` and `"false"`
+  are truthy in the pinned source. Structural checks, retry context, carried
+  stalls and N+1 round guard remain unchanged. Identity: `source-ledger-truthiness-v3`.
+- Shared action JSON accepts annotation fields, as the pinned LangChain parser
+  ignores fields other than its action/input. Required action fields/types, known
+  tools, mutually exclusive final/tool shapes and final-slot restrictions remain.
+  Schema errors include branch-specific reasons. DyLAN canonicalizes only action
+  fields for voting (`annotated-action-consensus-v3`), preserving ratings/raw text.
+  Common contract identity: `role-schema-v2`.
+- JSON Actor and SA pass finalizing to the parser; an invalid final response
+  ends with budget failure, with no extra repair request or environment action.
+- ReAct registry provenance is now `protocol-dependent-adaptation`; the batch
+  runner's native/text identity already distinguishes the selected protocol.
+
+Budget exhaustion remains a failed algorithm measurement, not a successful answer.
+No synthesis reserve, worker quota, extra Solver call or grader modification is
+introduced. Existing native reward evidence and budget termination are retained.
+
+Two boundaries remain explicit: the retired DyLAN text/DM helper's ranking guard
+differs from its release reference but is not reachable through registered `dylan`;
+GAIA's shared baseline/product last-line normalization still truncates multiline
+predictions. SPP extraction fixes its method output and native user transcript,
+but does not by itself change that cross-arm GAIA scoring policy. Neither limitation
+is silently presented as resolved by this patch.
+
+Source links: [SPP unwrapping](https://github.com/MikeWangWZHL/Solo-Performance-Prompting/blob/619c8a0ff4205bfd39e33f0867647b40e1703b94/tasks/trivia_creative_writing.py),
+[ReWOO PWS](https://github.com/billxbf/ReWOO/blob/9cd0283043ff4be0c9d614fda2789d143ca6ffd1/algos/PWS.py),
+[LangChain output parser](https://github.com/langchain-ai/langchain/blob/0207dc1431c29379b724f51c09fa49e6b0333639/libs/langchain/langchain/agents/structured_chat/output_parser.py),
+[Magentic orchestrator](https://github.com/microsoft/autogen/blob/bd5a24ba72ba01c4ec7509f027caaa7454b5f6d0/python/packages/autogen-agentchat/src/autogen_agentchat/teams/_group_chat/_magentic_one/_magentic_one_orchestrator.py).

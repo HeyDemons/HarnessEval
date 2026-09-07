@@ -67,8 +67,10 @@ async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = No
         raw = await ctx.complete(role, messages, json_mode=True,
                                  response_schema=action_schema(ctx.environment.names, finalizing=finalizing))
         try:
-            action = parse_action_reply(raw, ctx.environment.names)
+            action = parse_action_reply(raw, ctx.environment.names, finalizing=finalizing)
         except ValueError as exc:
+            if finalizing or ctx.last_response_used_final_slot:
+                raise RuntimeError("Agent-loop turn budget exhausted: invalid final response") from exc
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},

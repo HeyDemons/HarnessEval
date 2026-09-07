@@ -70,10 +70,16 @@ from .dylan import most_frequent as _dylan_most_frequent, run_dylan
 
 
 async def run_multi_persona(ctx: RunContext) -> str:
-    return await ctx.complete(
+    response = await ctx.complete(
         "solo_performance_prompting",
         [{"role": "user", "content": SPP_PROFILE_PROMPT.format(task=ctx.prompt)}],
     )
+    # Pinned SPP prompt_unwrap (619c8a0), including marker precedence and
+    # repeated-marker behavior. complete() has already traced the full draft.
+    for marker in ("Final answer:", "final answer:"):
+        if marker in response:
+            return response.split(marker)[1].strip()
+    return response
 
 
 _PLAN_REFERENCE = re.compile(r"\$([A-Za-z0-9_-]+)((?:\.[A-Za-z0-9_-]+|\[\d+\])*)")
@@ -171,6 +177,34 @@ def _resolve_reference(
     return value
 
 
+def _validate_compiler_plan(plan: dict) -> None:
+    """Keep JSON-adapter ID errors inside the existing bounded repair loop."""
+    def numeric_id(value: Any, path: str) -> int:
+        if not (type(value) is int or isinstance(value, str) and re.fullmatch(r"[0-9]+", value)):
+            raise ValueError(f"{path} must be a positive integer task ID")
+        result = int(value)
+        if result < 1:
+            raise ValueError(f"{path} must be a positive integer task ID")
+        return result
+
+    tasks = plan.get("tasks")
+    if not isinstance(tasks, list):
+        raise ValueError("LLMCompiler tasks must be an array")
+    seen: set[int] = set()
+    for index, item in enumerate(tasks, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"tasks[{index - 1}] must be an object")
+        task_id = numeric_id(item.get("id", index), f"tasks[{index - 1}].id")
+        if task_id in seen:
+            raise ValueError(f"duplicate task ID {task_id}")
+        seen.add(task_id)
+        dependencies = item.get("dependencies", [])
+        if not isinstance(dependencies, list):
+            raise ValueError(f"task {task_id} dependencies must be an array")
+        for dependency in dependencies:
+            numeric_id(dependency, f"task {task_id} dependency")
+
+
 async def run_llmcompiler(ctx: RunContext) -> str:
     """LLMCompiler planner/scheduler/joiner loop with bounded replanning."""
 
@@ -182,7 +216,7 @@ async def run_llmcompiler(ctx: RunContext) -> str:
     reference_mode = ctx.policy.get("llmcompiler_reference_mode", "upstream")
     if reference_mode not in {"upstream", "legacy-json-fields"}:
         raise ValueError("llmcompiler_reference_mode must be upstream or legacy-json-fields")
-    await ctx.trace.emit("llmcompiler_config", implementation="raw-tool-observations-v4",
+    await ctx.trace.emit("llmcompiler_config", implementation="validated-planner-ids-v5",
                          dependency_mode="arguments-plus-declared" if reference_mode == "upstream" else "declared-only",
                          reference_mode=reference_mode, max_planning_passes=max_planning_passes)
     reference_instructions = (
@@ -227,12 +261,13 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                 }
             ],
             required_root_key="tasks",
+            validator=_validate_compiler_plan,
         )
         tasks = plan.get("tasks")
         if not isinstance(tasks, list):
             raise ValueError("LLMCompiler planner omitted tasks")
         pending = {
-            str(item.get("id", index)): item
+            str(int(item.get("id", index))): item
             for index, item in enumerate(tasks, start=1)
             if isinstance(item, dict)
         }
@@ -240,7 +275,7 @@ async def run_llmcompiler(ctx: RunContext) -> str:
         for task_id, item in pending.items():
             declared = item.get("dependencies", [])
             inferred = []
-            effective = declared
+            effective = [str(int(dep)) for dep in declared]
             if reference_mode == "upstream":
                 from .compiler_references import infer_dependencies
                 inferred = infer_dependencies(task_id, item.get("arguments") or {})
@@ -504,10 +539,12 @@ async def run_sa(ctx: RunContext) -> str:
                 await draft_task
             raise
         try:
-            action = parse_action_reply(raw, ctx.environment.names)
+            action = parse_action_reply(raw, ctx.environment.names, finalizing=finalizing)
         except ValueError as exc:
             if draft_task is not None:
                 await draft_task
+            if finalizing or ctx.last_response_used_final_slot:
+                raise RuntimeError("Agent-loop turn budget exhausted: invalid final response") from exc
             messages.extend(
                 [
                     {"role": "assistant", "content": raw},
