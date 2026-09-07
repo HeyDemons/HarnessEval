@@ -6,6 +6,7 @@ import unittest
 
 from benchmark_platform.budgets import ModelBudgetExceeded
 from benchmark_platform.bridges.episode import EpisodeBroker, FinalResponse, NativeTool
+from benchmark_platform.bridges.tau_episode import _retime_adopted_tool_message
 from benchmark_platform.catalog import Catalog
 from benchmark_platform.compatibility import compatibility_rows
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
@@ -18,6 +19,20 @@ from test_harnesses import magentic_ledger
 
 
 class NativeIsolationTests(unittest.IsolatedAsyncioTestCase):
+    def test_tau_adopted_tool_message_gets_authoritative_id_and_new_timestamp(self):
+        class Message:
+            serial = 0
+            def __init__(self, *, id, role, content, requestor, error):
+                type(self).serial += 1
+                self.id, self.role, self.content = id, role, content
+                self.requestor, self.error = requestor, error
+                self.timestamp = type(self).serial
+        shadow = Message(id="shadow", role="tool", content="cached",
+                         requestor="assistant", error=False)
+        adopted = _retime_adopted_tool_message(shadow, "actor-call")
+        self.assertEqual(adopted.id, "actor-call")
+        self.assertGreater(adopted.timestamp, shadow.timestamp)
+        self.assertEqual(adopted.content, shadow.content)
     async def test_isolated_read_and_adoption_cannot_reach_native_handler(self):
         calls = []
         async def native(args):

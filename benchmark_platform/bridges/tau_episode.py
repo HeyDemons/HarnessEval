@@ -190,6 +190,13 @@ def _message_text(message: Any) -> str:
     return ""
 
 
+def _retime_adopted_tool_message(response: Any, request_id: str) -> Any:
+    """Recreate a shadow result after its authoritative Actor ToolCall."""
+    return type(response)(id=request_id, role=response.role,
+                          content=response.content, requestor=response.requestor,
+                          error=response.error)
+
+
 def _visible_history(messages: list[Any]) -> str:
     return "\n".join(
         f"{getattr(message, 'role', type(message).__name__)}: {_message_text(message)}"
@@ -500,11 +507,12 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                 response = adopted_results.pop(message.id, None)
             if response is None:
                 return original_get_response(message)
-            if hasattr(response, "model_copy"):
-                return response.model_copy(update={"id": message.id})
-            copied = copy.deepcopy(response)
-            copied.id = message.id
-            return copied
+            # The speculative ToolMessage was created before the authoritative
+            # Actor call. Reusing its timestamp would make Tau2's timestamp-sorted
+            # trajectory place the result before its ToolCall, which then breaks
+            # native evaluator replay. Reconstruct it now so causal order and the
+            # Actor's call id are both canonical.
+            return _retime_adopted_tool_message(response, message.id)
 
         native_environment.get_response = get_response_with_adoption
     if policy.get("native_evaluate", True) is False:
