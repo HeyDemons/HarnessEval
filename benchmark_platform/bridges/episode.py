@@ -170,6 +170,8 @@ class EpisodeBroker:
         policy: dict[str, Any],
         client: CompletionClient | None = None,
         speculator_client: CompletionClient | None = None,
+        task_messages: list[dict[str, Any]] | None = None,
+        validate_schema: bool = True,
     ):
         if any(tool.name == SEND_MESSAGE_TOOL for tool in tools):
             raise ValueError(f"Native benchmark already defines reserved tool {SEND_MESSAGE_TOOL}")
@@ -180,6 +182,8 @@ class EpisodeBroker:
         self.policy = policy
         self.client = client or completion_client_from_env()
         self.speculator_client = speculator_client
+        self.task_messages = task_messages or []
+        self.validate_schema = validate_schema
         self._events: queue.Queue[ActionRequest | FinalResponse | EpisodeFailure] = queue.Queue()
         self._ready = threading.Event()
         self._pending: dict[str, ActionRequest] = {}
@@ -251,7 +255,13 @@ class EpisodeBroker:
             )
             for tool in declared
         }
-        environment = ToolEnvironment([tool.spec() for tool in declared], self.trace, handlers)
+        # The native controller owns tool validation/defaults and charges its
+        # episode steps for tool attempts, including rejected arguments. Rejecting
+        # them locally both changes native behavior and hides attempts from its budget.
+        environment = ToolEnvironment([tool.spec() for tool in declared], self.trace, handlers,
+                                      validate_schema=self.validate_schema)
+        if not self.validate_schema:
+            await self.trace.emit('native_argument_protocol', implementation='benchmark-controller-v2')
         self.context = RunContext(
             self.profile,
             self.prompt,
@@ -259,6 +269,7 @@ class EpisodeBroker:
             environment,
             self.trace,
             self.policy,
+            task_messages=self.task_messages,
             speculator_client=(
                 self.speculator_client
                 or (

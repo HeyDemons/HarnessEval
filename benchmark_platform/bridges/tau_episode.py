@@ -371,11 +371,10 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
 
         def _start(self) -> None:
             prompt = (
-                "Act as the benchmark assistant under the complete domain policy below. The hidden user "
+                "Act as the benchmark assistant under the provided complete domain policy. The hidden user "
                 "scenario is unavailable; rely only on visible conversation. Use send_message_to_user "
                 "whenever another user turn is required. Do not claim completion until the user's request "
                 "has been handled under policy.\n\n"
-                f"<domain_policy>\n{self.domain_policy}\n</domain_policy>\n\n"
                 f"<visible_conversation>\n{_visible_history(self.history)}\n</visible_conversation>"
             )
             self.broker = EpisodeBroker(
@@ -385,6 +384,8 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                 trace_path=job / "harness_trace.jsonl",
                 policy=policy,
                 client=client,
+                task_messages=[{"role": "system", "content": self.domain_policy}],
+                validate_schema=False,
             )
             self.brokers.append(self.broker)
             self.broker.start()

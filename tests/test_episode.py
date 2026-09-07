@@ -56,6 +56,7 @@ PROFILE_RESPONSES = {
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
     "aflow": ["ok"],
+    "aflow-tools": ['{"final":"ok"}'],
     "dylan": ['{"final":"ok"}'] * 4,
     "magentic-one": [
         "facts",
@@ -185,6 +186,9 @@ class EpisodeBrokerTests(unittest.TestCase):
                         if profile.id == "aflow":
                             from benchmark_platform.harnesses.aflow import make_artifact
                             policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
+                        if profile.id == "aflow-tools":
+                            from benchmark_platform.harnesses.aflow_tools import make_artifact
+                            policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
                         broker = EpisodeBroker(
                             profile=profile.id,
                             prompt=f"complete the {benchmark} native episode",
@@ -256,6 +260,41 @@ class EpisodeBrokerTests(unittest.TestCase):
                 self.assertEqual(broker.metrics()['llm_calls'], 2)
             self.assertEqual(len(client.requests), 4)
             self.assertNotIn('Visible user identifier B', json.dumps(client.requests[:2]))
+
+    def test_native_controller_receives_argument_attempts_before_validation(self) -> None:
+        # Native environments charge these attempts to their own step/error
+        # budgets. A local schema rejection must not hide the attempt from them.
+        for arguments, native_result in (({}, ('missing amount', True)),
+                                         ({'amount': '7'}, ('native accepted value', False))):
+            client = ScriptedClient([json.dumps({'tool': 'native_lookup', 'arguments': arguments}),
+                                     '{"final":"handled"}'])
+            with tempfile.TemporaryDirectory() as directory:
+                broker = EpisodeBroker(profile='actor-only', prompt='task',
+                    tools=[NativeTool('native_lookup', 'lookup', {'type': 'object',
+                        'properties': {'amount': {'type': 'integer'}}, 'required': ['amount']})],
+                    trace_path=Path(directory) / 'trace.jsonl', policy={}, client=client,
+                    validate_schema=False)
+                broker.start()
+                wave = broker.next_wave()
+                self.assertIsInstance(wave, list)
+                self.assertEqual(wave[0].arguments, arguments)
+                final = broker.next_wave(tool_results={wave[0].id: native_result})
+                self.assertIsInstance(final, FinalResponse)
+                self.assertEqual(broker.metrics()['tool_calls'], 1)
+                self.assertIn(native_result[0], json.dumps(client.requests))
+
+    def test_public_task_policy_is_forwarded_as_system_to_every_role(self) -> None:
+        client = ScriptedClient(['{"assignments":[{"id":"w1","instruction":"inspect"}]}',
+                                 '{"final":"worker report"}', '{"final":"done"}'])
+        with tempfile.TemporaryDirectory() as directory:
+            broker = EpisodeBroker(profile='cmas', prompt='VISIBLE_USER_REQUEST', tools=[],
+                trace_path=Path(directory) / 'trace.jsonl', policy={}, client=client,
+                task_messages=[{'role': 'system', 'content': 'PUBLIC_DOMAIN_POLICY'}])
+            broker.start()
+            self.assertIsInstance(broker.next_wave(), FinalResponse)
+            self.assertEqual(len(client.requests), 3)
+            for messages in client.requests:
+                self.assertEqual(messages[0], {'role': 'system', 'content': 'PUBLIC_DOMAIN_POLICY'})
 
     def test_parallel_profile_wave_is_one_native_wave(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
