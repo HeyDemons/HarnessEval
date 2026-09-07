@@ -158,7 +158,7 @@ class ScEnsemble:
         return {"response": mapping[letter]}
 
 
-def graph_namespace(artifact: dict, llm: OperatorLLM) -> dict:
+def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None = None) -> dict:
     """Redirect only pinned AFlow infrastructure imports, preserving graph code.
 
     This is a compatibility shim, NOT a security sandbox. Importing generated
@@ -166,7 +166,8 @@ def graph_namespace(artifact: dict, llm: OperatorLLM) -> dict:
     """
     prompts: dict[str, Any] = {}
     exec(compile(artifact["prompt"], "<aflow-prompts>", "exec"), prompts)
-    namespace = {"operator": SimpleNamespace(Custom=Custom, AnswerGenerate=AnswerGenerate, ScEnsemble=ScEnsemble),
+    namespace = {"operator": SimpleNamespace(Custom=Custom, AnswerGenerate=AnswerGenerate, ScEnsemble=ScEnsemble,
+                                             **(operators or {})),
                  "prompt_custom": SimpleNamespace(**{k: v for k, v in prompts.items() if not k.startswith("__")}),
                  "create_llm_instance": lambda config: llm, "DatasetType": str, "Literal": Literal}
     tree = ast.parse(artifact["graph"])

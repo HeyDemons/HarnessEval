@@ -96,6 +96,7 @@ RESPONSES = {
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
     "aflow": ["ok"],
+    "aflow-tools": ['{"final":"ok"}'],
     "dylan": ['{"final":"ok"}'] * 4,
     "magentic-one": [
         "facts",
@@ -760,6 +761,9 @@ class BridgeMatrixTests(unittest.TestCase):
             policy = {"max_turns": 4}
             if profile_id == "aflow":
                 from benchmark_platform.harnesses.aflow import make_artifact
+                policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
+            if profile_id == "aflow-tools":
+                from benchmark_platform.harnesses.aflow_tools import make_artifact
                 policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
             if profile_id == "lats":
                 policy.update(

@@ -401,9 +401,11 @@ async def run_profile(ctx: RunContext) -> str:
         run_sa,
     )
     from .rewoo import run_rewoo
+    from .aflow_tools import run_aflow_tools
 
     extended = {
         "aflow": run_aflow,
+        "aflow-tools": run_aflow_tools,
         "dylan": run_dylan,
         "dmas": run_dmas,
         "magentic-one": run_magentic_one,

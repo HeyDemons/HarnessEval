@@ -69,10 +69,14 @@ def validate_split(split: dict):
         raise ValueError("AFlow optimization and evaluation cases overlap")
 
 
-def expansion_prompt(parent: dict, history: list[dict], problem_type: str) -> str:
+def expansion_prompt(parent: dict, history: list[dict], problem_type: str, *, adapter: str = "qa") -> str:
     experience = [{"modification": row["modification"], "before": parent["score"],
                    "after": row.get("score"), "succeed": row.get("score") is not None and row["score"] > parent["score"]}
                   for row in history if row.get("parent") == parent["round"]]
+    extra = ""
+    if adapter == "tools":
+        from .aflow_tools import OPERATOR_DESCRIPTION
+        extra = OPERATOR_DESCRIPTION + "\n"
     return (
         f"Optimize this Python AFlow workflow for {problem_type} tasks. Change one detail at a time, at most five "
         "graph lines. You may add/remove operators, change their parameters or custom prompts, and use Python "
@@ -82,6 +86,7 @@ def expansion_prompt(parent: dict, history: list[dict], problem_type: str) -> st
         "AnswerGenerate(llm)(input) -> {'thought':str,'answer':str}; "
         "ScEnsemble(llm)(solutions) -> {'response':str}, selecting one original candidate. "
         "create_llm_instance(llm_config), operator and prompt_custom are supplied. "
+        + extra +
         "All custom prompt constants must be defined in the prompt source. Do not redefine built-in operator prompts. "
         "Custom concatenates instruction+input literally; pass prior results explicitly. Do not put answers in code. "
         "Avoid modifications already attempted from this parent. Output complete Python sources in "
@@ -95,7 +100,14 @@ def expansion_prompt(parent: dict, history: list[dict], problem_type: str) -> st
 async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: dict, output: Path, *,
                    rounds: int = 20, validation_rounds: int = 5, sample: int = 4,
                    seed: int = 0, problem_type: str = "question answering",
-                   check_convergence: bool = True, max_generation_attempts: int | None = None) -> dict:
+                   check_convergence: bool = True, max_generation_attempts: int | None = None,
+                   adapter: str = "qa") -> dict:
+    if adapter == "tools":
+        from .aflow_tools import make_artifact, validate_artifact
+    elif adapter == "qa":
+        from .aflow import make_artifact, validate_artifact
+    else:
+        raise ValueError("Unknown AFlow operator adapter")
     validate_split(split)
     if min(rounds, validation_rounds, sample) < 1:
         raise ValueError("AFlow search budgets must be positive")
@@ -139,7 +151,7 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
             parent = rng.choices(candidates, selection_probabilities([row["score"] for row in candidates]))[0]
             row = {"round": round_id, "parent": parent["round"], "modification": "", "score": None}
             # Provider failures remain missing measurements, never failed candidates.
-            reply = await client.complete([{"role": "user", "content": expansion_prompt(parent, history, problem_type)}])
+            reply = await client.complete([{"role": "user", "content": expansion_prompt(parent, history, problem_type, adapter=adapter)}])
             (output / f"expansion-{round_id}-attempt-{attempt}.txt").write_text(reply.content)
             fields = {key: match.group(1).strip() for key in ("graph", "prompt", "modification")
                       if (match := re.search(fr"<{key}>(.*?)</{key}>", reply.content, re.DOTALL))}
@@ -185,6 +197,7 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
         "completed_rounds": len(history) - 1, "check_convergence": check_convergence,
         "stop_reason": "converged" if check_convergence and stopped["converged"] else "round_budget",
         "convergence": stopped, "max_generation_attempts": max_generation_attempts,
+        "operator_adapter": adapter,
     })
     validate_artifact(frozen)
     (output / "frozen.json").write_text(json.dumps(frozen, indent=2) + "\n")
@@ -227,7 +240,7 @@ async def main_async(args):
     await optimize(completion_client_from_env(), evaluate, split, args.output, rounds=args.rounds,
                    validation_rounds=args.validation_rounds, sample=args.sample, seed=args.seed,
                    problem_type=args.problem_type, check_convergence=args.check_convergence,
-                   max_generation_attempts=args.max_generation_attempts)
+                   max_generation_attempts=args.max_generation_attempts, adapter=args.adapter)
     print(str(args.output / "frozen.json"))
 
 
@@ -241,6 +254,7 @@ def main():
     parser.add_argument("--sample", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--problem-type", default="question answering")
+    parser.add_argument("--adapter", choices=("qa", "tools"), default="qa")
     parser.add_argument("--check-convergence", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-generation-attempts", type=int,
                         help="Optional per-round regeneration cap; unset matches the upstream unbounded loop")

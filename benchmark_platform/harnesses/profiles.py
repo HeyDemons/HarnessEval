@@ -119,6 +119,19 @@ PROFILES = (
                "and dynamic tool workflows require separate adapters."),
     ),
     HarnessProfile(
+        id="aflow-tools",
+        name="AFlow tool workflow adaptation",
+        topology="offline workflow search -> frozen tool decision/observation graph",
+        provenance="algorithm-adaptation",
+        source="https://github.com/FoundationAgents/AFlow",
+        revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
+        tool_contract="dynamic",
+        notes=("Explicit tool adaptation, separate from the pinned QA profile. Searches Python workflows "
+               "on disjoint optimization cases and freezes them before evaluation. ToolDecision proposes "
+               "one action; ToolSession commits it once and records the real observation. All operators "
+               "share native model/episode budgets. Requires an aflow-tools-python-v1 artifact."),
+    ),
+    HarnessProfile(
         id="dylan",
         name="DyLAN",
         topology="published optimized state team -> dynamic T-FFN -> committed action -> observation",
