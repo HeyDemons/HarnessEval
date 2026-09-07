@@ -6,6 +6,8 @@ side effects, and only a current, unconsumed proposal may be committed.
 """
 from __future__ import annotations
 
+import ast
+import builtins
 import inspect
 from dataclasses import dataclass
 
@@ -15,7 +17,10 @@ from .methods import ACTION_SYSTEM, parse_action_reply
 from .reply_contracts import action_schema
 
 FORMAT = "aflow-tools-python-v1"
-IMPLEMENTATION = "dynamic-tools-python-v1"
+IMPLEMENTATION = "dynamic-tools-python-v2"
+SAFE_BUILTINS = {name: getattr(builtins, name) for name in
+                 ("__build_class__", "str", "int", "float", "bool", "list", "dict", "tuple",
+                  "range", "len", "enumerate", "zip", "min", "max", "sum", "sorted")}
 INITIAL_GRAPH = '''class Workflow:
     def __init__(self, name, llm_config, dataset):
         self.llm = create_llm_instance(llm_config)
@@ -38,6 +43,10 @@ OPERATOR_DESCRIPTION = (
     "ToolDecision instruction. Only select a proposal from the current session state. All model calls share the "
     "benchmark budget. Do not catch budget/cancellation errors, extend limits, import host data, or embed task answers. "
     "Preserve the session loop and return session.answer. No WebShop-specific tools are available. "
+    "Use only the supplied operators and ordinary assignments, if/while/for, lists/dicts, indexing, "
+    "string concatenation and f-strings. Define only Workflow.__init__ and Workflow.__call__. "
+    "No imports, helper functions, exceptions, reflection, .format(), filesystem or direct llm/context access. "
+    "Prompt source must contain only literal constants. "
 )
 
 
@@ -51,7 +60,79 @@ def validate_artifact(artifact, **kwargs):
     if not isinstance(artifact, dict) or artifact.get("format") != FORMAT:
         raise ValueError("aflow-tools requires an aflow-tools-python-v1 workflow; QA artifacts are not tool workflows")
     aflow.validate_artifact({**artifact, "format": aflow.FORMAT}, **kwargs)
+    validate_graph(artifact['graph'], artifact['prompt'])
     return artifact
+
+
+def validate_graph(graph: str, prompt: str):
+    """Accept a capability-limited operator graph, never arbitrary Python.
+
+    Native bridges hold hidden state in the controller process. Restrict the
+    generated language before compiling it: no imports/reflection, arbitrary
+    calls, custom functions, state mutation or access to llm.ctx/handlers.
+    Together with minimal builtins this confines code to public operator APIs.
+    The ordinary process deadline still bounds pure-computation infinite loops.
+    """
+    tree = ast.parse(graph)
+    if len(tree.body) != 1 or not isinstance(tree.body[0], ast.ClassDef):
+        raise ValueError('Tool graph must define only class Workflow')
+    cls = tree.body[0]
+    if cls.name != 'Workflow' or cls.bases or cls.keywords or cls.decorator_list:
+        raise ValueError('Tool graph cannot customize class construction')
+    if len(cls.body) != 2 or {getattr(n, 'name', None) for n in cls.body} != {'__init__', '__call__'}:
+        raise ValueError('Tool graph requires only __init__ and async __call__')
+    fields = {'llm'}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+            if not isinstance(node.value, ast.Name) or node.value.id != 'self' or node.attr.startswith('_'):
+                raise ValueError('Tool graph may assign only its own operator fields')
+            fields.add(node.attr)
+    operators = {'ToolSession', 'ToolDecision', 'Custom', 'AnswerGenerate', 'ScEnsemble'}
+    attributes = {'active', 'answer', 'observation', 'commit', 'get_usage_summary',
+                  'get', 'append', 'join', 'replace', 'strip'}
+    prompt_names = set()
+    prompts = ast.parse(prompt)
+    for node in prompts.body:
+        if not isinstance(node, ast.Assign) or any(not isinstance(t, ast.Name) or t.id.startswith('_') for t in node.targets):
+            raise ValueError('Tool workflow prompts must be literal constants')
+        try:
+            ast.literal_eval(node.value)
+        except (ValueError, TypeError) as exc:
+            raise ValueError('Tool workflow prompts must be literal constants') from exc
+        prompt_names.update(t.id for t in node.targets)
+    allowed = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef, ast.arguments, ast.arg,
+               ast.Assign, ast.AnnAssign, ast.AugAssign, ast.Expr, ast.Return, ast.If, ast.While, ast.For,
+               ast.Break, ast.Continue, ast.Pass, ast.Await, ast.Call, ast.keyword, ast.Name, ast.Attribute,
+               ast.Constant, ast.List, ast.Tuple, ast.Dict, ast.Set, ast.Subscript, ast.Slice,
+               ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.IfExp, ast.JoinedStr, ast.FormattedValue,
+               ast.operator, ast.unaryop, ast.boolop, ast.cmpop, ast.expr_context)
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed):
+            raise ValueError(f'Unsupported tool workflow syntax: {type(node).__name__}')
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if node not in cls.body or node.decorator_list or node.args.defaults or node.args.kw_defaults:
+                raise ValueError('Tool workflow cannot define helper functions or decorators')
+            expected = ['self', 'name', 'llm_config', 'dataset'] if node.name == '__init__' else ['self', 'problem']
+            if ([a.arg for a in node.args.args] != expected or node.args.posonlyargs or node.args.kwonlyargs
+                    or node.args.vararg or node.args.kwarg or
+                    (node.name == '__call__') != isinstance(node, ast.AsyncFunctionDef)):
+                raise ValueError('Tool workflow must preserve the operator interface signature')
+        if isinstance(node, (ast.Name, ast.arg)) and getattr(node, 'id', getattr(node, 'arg', '')).startswith('_'):
+            raise ValueError('Tool workflow cannot access private names')
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in {
+                'self', 'operator', 'prompt_custom', 'create_llm_instance', *SAFE_BUILTINS}:
+            raise ValueError('Tool workflow cannot rebind capability names')
+        if isinstance(node, ast.Attribute):
+            root = node.value.id if isinstance(node.value, ast.Name) else None
+            permitted = fields if root == 'self' else operators if root == 'operator' else prompt_names if root == 'prompt_custom' else attributes
+            if node.attr.startswith('_') or node.attr not in permitted:
+                raise ValueError(f'Tool workflow cannot access attribute {node.attr}')
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id not in (set(SAFE_BUILTINS) - {'__build_class__'}) | {'create_llm_instance'}:
+                    raise ValueError('Tool workflow cannot call arbitrary functions')
+            elif not isinstance(node.func, ast.Attribute):
+                raise ValueError('Tool workflow cannot call computed values')
 
 
 @dataclass(frozen=True)
@@ -77,7 +158,7 @@ class ToolSession:
         self.observation = ""
 
     async def commit(self, proposal: Proposal):
-        if not self.active or proposal.session is not self or proposal.version != self.version:
+        if not isinstance(proposal, Proposal) or not self.active or proposal.session is not self or proposal.version != self.version:
             raise ValueError("AFlow cannot commit a stale, foreign or already consumed proposal")
         ctx = self.llm.ctx
         self.version += 1
@@ -128,7 +209,8 @@ async def run_aflow_tools(ctx: RunContext) -> str:
                          provenance=artifact["provenance"], implementation=IMPLEMENTATION,
                          benchmark_adapter=True)
     llm = aflow.OperatorLLM(ctx)
-    namespace = aflow.graph_namespace(artifact, llm, operators={"ToolSession": ToolSession, "ToolDecision": ToolDecision})
+    namespace = aflow.graph_namespace(artifact, llm, operators={"ToolSession": ToolSession, "ToolDecision": ToolDecision},
+                                      builtins_override=SAFE_BUILTINS)
     workflow = namespace.get("Workflow")
     if not inspect.isclass(workflow):
         raise ValueError("AFlow graph must define Workflow")

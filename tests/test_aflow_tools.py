@@ -72,6 +72,28 @@ class AFlowToolTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             aflow_tools.validate_artifact(aflow.make_artifact(), allow_initialization=True)
 
+    def test_generated_code_cannot_access_native_controller_or_python_reflection(self):
+        for expression in ('self.llm.ctx', 'self.llm.__dict__', '__import__("os")',
+                           'open("/hidden/gold")', '"{0.ctx}".format(self.llm)',
+                           'getattr(self.llm, "ctx")'):
+            graph = aflow_tools.INITIAL_GRAPH.replace('session = operator.ToolSession',
+                f'leak = {expression}\n        session = operator.ToolSession')
+            with self.assertRaises(ValueError, msg=expression):
+                aflow_tools.validate_artifact(aflow_tools.make_artifact(graph), allow_initialization=True)
+        graph = aflow_tools.INITIAL_GRAPH.replace('self.llm =', 'self.ctx = None\n        self.llm =')
+        graph = graph.replace('session = operator.ToolSession', 'leak = self.llm.ctx\n        session = operator.ToolSession')
+        with self.assertRaises(ValueError):
+            aflow_tools.validate_artifact(aflow_tools.make_artifact(graph), allow_initialization=True)
+        with self.assertRaises(ValueError):
+            aflow_tools.validate_artifact(aflow_tools.make_artifact(prompt='INSTRUCTION = open("/hidden/gold").read()'), allow_initialization=True)
+        for injected in ('prompt_custom = self.llm\n        leak = prompt_custom.ctx',
+                         'self = self.llm\n        leak = self.ctx'):
+            graph = aflow_tools.INITIAL_GRAPH.replace('session = operator.ToolSession',
+                injected + '\n        session = operator.ToolSession')
+            with self.assertRaises(ValueError):
+                aflow_tools.validate_artifact(aflow_tools.make_artifact(graph, aflow_tools.INITIAL_PROMPT + 'ctx = ""'),
+                                              allow_initialization=True)
+
     async def test_tool_search_freezes_best_and_never_exposes_evaluation_ids(self):
         split = {'benchmark': 'synthetic', 'optimization_case_ids': ['opt'], 'evaluation_case_ids': ['secret-eval-id']}
         graph = aflow_tools.INITIAL_GRAPH.replace('instruction=prompt_custom.INSTRUCTION', 'instruction=prompt_custom.INSTRUCTION + " Be careful."')

@@ -55,6 +55,13 @@ evidence of converged or paper-budget optimization. A completed search can
 legitimately select the unchanged initialization. No smoke result is imported
 into a formal evaluation.
 
-Generated Python is executable code: the import shim is not a security sandbox.
-Keep gold, future user messages, other cases and the scorer outside the agent's
-accessible workspace. This is the same isolation requirement as the QA adapter.
+Tool graphs use a restricted Python operator language, validated before execution
+with minimal builtins: the Workflow class, assignments, branches, loops, literal
+containers and calls to the supplied operator APIs. Prompt modules contain only
+literal constants. Imports, reflection, arbitrary helper functions, filesystem
+access and llm.ctx/controller access are rejected. Field permissions depend on
+their receiver; adding a prompt constant or Workflow field cannot authorize
+access to a similarly named controller attribute. The ordinary process deadline
+bounds pure-computation loops. This restriction matters particularly for native
+episodes, whose controller process holds the hidden state. The QA profile keeps
+its existing behavior; it is not the execution path of these tool graphs.

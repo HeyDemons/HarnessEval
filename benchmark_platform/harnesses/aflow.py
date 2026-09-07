@@ -158,18 +158,21 @@ class ScEnsemble:
         return {"response": mapping[letter]}
 
 
-def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None = None) -> dict:
+def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None = None,
+                    builtins_override: dict | None = None) -> dict:
     """Redirect only pinned AFlow infrastructure imports, preserving graph code.
 
     This is a compatibility shim, NOT a security sandbox. Importing generated
     Python on the host scorer is forbidden; the caller owns process isolation.
     """
-    prompts: dict[str, Any] = {}
+    prompts: dict[str, Any] = {} if builtins_override is None else {"__builtins__": builtins_override}
     exec(compile(artifact["prompt"], "<aflow-prompts>", "exec"), prompts)
     namespace = {"operator": SimpleNamespace(Custom=Custom, AnswerGenerate=AnswerGenerate, ScEnsemble=ScEnsemble,
                                              **(operators or {})),
                  "prompt_custom": SimpleNamespace(**{k: v for k, v in prompts.items() if not k.startswith("__")}),
                  "create_llm_instance": lambda config: llm, "DatasetType": str, "Literal": Literal}
+    if builtins_override is not None:
+        namespace.update(__builtins__=builtins_override, __name__="aflow_operator_graph")
     tree = ast.parse(artifact["graph"])
     keep = []
     for statement in tree.body:
