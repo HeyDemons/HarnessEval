@@ -277,7 +277,6 @@ async def run_memgpt(ctx: RunContext) -> str:
         if finalizing:
             messages.append({"role": "user", "content": "The action budget is exhausted. Call send_message with the best answer supported by existing observations. Do not call other functions."})
             await ctx.trace.emit("budget_finalization", scope="memgpt", model_requests=ctx.model_budget.used)
-        prompt_tokens_before = ctx.prompt_tokens
         try:
             action = await ctx.complete_json("memgpt_processor", messages,
                 response_schema=_processor_schema(ctx, finalizing=finalizing),
@@ -294,7 +293,9 @@ async def run_memgpt(ctx: RunContext) -> str:
             action = await ctx.complete_json("memgpt_processor", messages,
                 response_schema=_processor_schema(ctx, finalizing=finalizing),
                 final_response_schema=_processor_schema(ctx, finalizing=True), validator=_validate_processor_reply)
-        prompt_tokens = ctx.prompt_tokens - prompt_tokens_before
+        # Pinned Agent.step uses response.usage.total_tokens, not prompt tokens
+        # alone and not the sum of overflow/JSON-repair attempts in this step.
+        response_tokens = ctx.last_actor_response_tokens
         thought = action.get("thought")
         function = action.get("function")
         arguments = action.get("arguments")
@@ -380,7 +381,7 @@ async def run_memgpt(ctx: RunContext) -> str:
             request_heartbeat=request_heartbeat,
         )
 
-        if prompt_tokens > warning_tokens and not warned:
+        if response_tokens > warning_tokens and not warned:
             warning = (
                 "Warning: the conversation history will soon reach its maximum length and be summarized. Save "
                 "important information to core or archival memory before it leaves active context."
@@ -388,6 +389,7 @@ async def run_memgpt(ctx: RunContext) -> str:
             active.append({"role": "user", "content": warning})
             recall.append(_event("system", warning))
             warned = True
+            await ctx.trace.emit('memgpt_memory_pressure', total_tokens=response_tokens, threshold=warning_tokens)
         declaration_only = bool(
             isinstance(result, dict)
             and result.get("ok") is True

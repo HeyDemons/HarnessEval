@@ -26,6 +26,44 @@ class Client:
 
 
 class MemGPTFidelityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_memory_pressure_uses_last_response_input_plus_output(self):
+        class UsageClient:
+            def __init__(self, usages):
+                self.usages = iter(usages)
+                self.messages = []
+            async def complete(self, messages, **kwargs):
+                self.messages.append(messages)
+                prompt, output = next(self.usages)
+                value = ({'thought': 'save', 'function': 'core_memory_append', 'arguments':
+                          {'name': 'human', 'content': 'fact', 'request_heartbeat': True}}
+                         if len(self.messages) == 1 else
+                         {'thought': 'done', 'function': 'send_message', 'arguments': {'message': 'done'}})
+                return Completion(json.dumps(value), prompt, output, 0, 0, {})
+        trace = Trace()
+        client = UsageClient([(40, 70), (1, 1)])
+        ctx = RunContext('memgpt', 'task', client, ToolEnvironment([], trace), trace,
+                         {'memgpt_memory_warning_tokens': 100})
+        await run_profile(ctx)
+        warning = next(e for e in trace.events if e['event'] == 'memgpt_memory_pressure')
+        self.assertEqual(warning['total_tokens'], 110)
+        self.assertIn('Warning: the conversation history', str(client.messages[1]))
+
+    async def test_memory_pressure_does_not_sum_json_repair_attempts(self):
+        class UsageClient:
+            def __init__(self):
+                self.index = 0
+            async def complete(self, messages, **kwargs):
+                self.index += 1
+                values = [{}, {'thought': 'save', 'function': 'core_memory_append', 'arguments':
+                              {'name': 'human', 'content': 'fact', 'request_heartbeat': True}},
+                          {'thought': 'done', 'function': 'send_message', 'arguments': {'message': 'done'}}]
+                return Completion(json.dumps(values[self.index - 1]), 60, 10, 0, 0, {})
+        trace = Trace()
+        ctx = RunContext('memgpt', 'task', UsageClient(), ToolEnvironment([], trace), trace,
+                         {'memgpt_memory_warning_tokens': 100})
+        await run_profile(ctx)
+        self.assertFalse(any(e['event'] == 'memgpt_memory_pressure' for e in trace.events))
+
     async def test_failed_tool_forces_recovery_with_false_or_missing_heartbeat(self):
         async def raises(args):
             raise ValueError("synthetic failure")
