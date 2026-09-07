@@ -1,7 +1,7 @@
 # Single DyLAN benchmark profile
 
 `dylan` is the only runnable DyLAN method. Its identity is
-`published-teams-tool-policy-v2`. The former `dylan-inference`,
+`annotated-action-consensus-v3`. The former `dylan-inference`,
 `dylan-query-local` and `dylan-dm` names are retired, without renaming their
 historical result files or merging them into the new method.
 
@@ -46,6 +46,10 @@ There are no speculative writes by nodes and no environment access during rankin
 Schemas come from the benchmark; native user communication remains available as
 `send_message_to_user` where that bridge defines it. A final answer can finish a
 task without a tool call. Invalid proposals are excluded from votes.
+Action identity includes only `tool`/`arguments` or `final`; explanation and
+confidence annotations do not split identical decisions or invalidate votes.
+Raw replies and peer ratings remain in the trace. Mixed final/tool proposals,
+wrong field types and unknown tools are still invalid.
 
 One node response or ranker response counts as one main-algorithm generation.
 The existing benchmark budget is shared by all of them. Budget exhaustion is

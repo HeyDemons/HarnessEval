@@ -1,6 +1,6 @@
 # Role-specific JSON replies
 
-`role-schema-v1` separates each caller's reply structure from the benchmark's
+`role-schema-v2` separates each caller's reply structure from the benchmark's
 tool argument schemas. Plans require a validated `steps`/`assignments` list;
 DMAS routing has its own `decision` or `status` reply; executors accept one tool
 action or a final answer; MemGPT requires its function-call envelope. SA's
@@ -13,6 +13,9 @@ clients without this capability retain their normal transport and use the same
 local validation. Provider schema guidance is not treated as a guarantee: every
 reply is validated before dispatch. Unknown action names, mixed tool/final
 objects, null finals and progress objects cannot become environment calls.
+Harmless annotations such as `explanation` or `confidence` are accepted; reserved
+tool/final keys stay mutually exclusive. Branch errors include the missing or
+invalid field rather than only reporting that no reply shape matched.
 
 `complete_json` repairs syntax and caller-specific structure errors using the
 existing `protocol_repairs` allowance. Feedback reports the actual validation
@@ -28,9 +31,9 @@ their own response scope. Native user communication and BFCL declaration-only
 acknowledgements retain their existing lifecycle. Explicitly disabled
 finalization remains disabled.
 
-The batch measurement identity records `json_reply_contract=role-schema-v1` for
+The batch measurement identity records `json_reply_contract=role-schema-v2` for
 affected methods, action controllers use `external-controller-v3`, and MemGPT
-uses `validated-function-replies-v2`. Native actor-only on AutomationBench,
+uses `source-token-pressure-v3`. Native actor-only on AutomationBench,
 native BFCL declarations and other unaffected methods do not acquire an unused
 JSON-contract identity. Old affected results require new measurements; they
 cannot silently resume as this version. Scorers, task data and official budgets

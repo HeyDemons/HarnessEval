@@ -119,9 +119,12 @@ values are traversed for the dynamic JSON tool adapter. The old typed field
 syntax is retained only as explicit `legacy-json-fields` policy and recorded
 in `llmcompiler_config`; it is a different dialect, not a compatibility superset.
 The legacy dialect retains explicit-only dependencies. The batch runner selects
-upstream semantics and records `raw-tool-observations-v4`; v3 and earlier measurements
+upstream semantics and records `validated-planner-ids-v5`; earlier measurements
 cannot silently resume under this change. References outside the pinned positive
 predecessor range are not inferred, rather than inventing forward-reference support.
+The JSON planner validates positive numeric IDs, duplicate IDs and task/dependency
+list structure inside its existing bounded protocol repair, before any scheduling.
+This does not add planning passes or change v4 raw observation substitution.
 
 Reference: [pinned dependency parser](https://github.com/SqueezeAILab/LLMCompiler/blob/a00c9d35507507da70e8c637eee64efc8c1857ae/src/llm_compiler/output_parser.py).
 
@@ -140,9 +143,12 @@ DyLAN teams](AFLOW_DYLAN.md) for configuration and split validation.
 
 DMAS retains its declared cold-start inference contract; no AgentNet training
 is added. Its LLM capability mapper and weighted entry selection differ from
-upstream's task-type capability map. ReWOO requires worker evidence assignments,
+upstream's task-type capability map. Nonempty ReWOO plans require worker evidence assignments,
 uses JSON tool inputs and typed field references, and omits the brackets that
 upstream adds around substituted evidence strings. These are adapter boundaries.
+Zero-step plans pass an empty worker log to Solver as in the pinned source.
+Unclosed worker brackets retain bounded protocol repair rather than copying
+the source parser's blind last-character truncation of potentially structured API input.
 
 ReWOO's evidence references are resolved before the worker input is required to
 be an object, so a single `#E` variable may be the whole input when the evidence
