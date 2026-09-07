@@ -38,6 +38,8 @@ from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnviro
 from benchmark_platform.harnesses.content import WIRE_IMAGE_MARKER, json_safe, wire_tool_result
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import PROFILES
+from benchmark_platform.harnesses.declaration import SINGLE_TURN_PROFILES
+from benchmark_platform.budgets import baseline_limits
 
 
 class RecordingClient:
@@ -752,13 +754,10 @@ class BridgeMatrixTests(unittest.TestCase):
             self.assertTrue(bridge.calls[0]["replayed_speculation"])
             self.assertFalse(thread.is_alive())
 
-    def test_all_profiles_load_every_single_turn_bridge(self) -> None:
-        async def exercise(root: Path, benchmark: str, profile_id: str) -> tuple[str, RecordingClient, str]:
-            bridge = load_case(benchmark, "case", root)
-            trace = JsonlTrace(root / f"{profile_id}.jsonl")
-            environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
+    def test_all_profiles_use_production_workspace_and_declaration_wiring(self) -> None:
+        async def exercise(root: Path, benchmark: str, profile_id: str):
             client = RecordingClient(list(RESPONSES[profile_id]))
-            policy = {"max_turns": 4}
+            policy = baseline_limits(benchmark)
             if profile_id == "aflow":
                 from benchmark_platform.harnesses.aflow import make_artifact
                 policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
@@ -773,49 +772,38 @@ class BridgeMatrixTests(unittest.TestCase):
                         "lats_value_samples": 1,
                     }
                 )
-            speculator_client = (
-                RecordingClient(['{"actions":[]}'])
-                if profile_id == "sa"
-                and any(tool.read_only and tool.parallel for tool in bridge.tools)
-                else None
-            )
-            context = RunContext(
-                profile_id,
-                bridge.prompt,
-                client,
-                environment,
-                trace,
-                policy,
-                speculator_client=speculator_client,
-            )
-            answer = await run_profile(context)
-            return answer, client, environment.schema
+            job = root.parent / f"{benchmark}-{profile_id}"
+            job.mkdir()
+            with patch.object(bridge_runner, "completion_client_from_env", return_value=client), \
+                 patch.object(bridge_runner, "sa_speculator_client_from_env",
+                              return_value=RecordingClient(['{"actions":[]}'])):
+                result = await bridge_runner.execute(benchmark, profile_id, "case", root, job, policy)
+            return result, client
 
         for benchmark in ("gaia", "gdpval", "trajectory-bench", "bfcl"):
             with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+                root = Path(directory) / "input"
+                root.mkdir()
                 make_case(root, benchmark)
                 for profile in PROFILES:
                     with self.subTest(benchmark=benchmark, profile=profile.id):
+                        result, client = asyncio.run(exercise(root, benchmark, profile.id))
+                        if benchmark == "bfcl" and profile.id not in SINGLE_TURN_PROFILES:
+                            self.assertEqual(result["status"], "failed")
+                            self.assertIn("multi-response", result["error"])
+                            self.assertEqual(client.requests, [])
+                            continue
                         if profile.id == "lats":
-                            bridge = load_case(benchmark, "case", root)
-                            if any(not tool.read_only for tool in bridge.tools):
-                                trace = JsonlTrace(root / f"{profile.id}-unsupported.jsonl")
-                                environment = ToolEnvironment(bridge.tools, trace, bridge.handlers)
-                                context = RunContext(
-                                    profile.id,
-                                    bridge.prompt,
-                                    RecordingClient(list(RESPONSES[profile.id])),
-                                    environment,
-                                    trace,
-                                    {"lats_iterations": 1, "lats_generate_samples": 1},
-                                )
-                                with self.assertRaisesRegex(ValueError, "branch-isolated"):
-                                    asyncio.run(run_profile(context))
-                                continue
-                        answer, client, schema = asyncio.run(exercise(root, benchmark, profile.id))
-                        self.assertTrue(answer)
-                        tool_name = json.loads(schema)[0]["name"]
+                            self.assertEqual(result["status"], "failed")
+                            self.assertIn("branch-isolated", result["error"])
+                            self.assertEqual(client.requests, [])
+                            continue
+                        self.assertEqual(result["status"], "completed", result.get("error"))
+                        self.assertTrue(result["final_answer"])
+                        if benchmark == "bfcl":
+                            self.assertEqual(result["llm_calls"], 1)
+                            self.assertEqual(result["environment_calls"], 0)
+                        tool_name = load_case(benchmark, "case", root).tools[0].name
                         transcript = json.dumps(
                             {"requests": client.requests, "native_tools": client.native_tools},
                             ensure_ascii=False,

@@ -9,6 +9,15 @@ from unittest.mock import patch
 from benchmark_platform.bridges.automation_episode import AutomationEpisode, api_specs, public_messages, public_prompt, run_episode
 from benchmark_platform.harnesses.api import Completion, ProviderError
 from benchmark_platform.harnesses.core import ToolSpec, ToolEnvironment, JsonlTrace
+from benchmark_platform.catalog import Catalog
+from benchmark_platform.compatibility import compatibility_rows
+from benchmark_platform.harnesses.profiles import PROFILES
+from tests.test_episode import ScriptedClient, PROFILE_RESPONSES
+
+
+def native_call(name, arguments):
+    return {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(arguments)}}]}
 
 
 class FakeEpisode:
@@ -67,6 +76,50 @@ class Client:
 
 
 class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_runnable_matrix_executes_tools_before_native_scoring(self):
+        root = Path(__file__).resolve().parents[1]
+        catalog = Catalog(root / "catalog/benchmarks.json", root, root.parent)
+        rows = compatibility_rows(PROFILES, [catalog.get("automationbench")])
+        action = '{"tool":"work","arguments":{}}'
+        responses = {
+            "actor-only": [native_call("work", {}), "done"],
+            "react": [native_call("work", {}), native_call("react_finish", {"answer": "done"})],
+            "plan-execute": [PROFILE_RESPONSES["plan-execute"][0], action, '{"final":"done"}'],
+            "cmas": [PROFILE_RESPONSES["cmas"][0], action, *PROFILE_RESPONSES["cmas"][1:]],
+            "dmas": [*PROFILE_RESPONSES["dmas"][:3], action, PROFILE_RESPONSES["dmas"][3]],
+            "memgpt": ['{"thought":"work","function":"work","arguments":{"request_heartbeat":true}}',
+                       *PROFILE_RESPONSES["memgpt"]],
+            "aflow-tools": [action, '{"final":"done"}'],
+            "dylan": [action] * 4 + ['{"final":"done"}'] * 4,
+            "llmcompiler": ['{"tasks":[{"id":1,"tool":"work","arguments":{},"dependencies":[]}]}',
+                            '{"action":"finish","answer":"done"}'],
+            "rewoo": ['Plan: work\n#E1 = work[{}]', "done"],
+            "sa": [action, '{"final":"done"}'],
+        }
+        self.assertEqual({r["baseline"] for r in rows if r["runnable"]}, set(responses))
+        for method, replies in responses.items():
+            with self.subTest(profile=method), tempfile.TemporaryDirectory() as tmp:
+                order = []
+                actor = ScriptedClient(replies)
+                policy = {"react_protocol": "native"}
+                if method == "aflow-tools":
+                    from benchmark_platform.harnesses.aflow_tools import make_artifact
+                    # Initial graph is a protocol fixture, not an optimized evaluation artifact.
+                    policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
+                with patch("benchmark_platform.bridges.automation_episode.sa_speculator_client_from_env",
+                           side_effect=AssertionError("injected clients must not read provider configuration")):
+                    result = await run_episode(method, "sales:1", policy, Path(tmp),
+                        episode=FakeEpisode(order), client=actor, speculator_client=ScriptedClient([]))
+                self.assertEqual(result["status"], "completed", result.get("error"))
+                self.assertEqual(order, ["tool", "scorer"])
+                self.assertEqual(result["tool_calls"], 1)
+                self.assertEqual(result["native_score"], 0)
+                self.assertEqual(result["native_partial_credit"], 0.5)
+                self.assertEqual(result["policy"]["model_response_limit"], 50)
+                transcript = json.dumps(actor.requests)
+                self.assertNotIn("PRIVATE_ASSERTION", transcript)
+                self.assertIn("PUBLIC_SYSTEM_POLICY", transcript)
+
     async def test_native_strict_score_is_used_after_agent_and_partial_is_separate(self):
         order = []
         with tempfile.TemporaryDirectory() as tmp:

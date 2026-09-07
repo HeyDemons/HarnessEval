@@ -130,7 +130,8 @@ class AutomationEpisode:
                 "end_state": state.get("_end_state")}
 
 
-async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *, episode=None, client=None):
+async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *, episode=None, client=None,
+                      speculator_client=None):
     policy = {**baseline_limits("automationbench"), "automationbench_prompt_protocol": PROMPT_PROTOCOL,
               "automationbench_argument_protocol": ARGUMENT_PROTOCOL,
               "automationbench_actor_protocol": "native", **policy}
@@ -149,8 +150,10 @@ async def run_episode(profile_id: str, case_id: str, policy: dict, job: Path, *,
     # owns argument validation; generic schema validation would reject valid calls.
     environment = ToolEnvironment(episode.tools, trace, episode.handlers(), validate_schema=False)
     client = client or completion_client_from_env()
+    if profile_id == "sa" and speculator_client is None:
+        speculator_client = sa_speculator_client_from_env(client)
     context = RunContext(profile_id, episode.prompt, client, environment, trace, policy,
-                         speculator_client=sa_speculator_client_from_env(client) if profile_id == "sa" else None,
+                         speculator_client=speculator_client if profile_id == "sa" else None,
                          task_messages=getattr(episode, "messages", [{"role": "user", "content": episode.prompt}]))
     write_json(job / "bridge_manifest.json", {"benchmark": "automationbench", "case_id": case_id,
                "prompt": episode.prompt, "messages": context.task_messages,

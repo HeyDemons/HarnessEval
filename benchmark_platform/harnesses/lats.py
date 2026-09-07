@@ -398,11 +398,13 @@ async def _rollout(
 
 async def run_lats(ctx: RunContext) -> str:
     """Source-aligned LATS MCTS for branch-safe benchmark tools."""
-    mutable = [tool.name for tool in ctx.environment.tools.values() if not tool.read_only]
-    if mutable:
+    branch_safe = ctx.policy.get("branch_safe_tools")
+    unsafe = [tool.name for tool in ctx.environment.tools.values()
+              if not tool.read_only or (branch_safe is not None and tool.name not in branch_safe)]
+    if unsafe or not ctx.environment.isolated_calls_supported:
         raise ValueError(
             "LATS requires branch-isolated environment snapshots; this environment exposes "
-            f"non-snapshotable mutating tools: {mutable}"
+            f"tools without verified branch isolation: {unsafe}"
         )
 
     iterations = int(ctx.policy.get("lats_iterations", 30))

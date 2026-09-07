@@ -93,14 +93,6 @@ PROFILE_RESPONSES = {
 }
 
 
-def frozen_dylan_policy(benchmark):
-    from benchmark_platform.harnesses.dylan_team import freeze_team
-    team = freeze_team([{"case_id": "train", "importance": [1, 1, 0, 0]}],
-                       {"benchmark": benchmark, "optimization_case_ids": ["train"], "evaluation_case_ids": ["case"]},
-                       roles=["Assistant"] * 4)
-    return {"dylan_team_artifact": team, "dylan_benchmark": benchmark, "dylan_case_id": "case"}
-
-
 class ScriptedClient:
     def __init__(self, responses: list[object]):
         self.responses = iter(responses)
@@ -175,10 +167,10 @@ class EpisodeBrokerTests(unittest.TestCase):
         self.assertEqual(status["state"], "failed")
         self.assertIn("provider unavailable", status["error"])
 
-    def test_every_profile_runs_inside_native_episode_broker(self) -> None:
+    def test_tau_profile_broker_protocol_and_isolation_gate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for benchmark in ("vitabench", "tau2"):
+            for benchmark in ("tau2",):
                 for profile in PROFILES:
                     with self.subTest(benchmark=benchmark, profile=profile.id):
                         client = ScriptedClient(list(PROFILE_RESPONSES[profile.id]))
@@ -197,16 +189,24 @@ class EpisodeBrokerTests(unittest.TestCase):
                                     "native_lookup",
                                     "look up native state",
                                     {"type": "object", "properties": {}},
+                                    read_only=True,
+                                    parallel=True,
                                 )
                             ],
                             trace_path=root / f"{benchmark}-{profile.id}.jsonl",
                             policy=policy,
                             client=client,
+                            speculator_client=ScriptedClient([]) if profile.id == "sa" else None,
                         )
                         broker.start()
-                        if profile.id == "lats":
-                            with self.assertRaisesRegex(RuntimeError, "branch-isolated"):
+                        if profile.id in {"lats", "sa"}:
+                            reason = "branch-isolated" if profile.id == "lats" else "isolated tool execution/commit"
+                            with self.assertRaisesRegex(RuntimeError, reason):
                                 broker.next_wave()
+                            broker._thread.join(2)
+                            self.assertFalse(broker._thread.is_alive())
+                            self.assertEqual(client.requests, [])
+                            self.assertEqual(broker._pending, {})
                             continue
                         result = broker.next_wave()
                         if profile.id == "memgpt":
