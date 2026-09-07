@@ -23,6 +23,8 @@ class NativeReactTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.llm_calls, 2)
         observation = next(m for m in ctx.client.messages[1] if m["role"] == "tool")
         self.assertIn("observed", observation["content"])
+        self.assertTrue(all(set(tool['function']) == {'name', 'description', 'parameters'}
+                            for tool in ctx.client.native_tools[0]))
 
     async def test_multiple_actions_are_rejected_before_any_side_effect(self):
         batch = native_tool_call("read", {})

@@ -22,7 +22,7 @@ async def run_declaration(ctx: RunContext) -> str:
         instructions = "Reason about the request before selecting the appropriate actions. " + instructions
     # SA cannot pre-execute declaration-only functions; its Actor has the same
     # one-response interface as actor-only. No speculative provider call is made.
-    schemas = [{"type": "function", "function": tool.prompt_schema()} for tool in ctx.environment.tools.values()]
+    schemas = [{"type": "function", "function": tool.native_schema()} for tool in ctx.environment.tools.values()]
     completion = await ctx.complete_native(
         f"{ctx.profile}_declaration", [{"role": "system", "content": instructions},
                                      {"role": "user", "content": ctx.prompt}],

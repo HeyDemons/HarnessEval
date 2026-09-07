@@ -3,6 +3,7 @@ from __future__ import annotations
 from .reply_contracts import object_schema
 
 import json
+import math
 import random
 from dataclasses import dataclass
 from typing import Any
@@ -36,7 +37,7 @@ def _bounded_score(value: Any, *, field: str) -> float:
         score = float(value)
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{field} must be numeric") from exc
-    if score < 0.0 or score > 1.0:
+    if not math.isfinite(score) or score < 0.0 or score > 1.0:
         raise ValueError(f"{field} must be between 0 and 1")
     return score
 

@@ -15,7 +15,7 @@ async def run_react_native(ctx: RunContext) -> str:
     finish = "react_finish"
     if finish in ctx.environment.names:
         raise ValueError("Benchmark tool collides with ReAct's react_finish control action")
-    tools = [{"type": "function", "function": tool.prompt_schema()} for tool in ctx.environment.tools.values()]
+    tools = [{"type": "function", "function": tool.native_schema()} for tool in ctx.environment.tools.values()]
     tools.append({"type": "function", "function": {"name": finish,
         "description": "Submit the final answer when the task has been completed.",
         "parameters": {"type": "object", "properties": {"answer": {"type": "string"}},
@@ -26,7 +26,7 @@ async def run_react_native(ctx: RunContext) -> str:
         "When the task is complete, call react_finish with your final answer. "
         "Do not output simulated Action/Observation transcripts; use the native tools.")},
         {"role": "user", "content": ctx.prompt}]
-    await ctx.trace.emit("react_protocol", protocol="native", implementation="native-serial-tools-v1")
+    await ctx.trace.emit("react_protocol", protocol="native", implementation="native-serial-tools-v2")
     for turn in range(ctx.max_turns):
         finalizing = ctx.should_finalize(turn)
         if finalizing:

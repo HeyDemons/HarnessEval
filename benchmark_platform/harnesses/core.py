@@ -300,6 +300,11 @@ class ToolSpec:
             "read_only": self.read_only,
         }
 
+    def native_schema(self) -> dict[str, Any]:
+        """Provider function fields; execution metadata remains controller-owned."""
+        return {key: value for key, value in self.prompt_schema().items()
+                if key in {"name", "description", "parameters"}}
+
 
 ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
@@ -611,7 +616,7 @@ class ToolEnvironment:
         self, tool: ToolSpec, arguments: dict[str, Any]
     ) -> dict[str, Any]:
         state_before = self._state_version
-        if errors := validate_arguments(normalize_json_schema(tool.parameters), arguments):
+        if self.validate_schema and (errors := validate_arguments(normalize_json_schema(tool.parameters), arguments)):
             result = {"ok": False, "error": "invalid_arguments", "details": errors}
         elif tool.parallel and tool.read_only:
             await self._enter_shared()
@@ -758,6 +763,7 @@ class RunContext:
         self.speculator_prompt_tokens = 0
         self.speculator_completion_tokens = 0
         self.last_actor_response_id: int | None = None
+        self.last_actor_response_tokens = 0
         from ..budgets import ModelResponseBudget
         self.model_budget = ModelResponseBudget(policy.get("model_response_limit"))
         self.channel_requests = {"actor": 0, "speculator": 0}
@@ -904,6 +910,7 @@ class RunContext:
             self.actor_llm_calls += 1
             self.actor_prompt_tokens += completion.prompt_tokens
             self.actor_completion_tokens += completion.completion_tokens
+            self.last_actor_response_tokens = completion.prompt_tokens + completion.completion_tokens
         response_id = self.llm_calls
         if channel == "actor":
             self.last_actor_response_id = response_id
@@ -983,6 +990,7 @@ class RunContext:
         self.completion_tokens += completion.completion_tokens
         self.actor_prompt_tokens += completion.prompt_tokens
         self.actor_completion_tokens += completion.completion_tokens
+        self.last_actor_response_tokens = completion.prompt_tokens + completion.completion_tokens
         await self.trace.emit(
             "llm_response",
             response_id=response_id,
