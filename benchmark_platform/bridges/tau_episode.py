@@ -97,22 +97,17 @@ def _merge_broker_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
 # tau2 declares tool semantics upstream via @is_tool(tool_type=ToolType.*,
 # mutates_state=bool), which its toolkit stores on the wrapped function as
 # `__tool_type__` and `__mutates_state__`; Tool keeps that function in `_func`.
-# `openai_schema` carries none of it, so reading only the schema drops the declaration
-# and every tool falls back to NativeTool's conservative read_only=False. That empties
-# the speculation set (`run_sa` filters on `tool.read_only and tool.parallel`), which
-# silently degrades `sa`/PERSEUS to actor-only plus one wasted predictor call and makes
-# speculation unmeasurable on this benchmark. Same defect as vita_episode.py had.
-#
-# Both signals must agree before a tool may be pre-executed: `mutates_state=False` AND
-# ToolType.READ. tau2 lets a tool override mutates_state independently of its type, so
-# neither alone is sufficient. THINK and GENERIC are excluded — default-deny, because a
-# wrong read-only mark lets a state-changing call execute speculatively.
+# `openai_schema` does not carry these business mutation declarations. Preserve
+# both signals for ordinary tool scheduling: `mutates_state=False` AND ToolType.READ.
+# They do NOT authorize speculation: even business reads enter the native transcript
+# through EpisodeBroker. That broker rejects isolated execution/commit, and SA/Tau2
+# remains incompatible until an actual native isolation channel is implemented.
 _TOOL_TYPE_ATTR = "__tool_type__"
 _MUTATES_STATE_ATTR = "__mutates_state__"
 
 
 def _declared_read_only(tool: Any) -> bool | None:
-    """True when tau2 declares the tool safe to pre-execute; None if undeclared."""
+    """True for declared business reads; this does not grant native isolation."""
     func = getattr(tool, "_func", None)
     tool_type = getattr(func, _TOOL_TYPE_ATTR, None)
     if tool_type is None:
