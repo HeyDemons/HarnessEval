@@ -119,11 +119,18 @@ values are traversed for the dynamic JSON tool adapter. The old typed field
 syntax is retained only as explicit `legacy-json-fields` policy and recorded
 in `llmcompiler_config`; it is a different dialect, not a compatibility superset.
 The legacy dialect retains explicit-only dependencies. The batch runner selects
-upstream semantics and records `inferred-text-references-v3`; v2 measurements
+upstream semantics and records `raw-tool-observations-v4`; v3 and earlier measurements
 cannot silently resume under this change. References outside the pinned positive
 predecessor range are not inferred, rather than inventing forward-reference support.
 
 Reference: [pinned dependency parser](https://github.com/SqueezeAILab/LLMCompiler/blob/a00c9d35507507da70e8c637eee64efc8c1857ae/src/llm_compiler/output_parser.py).
+
+The v4 observation is the successful tool's own return value, unwrapped once
+from the controller's `ok/result` envelope. Previously v3 substituted the entire
+envelope, corrupting scalar arguments such as Base64 text. Transport envelopes
+stay in the trace and failed-tool observations retain their error details. The
+explicit legacy field dialect keeps its documented envelope. This fixes data
+transport, not planning: the published default remains one planning pass.
 
 AFlow XML operators preserve upstream optional fields. A missing `thought` is
 allowed; consuming a missing `answer` still fails in the graph. Search defaults

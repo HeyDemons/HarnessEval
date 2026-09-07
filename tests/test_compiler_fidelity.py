@@ -78,7 +78,7 @@ class CompilerFidelityTests(unittest.IsolatedAsyncioTestCase):
                     release_producer.set()
                     await asyncio.wait_for(successor_started.wait(), 1)
                     self.assertFalse(task.done())
-                    self.assertEqual(received, [{"q": "read {'ok': True, 'result': 'report'}.txt"}])
+                    self.assertEqual(received, [{"q": "read report.txt"}])
                     event = next(e for e in ctx.trace.events if e["event"] == "llmcompiler_dependencies")
                     self.assertEqual(event["tasks"]["3"], {"declared": [], "inferred": ["1"], "effective": ["1"]})
                 finally:
@@ -122,9 +122,41 @@ class CompilerFidelityTests(unittest.IsolatedAsyncioTestCase):
             {"id": "2", "tool": "consume", "arguments": {"q": "$1.txt", "other": "$9"}, "dependencies": ["1"]},
         ], {"lookup": lookup, "consume": consume})
         await run_profile(ctx)
-        self.assertEqual(received, [{"q": "{'ok': True, 'result': 'report'}.txt", "other": "$9"}])
+        self.assertEqual(received, [{"q": "report.txt", "other": "$9"}])
         config = next(e for e in ctx.trace.events if e["event"] == "llmcompiler_config")
         self.assertEqual(config["reference_mode"], "upstream")
+
+    async def test_scalar_tool_result_is_forwarded_verbatim_to_next_tool(self):
+        received = []
+        async def encode(args):
+            return "aGVsbG8="
+        async def send(args):
+            received.append(args["raw"])
+            return "sent"
+        ctx = make_context([
+            {"id": "1", "tool": "encode", "arguments": {"text": "hello"}},
+            {"id": "2", "tool": "send", "arguments": {"raw": "$1"}},
+        ], {"encode": encode, "send": send})
+        await run_profile(ctx)
+        self.assertEqual(received, ["aGVsbG8="])
+        result = next(e for e in ctx.trace.events if e["event"] == "tool_result")
+        self.assertEqual(result["result"], {"ok": True, "result": "aGVsbG8="})
+
+    async def test_real_tool_dictionary_is_not_recursively_unwrapped(self):
+        async def data(args):
+            # ToolEnvironment accepts an explicit transport envelope too.
+            return {"ok": True, "result": {"ok": True, "result": "business payload"}}
+        ctx = make_context([{"id": "1", "tool": "data"}], {"data": data})
+        await run_profile(ctx)
+        event = next(e for e in ctx.trace.events if e["event"] == "llmcompiler_dag_complete")
+        self.assertEqual(event["results"]["1"], {"ok": True, "result": "business payload"})
+
+    async def test_failed_tools_keep_error_evidence(self):
+        ctx = make_context([{"id": "1", "tool": "missing"}], {})
+        await run_profile(ctx)
+        event = next(e for e in ctx.trace.events if e["event"] == "llmcompiler_dag_complete")
+        self.assertFalse(event["results"]["1"]["ok"])
+        self.assertEqual(event["results"]["1"]["error"], "unknown_tool")
 
     def test_interpolates_braced_nested_and_embedded_references_without_shell_variables(self):
         values = {"1": {"result": {"city": "Paris", "n": 42}}, "10": {"result": ["France"]}}

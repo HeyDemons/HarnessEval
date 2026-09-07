@@ -182,7 +182,7 @@ async def run_llmcompiler(ctx: RunContext) -> str:
     reference_mode = ctx.policy.get("llmcompiler_reference_mode", "upstream")
     if reference_mode not in {"upstream", "legacy-json-fields"}:
         raise ValueError("llmcompiler_reference_mode must be upstream or legacy-json-fields")
-    await ctx.trace.emit("llmcompiler_config", implementation="inferred-text-references-v3",
+    await ctx.trace.emit("llmcompiler_config", implementation="raw-tool-observations-v4",
                          dependency_mode="arguments-plus-declared" if reference_mode == "upstream" else "declared-only",
                          reference_mode=reference_mode, max_planning_passes=max_planning_passes)
     reference_instructions = (
@@ -265,7 +265,12 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                 arguments = resolve_arguments(item.get("arguments") or {}, item.get("dependencies", []), results)
             else:
                 arguments = _resolve_reference(item.get("arguments") or {}, results, interpolate_strings=True)
-            return task_id, await ctx.environment.call(name, arguments)
+            result = await ctx.environment.call(name, arguments)
+            # Upstream Task.observation is the tool's return value. The controller's
+            # ok/result envelope belongs in the trace, not in $1 substitutions.
+            # Legacy field paths explicitly address that envelope and retain it.
+            observation = result.get("result") if reference_mode == "upstream" and result.get("ok") is True else result
+            return task_id, observation
 
         # Upstream TaskFetchingUnit.schedule releases successors as each
         # prerequisite completes, even while unrelated tasks are still running.
