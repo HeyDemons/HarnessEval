@@ -411,7 +411,7 @@ class PlatformTests(unittest.TestCase):
         self.assertTrue(all(row["runnable"] for row in configured if row["baseline"] != "lats"))
         lats = next(row for row in configured if row["baseline"] == "lats")
         self.assertFalse(lats["runnable"])
-        self.assertEqual(lats["baseline_requirement"], "branch_snapshot_or_all_tools_read_only")
+        self.assertEqual(lats["baseline_requirement"], "no_published_online_reward_and_branch_snapshot_pair")
         lats_trajectory = next(
             row
             for row in rows
@@ -424,7 +424,7 @@ class PlatformTests(unittest.TestCase):
             if row["baseline"] == "lats" and row["benchmark"] == "gaia"
         )
         self.assertFalse(lats_gaia["runnable"])
-        self.assertEqual(lats_gaia["baseline_requirement"], "branch_snapshot_or_all_tools_read_only")
+        self.assertEqual(lats_gaia["baseline_requirement"], "no_published_online_reward_and_branch_snapshot_pair")
         # Derived from the registry so a profile that gains tools cannot leave a stale
         # literal behind: GDPval grades files, so only a text-only method is blocked.
         text_only = {profile.id for profile in PROFILES if profile.tool_contract == "no-external-tools"}
@@ -438,18 +438,19 @@ class PlatformTests(unittest.TestCase):
             {row["baseline_requirement"] for row in gdpval_text_only},
             {"gdpval_requires_workspace_artifact_tools"},
         )
-        # AutomationBench and Terminal-Bench-2 grade only the world/container the agent
-        # leaves behind, so a published text-only method cannot reach the score at all.
+        # The all-baseline campaign includes published text-only methods on
+        # state-graded tasks as measured structural controls. They remain
+        # explicitly labeled as having no external tool loop.
         for benchmark in ("automationbench", "terminal-bench-2"):
             state_graded = [
                 row for row in rows if row["benchmark"] == benchmark and row["baseline"] in text_only
             ]
             self.assertEqual(len(state_graded), len(text_only), benchmark)
-            self.assertTrue(all(not row["runnable"] for row in state_graded), benchmark)
+            self.assertTrue(all(row["runnable"] for row in state_graded), benchmark)
             self.assertEqual(
                 {row["baseline_requirement"] for row in state_graded},
-                {"benchmark_scores_only_post_agent_world_state"},
-                benchmark,
+                {"published_method_has_no_external_tool_loop",
+                 "frozen_workflow_from_disjoint_optimization_split"},
             )
         # tau2 is the deliberate exception: 7 of its 60 light cases require zero actions and
         # a text-only reply still becomes a graded assistant turn, so it stays eligible.

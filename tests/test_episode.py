@@ -222,15 +222,14 @@ class EpisodeBrokerTests(unittest.TestCase):
                         else:
                             self.assertIn("native_lookup", transcript)
 
-    def test_magentic_native_episode_requires_a_different_adapter(self) -> None:
+    def test_magentic_tau_adapter_is_enabled_without_enabling_vitabench(self) -> None:
         from benchmark_platform.catalog import Catalog
         from benchmark_platform.compatibility import compatibility_rows
         root = Path(__file__).resolve().parents[1]
         rows = compatibility_rows(PROFILES, Catalog(root / "catalog/benchmarks.json", root, root.parent))
         for row in rows:
             if row["baseline"] == "magentic-one" and row["benchmark"] in {"tau2", "vitabench"}:
-                self.assertFalse(row["runnable"])
-                self.assertEqual(row["baseline_requirement"], "magentic_requires_workspace_code_execution")
+                self.assertEqual(row["runnable"], row["benchmark"] == "tau2")
 
     def test_tau_compiler_runs_one_dag_per_visible_assistant_turn(self) -> None:
         from benchmark_platform.catalog import Catalog

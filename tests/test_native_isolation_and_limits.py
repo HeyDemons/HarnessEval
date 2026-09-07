@@ -5,8 +5,7 @@ import tempfile
 import unittest
 
 from benchmark_platform.budgets import ModelBudgetExceeded
-from benchmark_platform.bridges.episode import EpisodeBroker, NativeTool
-from benchmark_platform.bridges.tau_episode import run_episode
+from benchmark_platform.bridges.episode import EpisodeBroker, FinalResponse, NativeTool
 from benchmark_platform.catalog import Catalog
 from benchmark_platform.compatibility import compatibility_rows
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
@@ -50,13 +49,38 @@ class NativeIsolationTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(broker.context.environment.calls, [])
             self.assertEqual(broker._pending, {})
 
-    def test_tau_entrypoint_and_matrix_agree_on_sa_incompatibility(self):
-        with self.assertRaisesRegex(ValueError, 'SA/Tau2 is incompatible'):
-            run_episode('sa','unused',{},Path('/must-not-create'))
+    def test_native_broker_publishes_actor_hit_and_adopts_shadow_result(self):
+        shadow_calls, adopted = [], []
+        async def shadow(name, arguments):
+            shadow_calls.append((name, arguments))
+            return {"ok": True, "result": {"value": "cached"}}
+        def commit(name, arguments, request_id):
+            adopted.append((name, arguments, request_id))
+        actor = Client([{"tool": "lookup", "arguments": {"id": "RIGHT"}}, {"final": "done"}])
+        speculator = Client([{"actions": [{"tool": "lookup", "arguments": {"id": "RIGHT"}}]}])
+        with tempfile.TemporaryDirectory() as directory:
+            broker = EpisodeBroker(profile="sa", prompt="read RIGHT", tools=[
+                NativeTool("lookup", "lookup", {"type": "object"}, read_only=True, parallel=True)],
+                trace_path=Path(directory) / "trace.jsonl", policy={"max_turns": 3},
+                client=actor, speculator_client=speculator,
+                speculative_executor=shadow, isolated_commit=commit)
+            broker.start()
+            wave = broker.next_wave()
+            self.assertEqual(len(wave), 1)
+            self.assertEqual(wave[0].name, "lookup")
+            self.assertEqual(wave[0].arguments, {"id": "RIGHT"})
+            self.assertEqual(shadow_calls, [("lookup", {"id": "RIGHT"})])
+            self.assertEqual(adopted, [("lookup", {"id": "RIGHT"}, wave[0].id)])
+            final = broker.next_wave(tool_results={wave[0].id: ({"value": "cached"}, False)})
+            self.assertIsInstance(final, FinalResponse)
+            self.assertEqual(final.answer, "done")
+            self.assertEqual(len(broker.context.environment.calls), 1)
+
+    def test_tau_matrix_enables_sa_after_native_shadow_adapter(self):
         root = Path(__file__).resolve().parents[1]
         catalog = Catalog(root/'catalog/benchmarks.json',root,root)
         rows = compatibility_rows([get_profile('sa')], [catalog.get(name) for name in ('tau2','automationbench','bfcl')])
-        self.assertEqual([r['runnable'] for r in rows], [False,True,True])
+        self.assertEqual([r['runnable'] for r in rows], [True,True,True])
 
     async def test_sa_and_json_actor_receive_identical_requests_including_final_slot(self):
         class RecordingClient(Client):

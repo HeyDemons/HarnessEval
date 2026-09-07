@@ -1,25 +1,25 @@
 # SA control and native isolation
 
-SA/Tau2 is incompatible until a separate native speculative execution **and**
-commit channel exists. A business `READ` tool with `mutates_state=False` can
-still change the native conversation and consume native steps. EpisodeBroker
-routes ordinary tool handlers through that conversation and therefore sets
-`ToolEnvironment.isolated_calls_supported=False`. Both speculative execution
-and adoption reject that environment; SA rejects safe-preaction use before a
-model request. The Tau2 entrypoint and compatibility matrix reject SA outright,
-including attempts to run it with an empty speculation allowlist. This does not
-silently turn the method into an Actor-only run under the SA label.
+SA/Tau2 uses a separate native speculative execution and commit channel. A
+declared benchmark `READ` tool with `mutates_state=False` is executed against a
+deep copy of the current Tau2 environment. A discarded prediction never reaches
+the native transcript, primary world or native step counter. On an exact Actor
+match, EpisodeBroker publishes the Actor's canonical ToolCall; Tau2 records that
+one action and serves the shadow ToolMessage instead of executing the primary
+read again. A miss executes the Actor call normally. Mutating and undeclared
+tools are never speculated.
 
-This is a compatibility gate, not an implementation of shadow episodes.
-Re-enabling requires showing that discarded predictions have no native transcript,
-state or budget effect, while adopting a prediction publishes exactly the Actor's
-canonical native action and preserves native evaluator evidence. No evaluator or
-gold may be used by the speculative channel. The previous Tau2/SA trajectories
-are retained as historical records, but cannot establish losslessness and require
-new measurements after a correct adapter is available. Rescoring cannot repair them.
+The shadow channel receives neither evaluator state nor gold. If a shadow result
+cannot be adopted, the canonical Tau2 tool path remains the authority. Previous
+Tau2/SA trajectories produced before this adapter are historical contaminated
+measurements and require rerunning; rescoring cannot remove their extra native
+calls. Deterministic broker tests cover exact-match publication, while a real
+Tau2 smoke is required before a campaign can rely on environment deepcopy and
+native ToolMessage adoption in the pinned image.
 
 VitaBench's dedicated bridge is outside this audit and no Vita benchmark is run.
-The shared EpisodeBroker protection applies wherever that broker is used.
+EpisodeBroker still rejects SA when a native bridge does not provide both shadow
+execution and adoption hooks.
 Other ToolEnvironment adapters retain their existing isolated-read capability;
 ordinary authoritative calls continue to reach the same handler.
 
@@ -65,8 +65,8 @@ even when the latest invocation used JSON for another method.
   `dmas_execution_limit`; it adds no synthesis or model call. Official response
   and time budgets still fail at their own boundaries. Identity:
   `retained-executor-result-v2`.
-- SA's new isolation check and aligned Actor finalization use
-  `isolated-channel-matched-actor-v3`.
+- SA's aligned Actor finalization uses `isolated-channel-matched-actor-v3`;
+  Tau2 additionally records the native shadow/adoption adapter identity.
 
 SPP's source-compatible empty answer behavior and DyLAN's declared visible-state
 router are unchanged. Scorers and official budgets are unchanged.

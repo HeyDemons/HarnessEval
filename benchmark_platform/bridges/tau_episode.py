@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import random
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -334,8 +336,6 @@ def _patch_tau_generation(client: CompletionClient) -> None:
 
 
 def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -> dict[str, Any]:
-    if profile == "sa":
-        raise ValueError("SA/Tau2 is incompatible: no isolated native execution/commit channel; read-only requests still enter the transcript")
     from tau2.agent.base_agent import HalfDuplexAgent
     from tau2.data_model.message import AssistantMessage, ToolCall
     from tau2.data_model.simulation import TextRunConfig
@@ -351,6 +351,31 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
     task_set, task = _load_task(case_id)
     domain = TASK_SET_DOMAINS.get(task_set, task_set)
     agent_name = f"harnesseval_{uuid.uuid4().hex}"
+    native_environment: Any = None
+    shadow_results: dict[str, Any] = {}
+    adopted_results: dict[str, Any] = {}
+    isolation_lock = threading.Lock()
+
+    def action_key(name: str, arguments: dict[str, Any]) -> str:
+        return json.dumps([name, arguments], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    async def execute_shadow_read(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Run a declared read against a private copy of the current Tau2 world."""
+        if native_environment is None:
+            raise RuntimeError("Tau2 native environment is not initialized")
+        shadow = copy.deepcopy(native_environment)
+        call = ToolCall(id=f"shadow-{uuid.uuid4().hex}", name=name,
+                        arguments=copy.deepcopy(arguments), requestor="assistant")
+        response = shadow.get_response(call)
+        with isolation_lock:
+            shadow_results[action_key(name, arguments)] = response
+        return EpisodeBroker._decode_native_result(response.content, response.error)
+
+    def adopt_shadow_read(name: str, arguments: dict[str, Any], request_id: str) -> None:
+        with isolation_lock:
+            response = shadow_results.pop(action_key(name, arguments), None)
+            if response is not None:
+                adopted_results[request_id] = response
 
     class HarnessAgent(HalfDuplexAgent[dict[str, Any]]):
         def __init__(self, tools, domain_policy, **kwargs):
@@ -383,6 +408,8 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
                 client=client,
                 task_messages=[{"role": "system", "content": self.domain_policy}],
                 validate_schema=False,
+                speculative_executor=execute_shadow_read if profile == "sa" else None,
+                isolated_commit=adopt_shadow_read if profile == "sa" else None,
             )
             self.brokers.append(self.broker)
             self.broker.start()
@@ -464,6 +491,22 @@ def run_episode(profile: str, case_id: str, policy: dict[str, Any], job: Path) -
         enforce_communication_protocol=True,
     )
     orchestrator = build_text_orchestrator(config, task, seed=seed)
+    native_environment = orchestrator.environment
+    if profile == "sa":
+        original_get_response = native_environment.get_response
+
+        def get_response_with_adoption(message):
+            with isolation_lock:
+                response = adopted_results.pop(message.id, None)
+            if response is None:
+                return original_get_response(message)
+            if hasattr(response, "model_copy"):
+                return response.model_copy(update={"id": message.id})
+            copied = copy.deepcopy(response)
+            copied.id = message.id
+            return copied
+
+        native_environment.get_response = get_response_with_adoption
     if policy.get("native_evaluate", True) is False:
         simulation = orchestrator.run()
         simulation.policy = orchestrator.environment.get_policy()

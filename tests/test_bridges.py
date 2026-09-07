@@ -346,7 +346,7 @@ class BridgeMatrixTests(unittest.TestCase):
                 patch.object(bridge_runner, "run_profile", new=one_response_batch),
             ):
                 result = asyncio.run(
-                    bridge_runner.execute("bfcl", "llmcompiler", "case", source, job, {})
+                    bridge_runner.execute("bfcl", "actor-only", "case", source, job, {})
                 )
 
         self.assertEqual(len(client.requests), 1)
@@ -356,6 +356,37 @@ class BridgeMatrixTests(unittest.TestCase):
                 {"name": "lookup_item", "arguments": {"id": "a"}},
                 {"name": "lookup_item", "arguments": {"id": "b"}},
             ],
+        )
+
+    def test_bfcl_aggregates_multi_agent_internal_calls_into_one_system_response(self) -> None:
+        async def two_internal_responses(context):
+            for value in ("a", "b"):
+                await context.complete("worker", [{"role": "user", "content": value}])
+                await context.environment.call("lookup_item", {"id": value})
+            return "workers completed"
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = RecordingClient(["first", "second"])
+            with patch.object(bridge_runner, "completion_client_from_env", return_value=client), \
+                 patch.object(bridge_runner, "run_profile", new=two_internal_responses):
+                result = asyncio.run(
+                    bridge_runner.execute("bfcl", "llmcompiler", "case", source, job,
+                                          baseline_limits("bfcl"))
+                )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["llm_calls"], 2)
+        self.assertEqual(result["external_assistant_responses"], 1)
+        self.assertEqual(result["environment_calls"], 0)
+        self.assertEqual(result["declaration_protocol"], "multi-model-declaration-aggregation-v1")
+        self.assertEqual(result["source_response_ids"], [1, 2])
+        self.assertEqual(
+            [(call["name"], call["arguments"]) for call in result["committed_calls"]],
+            [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "b"})],
         )
 
 
@@ -787,22 +818,17 @@ class BridgeMatrixTests(unittest.TestCase):
                 make_case(root, benchmark)
                 for profile in PROFILES:
                     with self.subTest(benchmark=benchmark, profile=profile.id):
-                        result, client = asyncio.run(exercise(root, benchmark, profile.id))
-                        if benchmark == "bfcl" and profile.id not in SINGLE_TURN_PROFILES:
-                            self.assertEqual(result["status"], "failed")
-                            self.assertIn("multi-response", result["error"])
-                            self.assertEqual(client.requests, [])
-                            continue
                         if profile.id == "lats":
-                            self.assertEqual(result["status"], "failed")
-                            self.assertIn("branch-isolated", result["error"])
-                            self.assertEqual(client.requests, [])
                             continue
+                        result, client = asyncio.run(exercise(root, benchmark, profile.id))
                         self.assertEqual(result["status"], "completed", result.get("error"))
                         self.assertTrue(result["final_answer"])
                         if benchmark == "bfcl":
-                            self.assertEqual(result["llm_calls"], 1)
                             self.assertEqual(result["environment_calls"], 0)
+                            expected = ("native-single-response-v1" if profile.id in SINGLE_TURN_PROFILES
+                                        else "multi-model-declaration-aggregation-v1")
+                            self.assertEqual(result["declaration_protocol"], expected)
+                            self.assertEqual(result["external_assistant_responses"], 1)
                         tool_name = load_case(benchmark, "case", root).tools[0].name
                         transcript = json.dumps(
                             {"requests": client.requests, "native_tools": client.native_tools},

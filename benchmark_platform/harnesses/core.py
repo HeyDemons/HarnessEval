@@ -363,21 +363,28 @@ class ToolEnvironment:
         declaration_only: bool = False,
         validate_schema: bool = True,
         isolated_calls_supported: bool = True,
+        isolated_handlers: Mapping[str, ToolHandler] | None = None,
+        commit_isolated_handler: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
     ):
         names = [tool.name for tool in tools]
         if len(names) != len(set(names)):
             raise ValueError(f"Duplicate tool names: {names}")
         self.tools = {tool.name: tool for tool in tools}
         self.handlers = dict(handlers or {})
+        self.isolated_handlers = dict(isolated_handlers or {})
         unknown_handlers = sorted(set(self.handlers) - set(self.tools))
         if unknown_handlers:
             raise ValueError(f"Handlers reference unknown tools: {unknown_handlers}")
+        unknown_isolated = sorted(set(self.isolated_handlers) - set(self.tools))
+        if unknown_isolated:
+            raise ValueError(f"Isolated handlers reference unknown tools: {unknown_isolated}")
         self.trace = trace
         self.calls: list[dict[str, Any]] = []
         self.declaration_only = declaration_only
         self.validate_schema = validate_schema
         # Read-only business data does not imply transcript/budget isolation.
         self.isolated_calls_supported = isolated_calls_supported
+        self.commit_isolated_handler = commit_isolated_handler
         self._declaration_committed = False
         self._committed_response_id: int | None = None
         self._state_condition = asyncio.Condition()
@@ -600,6 +607,13 @@ class ToolEnvironment:
                 record = {**record, "source_assistant_response_id": response_id,
                           "assistant_response_id": assistant_response_id}
                 response_id = assistant_response_id
+            if self.commit_isolated_handler is not None:
+                # Native conversation adapters use this hook to publish the Actor's
+                # selected call and adopt the already computed shadow result inside the
+                # benchmark-owned transcript. It is deliberately absent from ordinary
+                # workspace/task environments, whose local commit is already authoritative.
+                authoritative = await self.commit_isolated_handler(record)
+                record = {**record, "result": authoritative}
             if not self._accept_declaration_call(response_id):
                 await self.trace.emit(
                     "declaration_call_ignored",
@@ -629,14 +643,14 @@ class ToolEnvironment:
             await self._enter_shared()
             try:
                 state_before = self._state_version
-                result = await self._invoke(tool, arguments)
+                result = await self._invoke_isolated(tool, arguments)
             finally:
                 await self._leave_shared()
         else:
             await self._enter_exclusive()
             try:
                 state_before = self._state_version
-                result = await self._invoke(tool, arguments)
+                result = await self._invoke_isolated(tool, arguments)
             finally:
                 # A failed mutating tool may have applied a partial side effect. Treat
                 # every invocation as a state boundary; invalid arguments never enter.
@@ -650,6 +664,16 @@ class ToolEnvironment:
             "assistant_response_id": _ASSISTANT_RESPONSE_ID.get(),
         }
         return record
+
+    async def _invoke_isolated(self, tool: ToolSpec, arguments: dict[str, Any]) -> dict[str, Any]:
+        if handler := self.isolated_handlers.get(tool.name):
+            try:
+                value = await handler(arguments)
+            except Exception as exc:
+                return {"ok": False, "error": "isolated_tool_handler_failed",
+                        "detail": f"{type(exc).__name__}: {exc}"}
+            return value if isinstance(value, dict) and "ok" in value else {"ok": True, "result": value}
+        return await self._invoke(tool, arguments)
 
     def _remember_images(self, value: Any) -> None:
         if isinstance(value, ToolImage):

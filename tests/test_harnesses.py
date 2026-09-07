@@ -382,6 +382,10 @@ class HarnessTests(unittest.TestCase):
                     "FileSurfer": ["list_files", "read_file"], "WebSurfer": ["web_search"],
                     "Coder": [], "Executor": ["run_command"],
                 }[role])
+        self.assertEqual(
+            _magentic_worker_tools("WebSurfer", {"api_search", "api_fetch", "base64_encode"}),
+            ["api_fetch", "api_search", "base64_encode"],
+        )
 
     def test_magentic_orchestrator_prompts_match_pinned_autogen_revision(self) -> None:
         from benchmark_platform.harnesses import magentic_one

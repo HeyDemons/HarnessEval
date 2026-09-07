@@ -234,6 +234,13 @@ def _magentic_worker_tools(role: str, names: set[str]) -> list[str]:
         "Coder": set(),
         "Executor": {"run_command"},
     }
+    assigned = set().union(*capabilities.values()) | {"write_file"}
+    # AutoGen's WebSurfer is the official LLM-driven external-service
+    # participant. Benchmark-native domain APIs (Tau2, AutomationBench) replace
+    # that participant's web backend at the adapter boundary; file/terminal
+    # responsibilities and the four-participant topology stay unchanged.
+    if role == "WebSurfer":
+        capabilities[role] |= names - assigned
     return sorted(names & capabilities[role])
 
 

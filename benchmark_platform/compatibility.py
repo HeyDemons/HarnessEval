@@ -4,7 +4,6 @@ from typing import Any, Iterable
 
 from .catalog import Benchmark
 from .harnesses.profiles import HarnessProfile
-from .harnesses.declaration import SINGLE_TURN_PROFILES
 
 
 BRIDGE_CAPABILITIES = {
@@ -50,19 +49,16 @@ def compatibility_rows(
             else:
                 baseline_requirement = "dynamic_tool_schema"
             runnable = bridge_status.startswith("implemented")
-            if profile.id == "sa" and benchmark.id == "tau2":
-                runnable = False
-                baseline_requirement = "sa_requires_isolated_native_execution_and_commit"
             if profile.id == "lats":
-                runnable = runnable and benchmark.id == "bfcl"
-            if benchmark.id == "bfcl" and profile.id not in SINGLE_TURN_PROFILES:
+                # Kept out of this campaign by explicit project policy. None of
+                # the batch benchmarks supplies the published online exact-match
+                # reward together with branch snapshots; a model-value fallback
+                # would be a different search algorithm.
                 runnable = False
-                baseline_requirement = "requires_multi_response_agent_protocol"
-            elif profile.id == "magentic-one" and lifecycle not in {
-                "single-turn-workspace", "single-turn-artifact-workspace", "task-container"
-            }:
+                baseline_requirement = "no_published_online_reward_and_branch_snapshot_pair"
+            if profile.id == "magentic-one" and benchmark.id == "vitabench":
                 runnable = False
-                baseline_requirement = "magentic_requires_workspace_code_execution"
+                baseline_requirement = "magentic_vitabench_adapter_not_in_campaign_scope"
             if profile.tool_contract == "no-external-tools" and benchmark.id == "gdpval":
                 # GDPVal grades files created in the writable attempt workspace. The
                 # published DyLAN and Multi-Persona profiles only exchange text between
@@ -70,20 +66,6 @@ def compatibility_rows(
                 # mislabel an inapplicable lifecycle as weak task performance.
                 runnable = False
                 baseline_requirement = "gdpval_requires_workspace_artifact_tools"
-            if profile.tool_contract == "no-external-tools" and benchmark.id in {
-                "automationbench", "terminal-bench-2"
-            }:
-                # Both grade world/container state after the agent exits and neither has a
-                # conversational channel a text-only method could earn credit through.
-                # AutomationBench: the official scorer was run over all 36 initialized light
-                # worlds with no model and no environment action -- strict 0/36 and partial
-                # 0/36 (reports/automationbench-baseline-audit-20260906/noop-suite.json).
-                # Terminal-Bench-2: every task's reward comes from tests/test.sh executed
-                # inside the container the agent never touched. Marking these eligible lets a
-                # structurally inapplicable lifecycle be read as a weak method, and it was
-                # only being avoided by hand-editing the campaign plan.
-                runnable = False
-                baseline_requirement = "benchmark_scores_only_post_agent_world_state"
             if profile.tool_contract == "no-external-tools" and benchmark.id == "vitabench":
                 # Checked against the suite, not assumed: all 60 light cases carry evaluation
                 # criteria, and every one of them requires at least one order to be created --

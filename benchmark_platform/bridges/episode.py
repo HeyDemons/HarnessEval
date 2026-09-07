@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from benchmark_platform.harnesses.api import (
     CompletionClient,
@@ -172,6 +172,8 @@ class EpisodeBroker:
         speculator_client: CompletionClient | None = None,
         task_messages: list[dict[str, Any]] | None = None,
         validate_schema: bool = True,
+        speculative_executor: Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+        isolated_commit: Callable[[str, dict[str, Any], str], None] | None = None,
     ):
         if any(tool.name == SEND_MESSAGE_TOOL for tool in tools):
             raise ValueError(f"Native benchmark already defines reserved tool {SEND_MESSAGE_TOOL}")
@@ -184,6 +186,8 @@ class EpisodeBroker:
         self.speculator_client = speculator_client
         self.task_messages = task_messages or []
         self.validate_schema = validate_schema
+        self.speculative_executor = speculative_executor
+        self.isolated_commit = isolated_commit
         self._events: queue.Queue[ActionRequest | FinalResponse | EpisodeFailure] = queue.Queue()
         self._ready = threading.Event()
         self._pending: dict[str, ActionRequest] = {}
@@ -211,6 +215,29 @@ class EpisodeBroker:
         except asyncio.TimeoutError:
             self._broken = (
                 f"Native adapter never answered tool request {name!r} within "
+                f"{HANDSHAKE_TIMEOUT_S:.0f}s"
+            )
+            raise RuntimeError(self._broken) from None
+
+    async def _commit_isolated(self, record: dict[str, Any]) -> dict[str, Any]:
+        name = str(record["name"])
+        arguments = dict(record.get("arguments") or {})
+        request = ActionRequest(uuid.uuid4().hex, name, arguments)
+        request.reply = asyncio.get_running_loop().create_future()
+        if self.isolated_commit is None:
+            raise RuntimeError("Native adapter has no isolated result adoption hook")
+        # Register the cached native ToolMessage before the orchestrator can receive
+        # and execute this request. The native step and transcript remain canonical;
+        # its environment response is served from the shadow read.
+        self.isolated_commit(name, arguments, request.id)
+        self._events.put(request)
+        await asyncio.sleep(0)
+        self._ready.set()
+        try:
+            return await asyncio.wait_for(request.reply, HANDSHAKE_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            self._broken = (
+                f"Native adapter never adopted isolated tool request {name!r} within "
                 f"{HANDSHAKE_TIMEOUT_S:.0f}s"
             )
             raise RuntimeError(self._broken) from None
@@ -258,9 +285,19 @@ class EpisodeBroker:
         # The native controller owns tool validation/defaults and charges its
         # episode steps for tool attempts, including rejected arguments. Rejecting
         # them locally both changes native behavior and hides attempts from its budget.
-        environment = ToolEnvironment([tool.spec() for tool in declared], self.trace, handlers,
-                                      validate_schema=self.validate_schema,
-                                      isolated_calls_supported=False)
+        isolated_handlers = {
+            tool.name: (lambda arguments, name=tool.name: self.speculative_executor(name, arguments))
+            for tool in self.native_tools
+            if tool.read_only and tool.parallel and self.speculative_executor is not None
+        }
+        native_isolation = self.speculative_executor is not None and self.isolated_commit is not None
+        environment = ToolEnvironment(
+            [tool.spec() for tool in declared], self.trace, handlers,
+            validate_schema=self.validate_schema,
+            isolated_calls_supported=native_isolation,
+            isolated_handlers=isolated_handlers,
+            commit_isolated_handler=self._commit_isolated if native_isolation else None,
+        )
         if not self.validate_schema:
             await self.trace.emit('native_argument_protocol', implementation='benchmark-controller-v2')
         self.context = RunContext(

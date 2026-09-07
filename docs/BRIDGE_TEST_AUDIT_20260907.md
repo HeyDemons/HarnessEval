@@ -9,20 +9,20 @@ VitaBench integration work, algorithm changes or scoring changes.
 1. **BFCL matrix: confirmed.** The previous matrix constructed a generic
    ToolEnvironment without declaration-only wiring. It therefore exercised a
    different lifecycle and accepted eleven multi-response profiles. The matrix
-   now calls `bridges.runner.execute`, asserts their rejection before any model
-   request, and checks one model response / zero environment calls for supported
-   profiles. LATS/BFCL is rejected by the declaration gate, not the branch gate.
-   Existing batch-declaration tests remain in `test_declaration_protocol.py`.
+   now calls `bridges.runner.execute`. A later all-baseline campaign added the
+   explicit multi-model declaration aggregation protocol; the matrix now checks
+   that protocol separately from native single-response methods and preserves
+   zero environment executions in both paths.
 2. **Tau2 broker fixture: confirmed.** An unmarked lookup never enabled SA
    speculation. The fixture now exposes a parallel read-only lookup and asserts
-   that SA fails before model calls or native queued actions. This is a broker
-   protocol test, not a claim that every profile is eligible for Tau2; the
-   production Tau2 entrypoint/compatibility rejection is covered separately in
-   `test_native_isolation_and_limits.py`.
+   that a broker without a native isolation adapter fails before model calls or
+   queued actions. Tau2 now supplies a shadow-execution/adoption adapter; its
+   broker publication behavior is covered separately.
 3. **AutomationBench matrix and injection: confirmed.** `run_episode` now accepts
    an optional `speculator_client`; omission retains the existing environment
-   factory. The new matrix covers all eleven currently eligible profiles through
-   `run_episode`, each executing an environment tool before post-agent scoring.
+   factory. The matrix now covers all fourteen participating profiles through
+   `run_episode`; tool-capable profiles act before scoring while the published
+   text-only AFlow/SPP profiles retain zero environment calls.
    It retains native Actor/ReAct and each other method's own protocol, checks
    public system instructions/private assertion separation, strict and partial
    score fields, and the 50-response policy. The AFlow-tools initial graph is an
@@ -49,7 +49,9 @@ VitaBench integration work, algorithm changes or scoring changes.
 
 ## Validation and result reuse
 
-- Full HarnessEval regression: **413 passed / 196 subtests passed**.
+- The counts below describe the review commit at the time it was written; see
+  the latest campaign report for validation after all-baseline integration.
+- Full HarnessEval regression at that review commit: **413 passed / 196 subtests passed**.
 - After strengthening GAIA handler-count assertions: targeted bridge speculation
   tests **2 passed / 8 subtests passed**.
 - Root runner self-check, root runner compilation, BFCL scorer self-check and

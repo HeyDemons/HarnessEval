@@ -95,6 +95,12 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
                             '{"action":"finish","answer":"done"}'],
             "rewoo": ['Plan: work\n#E1 = work[{}]', "done"],
             "sa": [action, '{"final":"done"}'],
+            "aflow": ["done"],
+            "multi-persona": ["Final answer: done"],
+            "magentic-one": [
+                "facts", "plan", PROFILE_RESPONSES["magentic-one"][2].replace("FileSurfer", "WebSurfer"),
+                native_call("work", {}), PROFILE_RESPONSES["magentic-one"][4], "done",
+            ],
         }
         self.assertEqual({r["baseline"] for r in rows if r["runnable"]}, set(responses))
         for method, replies in responses.items():
@@ -102,17 +108,21 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
                 order = []
                 actor = ScriptedClient(replies)
                 policy = {"react_protocol": "native"}
-                if method == "aflow-tools":
-                    from benchmark_platform.harnesses.aflow_tools import make_artifact
+                if method in {"aflow", "aflow-tools"}:
+                    from benchmark_platform.harnesses.aflow import make_artifact as make_qa_artifact
+                    from benchmark_platform.harnesses.aflow_tools import make_artifact as make_tool_artifact
                     # Initial graph is a protocol fixture, not an optimized evaluation artifact.
-                    policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
+                    policy.update(aflow_artifact=(make_tool_artifact() if method == "aflow-tools"
+                                                  else make_qa_artifact()),
+                                  aflow_allow_initialization=True)
                 with patch("benchmark_platform.bridges.automation_episode.sa_speculator_client_from_env",
                            side_effect=AssertionError("injected clients must not read provider configuration")):
                     result = await run_episode(method, "sales:1", policy, Path(tmp),
                         episode=FakeEpisode(order), client=actor, speculator_client=ScriptedClient([]))
                 self.assertEqual(result["status"], "completed", result.get("error"))
-                self.assertEqual(order, ["tool", "scorer"])
-                self.assertEqual(result["tool_calls"], 1)
+                expected_tools = 0 if method in {"aflow", "multi-persona"} else 1
+                self.assertEqual(order, ["tool"] * expected_tools + ["scorer"])
+                self.assertEqual(result["tool_calls"], expected_tools)
                 self.assertEqual(result["native_score"], 0)
                 self.assertEqual(result["native_partial_credit"], 0.5)
                 self.assertEqual(result["policy"]["model_response_limit"], 50)

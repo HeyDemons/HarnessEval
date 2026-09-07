@@ -2,11 +2,12 @@
 
 Scope: all 15 registered profiles, their shared provider/tool boundaries and the
 seven in-scope batch benchmark lifecycles (VitaBench excluded by user request).
-The second review found an additional native isolation defect: **SA/Tau2 is now
-incompatible**, and EpisodeBroker rejects speculative execution/adoption. See
-[SA control and isolation](SA_CONTROL_AND_ISOLATION.md) for the current gate,
-matched JSON control entrypoint and source-boundary fixes. Earlier test/smoke
-results below do not establish native speculation isolation.
+The second review found an additional native isolation defect in SA/Tau2. The
+subsequent native shadow adapter runs declared reads on a copied Tau2 world and,
+on an exact Actor match, publishes one canonical native action while Tau2 adopts
+the cached ToolMessage. Earlier results from before this adapter still do not
+establish native speculation isolation. See
+[SA control and isolation](SA_CONTROL_AND_ISOLATION.md).
 A compatibility fix preserves the algorithm's
 decisions, roles and budgets while implementing the benchmark/provider contract.
 It is not permission to add replanning, worker quotas or task-specific strategies.

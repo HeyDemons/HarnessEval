@@ -22,6 +22,7 @@ from benchmark_platform.harnesses.core import (
 )
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import get_profile
+from benchmark_platform.harnesses.declaration import SINGLE_TURN_PROFILES
 
 from .adapters import load_case
 
@@ -50,15 +51,23 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         for path in [case_root, *case_root.rglob("*")]:
             path.chmod(path.stat().st_mode | (0o222 if path.is_file() else 0o333))
     bridge = load_case(benchmark, case_id, case_root)
+    native_single_response = benchmark == "bfcl" and profile_id in SINGLE_TURN_PROFILES
     environment = ToolEnvironment(
         bridge.tools,
         trace,
         bridge.handlers,
-        declaration_only=benchmark == "bfcl",
+        declaration_only=native_single_response,
     )
     effective_policy = dict(policy)
     if benchmark == "bfcl":
         effective_policy["declaration_only_tools"] = True
+        effective_policy["bfcl_external_response_limit"] = 1
+        if not native_single_response:
+            # BFCL constrains the evaluated agent/system to one outward response.
+            # A multi-agent baseline may spend several internal model calls before
+            # publishing that response; charging each subagent call as a BFCL turn
+            # would truncate the algorithm rather than enforce the benchmark limit.
+            effective_policy.pop("model_response_limit", None)
     if benchmark == "trajectory-bench":
         safe = list(bridge.metadata.get("safe_for_prelaunch") or [])
         effective_policy["speculation_safe_tools"] = safe
@@ -92,10 +101,15 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             "tool_calls": len(environment.calls),
             **context.usage_metrics(),
             "bridge": bridge.metadata,
+            "policy": effective_policy,
         }
         if benchmark == "bfcl":
-            result["committed_calls"] = environment.committed_calls
+            result["committed_calls"] = (
+                environment.committed_calls if native_single_response else environment.calls
+            )
             result["tool_calls"] = len(environment.committed_calls)
+            if not native_single_response:
+                result["tool_calls"] = len(environment.calls)
         elif benchmark == "trajectory-bench":
             result["trajectory_calls"] = _published_calls(environment)
     except Exception as exc:
@@ -158,11 +172,26 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
                 result["trajectory_calls"] = _published_calls(environment)
             await trace.emit("bridge_error", error=result["error"])
     if benchmark == "bfcl":
-        result["committed_calls"] = environment.committed_calls
-        result["declaration_protocol"] = "native-single-response-v1"
-        result["committed_response_id"] = environment.declaration_response_id
+        committed = environment.committed_calls if native_single_response else environment.calls
+        result["committed_calls"] = committed
+        result["declaration_protocol"] = (
+            "native-single-response-v1"
+            if native_single_response
+            else "multi-model-declaration-aggregation-v1"
+        )
+        result["committed_response_id"] = (
+            environment.declaration_response_id if native_single_response else None
+        )
+        result["external_assistant_responses"] = 1 if result.get("status") == "completed" else 0
+        if not native_single_response:
+            result["source_response_ids"] = sorted({
+                item["assistant_response_id"] for item in committed
+                if item.get("assistant_response_id") is not None
+            })
         result["environment_calls"] = 0
-        result["agent_turns"] = 1 if environment.declaration_committed else 0
+        if native_single_response:
+            result["agent_turns"] = 1 if environment.declaration_committed else 0
+    result["policy"] = effective_policy
     _write(job / "harness_result.json", result)
     return result
 

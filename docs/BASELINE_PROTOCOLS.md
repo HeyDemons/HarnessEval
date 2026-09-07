@@ -2,16 +2,21 @@
 
 ## BFCL single-turn declarations
 
-The frozen single-turn BFCL suite scores one assistant response. Supported
-native profiles are `actor-only`, `react`, and `sa`: they generate once and
-preserve the complete native call batch. SA makes no Speculator call here.
-`multi-persona` retains its one-call text-only SPP protocol without function tools.
+The frozen single-turn BFCL suite scores one outward agent response. Native
+profiles `actor-only`, `react`, and `sa` generate that response directly and
+preserve its complete native call batch. SA makes no Speculator call because
+BFCL never executes a function. `multi-persona` retains its one-call text-only
+SPP protocol without function tools.
 
-The other profiles require multi-response algorithms: plan-execute, cmas, dmas,
-memgpt, lats, aflow, dylan, magentic-one, llmcompiler and rewoo. The compatibility
-matrix rejects these combinations instead of truncating their algorithms or
-merging calls from different responses. This does not claim they cannot solve
-function-selection tasks under a separately defined multi-step evaluation.
+Multi-model profiles keep their complete internal planner/worker/orchestrator
+calls. Their declaration-only actions never execute. The bridge aggregates the
+actions selected by those internal roles into the system's single outward
+declaration batch and records every source response id. This is reported as
+`multi-model-declaration-aggregation-v1`; it is a benchmark output adapter, not
+a claim that all declarations came from one provider response. Internal model
+calls remain in cost/turn metrics and are not charged as extra BFCL dialogue
+turns. LATS remains outside the experiment because the suite provides neither
+its published online reward nor branch snapshots.
 
 The response boundary is frozen even for an empty batch. A second generation
 cannot search for a later call. The tool environment returns local declaration
@@ -19,8 +24,10 @@ acknowledgements without invoking handlers/subprocesses. Malformed batches are
 parsed before publication. Unexpected exceptions after declaration remain
 failed measurements; only an expected lifecycle stop counts as completion.
 
-Results include committed_response_id, declaration_protocol and environment_calls=0.
-Isolated records cannot be merged or relabeled into one declaration response.
+Results include committed_response_id, source_response_ids,
+external_assistant_responses, declaration_protocol and environment_calls=0.
+The native single-response path still forbids merging or relabeling isolated
+records.
 Outside BFCL, LATS retains each proposal's source ID; explicit SA adoption keeps
 both the speculative source ID and authoritative Actor ID.
 
@@ -67,11 +74,13 @@ The four participants retain distinct responsibilities:
 | Participant | Available capabilities |
 | --- | --- |
 | FileSurfer | read_file, list_files, search_files |
-| WebSurfer | web_search, web_browser, browse_web, fetch_url |
+| WebSurfer | web_search/web-browser tools and benchmark-native remote-service APIs |
 | Coder | Text/code generation, no native environment tools |
 | Executor | Fenced scripts through run_command, no LLM call |
 
-Only capabilities present in the benchmark are exposed. Executor consumes new
+Only capabilities present in the benchmark are exposed. Unrecognized domain
+API names are assigned to WebSurfer at this adapter boundary; the ledger and
+four-participant topology remain unchanged. Executor consumes new
 messages since its previous dispatch and resets its cursor when the ledger
 resets the thread. It supports python/py/sh/shell/bash blocks. Scripts persist
 in the task workspace; explicit filenames cannot escape it, including via
