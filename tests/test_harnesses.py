@@ -1166,6 +1166,8 @@ class HarnessTests(unittest.TestCase):
                     "first result",
                     magentic_ledger(satisfied=False, instruction="second"),
                     "second result",
+                    magentic_ledger(satisfied=False, instruction="third"),
+                    "third result",
                     "bounded final answer",
                 ]
             )
@@ -1188,7 +1190,7 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(termination[-1]["reason"], "Max rounds reached.")
         self.assertEqual(
             sum(event["event"] == "magentic_dispatch" for event in events),
-            2,
+            3,
         )
 
     def test_magentic_replan_updates_ledgers_and_resets_message_thread(self) -> None:

@@ -608,7 +608,12 @@ async def run_magentic_one(ctx: RunContext) -> str:
     if max_rounds < 1 or max_stalls < 1:
         raise ValueError("Magentic-One round and stall limits must be positive")
 
-    for round_id in range(1, max_rounds + 1):
+    # Pinned _orchestrate_step tests n_rounds > max_turns BEFORE incrementing.
+    # Consequently a configured N permits N+1 ledger rounds, not N. Keep this
+    # source boundary rather than silently tightening its algorithmic limit.
+    await ctx.trace.emit('magentic_config', implementation='source-round-guard-v2',
+                         max_rounds=max_rounds, ledger_round_limit=max_rounds + 1)
+    for round_id in range(1, max_rounds + 2):
         ledger = await _progress_ledger(ctx, workers, team, thread)
         if ledger["is_request_satisfied"]["answer"] is True:
             return await _final_answer(
