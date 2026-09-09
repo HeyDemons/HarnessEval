@@ -1,8 +1,10 @@
-"""Execute frozen Python workflows with the pinned AFlow QA operator semantics.
+"""Execute frozen AFlow workflows, including the tool-benchmark adaptation.
 
 Source: FoundationAgents/AFlow 3f457218, HotpotQA/workflows/template and
 scripts/formatter.py. Artifacts contain code and must run in the benchmark's
-agent sandbox, never in a scorer process holding evaluation labels.
+agent sandbox, never in a scorer process holding evaluation labels. The public
+``aflow`` profile accepts both pinned QA artifacts and capability-limited tool
+workflow artifacts; the latter are an explicit benchmark adaptation.
 """
 from __future__ import annotations
 
@@ -86,6 +88,26 @@ def validate_artifact(artifact: Any, *, allow_initialization: bool = False,
     if not re.fullmatch(r"[0-9a-f]{64}", str(provenance.get("search_history_sha256", ""))):
         raise ValueError("AFlow artifact requires search history provenance")
     return artifact
+
+
+def validate_runtime_artifact(artifact: Any, *, allow_initialization: bool = False,
+                              benchmark: str | None = None, case_id: str | None = None) -> dict:
+    """Validate either artifact family accepted by the public ``aflow`` method."""
+    if isinstance(artifact, dict) and artifact.get("format") == "aflow-tools-python-v1":
+        from .aflow_tools import validate_artifact as validate_tool_artifact
+
+        return validate_tool_artifact(
+            artifact,
+            allow_initialization=allow_initialization,
+            benchmark=benchmark,
+            case_id=case_id,
+        )
+    return validate_artifact(
+        artifact,
+        allow_initialization=allow_initialization,
+        benchmark=benchmark,
+        case_id=case_id,
+    )
 
 
 def make_artifact(graph: str = INITIAL_GRAPH, prompt: str = "", *, provenance: dict | None = None) -> dict:
@@ -199,7 +221,12 @@ def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None 
 
 
 async def run_aflow(ctx: RunContext) -> str:
-    artifact = validate_artifact(ctx.policy.get("aflow_artifact"),
+    raw_artifact = ctx.policy.get("aflow_artifact")
+    if isinstance(raw_artifact, dict) and raw_artifact.get("format") == "aflow-tools-python-v1":
+        from .aflow_tools import run_aflow_tools
+
+        return await run_aflow_tools(ctx)
+    artifact = validate_artifact(raw_artifact,
                                  allow_initialization=ctx.policy.get("aflow_allow_initialization") is True,
                                  benchmark=ctx.policy.get("aflow_benchmark"), case_id=ctx.policy.get("aflow_case_id"))
     await ctx.trace.emit("aflow_artifact", code_sha256=artifact["code_sha256"],

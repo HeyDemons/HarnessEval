@@ -38,7 +38,7 @@ nowhere. See [baseline protocol corrections](BASELINE_PROTOCOLS.md).
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
 | LATS | Dynamic branch-isolated | **N/A — temporarily not participating** in the current batch; profile retained, no valid batch environment; historical records excluded from current comparisons |
 | MemGPT | Dynamic virtual memory | Core/recall/archival memory functions, function executor, and heartbeat queue |
-| AFlow | No external tools (QA operators) | Frozen Python graph from a disjoint search; distinct Custom/AnswerGenerate and candidate-preserving ScEnsemble; see [artifact workflow](AFLOW_DYLAN.md) |
+| AFlow | Dynamic benchmark tools (adaptation) | Frozen Python graph from a disjoint AFlow search; capability-limited ToolSession/ToolDecision plus the pinned QA operators; see [artifact workflow](AFLOW_DYLAN.md) |
 | DyLAN | Dynamic | Single published-team tool policy; exact action consensus and one controller commit per decision; generic state routing is an explicit [adapter](DYLAN_POLICY.md) |
 | Magentic-One | Workspace specialists | Ledger topology, separate file/web tools, tool-free Coder and non-LLM code Executor |
 | Multi-Persona | No external tools | SPP profile protocol with two complete demonstrations, dynamic participant profiles, iterative criticism/revision, and one model call |
@@ -65,7 +65,7 @@ not described as vendored upstream applications.
 
 The matrix tests exercise lifecycle routes with scripted protocol responses.
 This proves bridge and tool-contract compatibility, not model task success.
-The selected AFlow QA and Multi-Persona profiles execute without external tools.
+Multi-Persona executes without external tools. AFlow uses the benchmark-tool adaptation documented below.
 The single DyLAN profile now executes its selected benchmark actions.
 A tool-dependent task may end in a normal capability
 failure. Exposing hidden user scenarios as prompts, replacing task containers

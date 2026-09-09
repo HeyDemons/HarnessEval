@@ -240,7 +240,10 @@ class HarnessTests(unittest.TestCase):
 
     def test_no_external_tools_still_meter_all_generations(self) -> None:
         async def check():
-            for profile in ("aflow", "multi-persona"):
+            # Keep this assertion derived from the registry so adapted tool profiles
+            # are not accidentally tested as text-only methods.
+            from benchmark_platform.harnesses import PROFILES
+            for profile in [p.id for p in PROFILES if p.tool_contract == "no-external-tools"]:
                 with tempfile.TemporaryDirectory() as directory:
                     trace = JsonlTrace(Path(directory) / "trace.jsonl")
                     context = RunContext(profile, "p", ScriptedClient(["plan"] * 17),
@@ -991,17 +994,17 @@ class HarnessTests(unittest.TestCase):
             events = [json.loads(line) for line in trace.path.read_text(encoding="utf-8").splitlines()]
             self.assertEqual(sum(event["event"] == "memgpt_active_memory_summarized" for event in events), 1)
 
-    def test_aflow_frozen_custom_preserves_plain_text_operator(self) -> None:
-        from benchmark_platform.harnesses.aflow import make_artifact
+    def test_aflow_frozen_tool_workflow_executes_observed_actions(self) -> None:
+        from benchmark_platform.harnesses.aflow_tools import make_artifact
         answer, environment = self.run_profile(
             "aflow",
-            ["6"],
+            ['{"tool":"lookup","arguments":{"key":"alpha"}}', '{"final":"6"}'],
             policy={"aflow_artifact": make_artifact(), "aflow_allow_initialization": True},
         )
         self.assertEqual(answer, "6")
-        self.assertEqual(len(environment.calls), 0)
-        self.assertEqual(self.last_context.llm_calls, 1)
-        self.assertEqual(self.last_client.json_modes, [False])
+        self.assertEqual(len(environment.calls), 1)
+        self.assertEqual(self.last_context.llm_calls, 2)
+        self.assertEqual(self.last_client.json_modes, [True, True])
 
     def test_dylan_consensus_can_finish_without_tools(self) -> None:
         answer, environment = self.run_profile("dylan", ['{"final":"42"}'] * 4)

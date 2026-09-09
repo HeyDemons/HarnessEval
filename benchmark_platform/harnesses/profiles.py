@@ -109,27 +109,15 @@ PROFILES = (
     HarnessProfile(
         id="aflow",
         name="AFlow frozen workflow",
-        topology="frozen optimized operator graph -> execution",
-        provenance="protocol-reproduction",
-        source="https://github.com/FoundationAgents/AFlow",
-        revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
-        tool_contract="no-external-tools",
-        notes=("Executes frozen Python graphs with pinned AFlow HotpotQA Custom/AnswerGenerate/ScEnsemble operators. "
-               "Requires a disjoint optimization artifact; no automatic Custom fallback. Other dataset operators "
-               "and dynamic tool workflows require separate adapters."),
-    ),
-    HarnessProfile(
-        id="aflow-tools",
-        name="AFlow tool workflow adaptation",
-        topology="offline workflow search -> frozen tool decision/observation graph",
+        topology="offline AFlow search -> frozen tool workflow -> execution",
         provenance="algorithm-adaptation",
         source="https://github.com/FoundationAgents/AFlow",
         revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
         tool_contract="dynamic",
-        notes=("Explicit tool adaptation, separate from the pinned QA profile. Searches Python workflows "
-               "on disjoint optimization cases and freezes them before evaluation. ToolDecision proposes "
-               "one action; ToolSession commits it once and records the real observation. All operators "
-               "share native model/episode budgets. Requires an aflow-tools-python-v1 artifact."),
+        notes=("Uses the pinned AFlow score-mixture tree search and QA operators, extended with a "
+               "capability-limited ToolSession/ToolDecision operator pair for benchmark tools. Requires a "
+               "frozen artifact from a disjoint optimization split; no hand-declared or initialization fallback. "
+               "The tool operator family is an adaptation, not an upstream AFlow task implementation."),
     ),
     HarnessProfile(
         id="dylan",

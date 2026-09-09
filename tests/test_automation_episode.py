@@ -89,13 +89,12 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
             "dmas": [*PROFILE_RESPONSES["dmas"][:3], action, PROFILE_RESPONSES["dmas"][3]],
             "memgpt": ['{"thought":"work","function":"work","arguments":{"request_heartbeat":true}}',
                        *PROFILE_RESPONSES["memgpt"]],
-            "aflow-tools": [action, '{"final":"done"}'],
             "dylan": [action] * 4 + ['{"final":"done"}'] * 4,
             "llmcompiler": ['{"tasks":[{"id":1,"tool":"work","arguments":{},"dependencies":[]}]}',
                             '{"action":"finish","answer":"done"}'],
             "rewoo": ['Plan: work\n#E1 = work[{}]', "done"],
             "sa": [action, '{"final":"done"}'],
-            "aflow": ["done"],
+            "aflow": [action, '{"final":"done"}'],
             "multi-persona": ["Final answer: done"],
             "magentic-one": [
                 "facts", "plan", PROFILE_RESPONSES["magentic-one"][2].replace("FileSurfer", "WebSurfer"),
@@ -108,19 +107,16 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
                 order = []
                 actor = ScriptedClient(replies)
                 policy = {"react_protocol": "native"}
-                if method in {"aflow", "aflow-tools"}:
-                    from benchmark_platform.harnesses.aflow import make_artifact as make_qa_artifact
-                    from benchmark_platform.harnesses.aflow_tools import make_artifact as make_tool_artifact
+                if method == "aflow":
+                    from benchmark_platform.harnesses.aflow_tools import make_artifact
                     # Initial graph is a protocol fixture, not an optimized evaluation artifact.
-                    policy.update(aflow_artifact=(make_tool_artifact() if method == "aflow-tools"
-                                                  else make_qa_artifact()),
-                                  aflow_allow_initialization=True)
+                    policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
                 with patch("benchmark_platform.bridges.automation_episode.sa_speculator_client_from_env",
                            side_effect=AssertionError("injected clients must not read provider configuration")):
                     result = await run_episode(method, "sales:1", policy, Path(tmp),
                         episode=FakeEpisode(order), client=actor, speculator_client=ScriptedClient([]))
                 self.assertEqual(result["status"], "completed", result.get("error"))
-                expected_tools = 0 if method in {"aflow", "multi-persona"} else 1
+                expected_tools = 0 if method == "multi-persona" else 1
                 self.assertEqual(order, ["tool"] * expected_tools + ["scorer"])
                 self.assertEqual(result["tool_calls"], expected_tools)
                 self.assertEqual(result["native_score"], 0)

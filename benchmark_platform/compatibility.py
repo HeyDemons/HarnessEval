@@ -36,7 +36,7 @@ def compatibility_rows(
             lifecycle, bridge_status = BRIDGE_CAPABILITIES.get(
                 benchmark.id, (benchmark.adapter["kind"], "blocked_no_baseline_bridge")
             )
-            if profile.id in {"aflow", "aflow-tools"}:
+            if profile.id == "aflow":
                 baseline_requirement = "frozen_workflow_from_disjoint_optimization_split"
             elif profile.id == "dylan":
                 baseline_requirement = "published_optimized_teams_with_dynamic_tool_policy"

@@ -15,7 +15,7 @@ def context(replies, **policy):
     async def write(args):
         return {'saved': args['value']}
     env = ToolEnvironment([ToolSpec('write', 'write', {'type': 'object'}, ())], trace, {'write': write})
-    return RunContext('aflow-tools', 'PUBLIC_TASK', Client(replies), env, trace,
+    return RunContext('aflow', 'PUBLIC_TASK', Client(replies), env, trace,
         {'aflow_artifact': aflow_tools.make_artifact(), 'aflow_allow_initialization': True, **policy},
         task_messages=[{'role': 'system', 'content': 'PUBLIC_BENCHMARK_POLICY'}])
 
@@ -94,7 +94,7 @@ class AFlowToolTests(unittest.IsolatedAsyncioTestCase):
                 aflow_tools.validate_artifact(aflow_tools.make_artifact(graph, aflow_tools.INITIAL_PROMPT + 'ctx = ""'),
                                               allow_initialization=True)
 
-    async def test_tool_search_freezes_best_and_never_exposes_evaluation_ids(self):
+    async def test_aflow_search_freezes_best_and_never_exposes_evaluation_ids(self):
         split = {'benchmark': 'synthetic', 'optimization_case_ids': ['opt'], 'evaluation_case_ids': ['secret-eval-id']}
         graph = aflow_tools.INITIAL_GRAPH.replace('instruction=prompt_custom.INSTRUCTION', 'instruction=prompt_custom.INSTRUCTION + " Be careful."')
         client = Client([f'<graph>{graph}</graph><prompt>{aflow_tools.INITIAL_PROMPT}</prompt><modification>review instruction</modification>'])
@@ -105,10 +105,10 @@ class AFlowToolTests(unittest.IsolatedAsyncioTestCase):
             return {'score': len(seen) / 2}
         with tempfile.TemporaryDirectory() as directory:
             result = await optimize(client, evaluate, split, Path(directory) / 'search',
-                                    rounds=1, validation_rounds=1, adapter='tools')
+                                    rounds=1, validation_rounds=1)
         aflow_tools.validate_artifact(result, benchmark='synthetic', case_id='secret-eval-id')
         self.assertEqual(result['provenance']['selected_round'], 2)
-        self.assertEqual(result['provenance']['operator_adapter'], 'tools')
+        self.assertEqual(result['provenance']['operator_adapter'], 'benchmark-tools')
         self.assertNotIn('secret-eval-id', str(client.messages))
         self.assertIn('ToolSession', str(client.messages))
         with self.assertRaisesRegex(ValueError, 'evaluation manifest'):

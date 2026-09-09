@@ -8,8 +8,9 @@ task-specific experiment in the papers.
 
 `aflow` executes a frozen **Python** `Workflow`, not a list of operator names.
 It preserves data dependencies, custom instructions, loops, and conditions.
-The adapter redirects the infrastructure imports of the pinned HotpotQA graphs
-to the HarnessEval provider, while leaving the graph body intact.
+For tool benchmarks, the public `aflow` method uses the capability-limited
+ToolSession/ToolDecision adaptation described in [AFLOW_TOOLS.md](AFLOW_TOOLS.md).
+There is no separate runnable `aflow-tools` method.
 
 The supported operator library is FoundationAgents/AFlow
 `3f457218fc716093fe53f6df8a5d5e6379d66346`, HotpotQA:
@@ -20,9 +21,9 @@ The supported operator library is FoundationAgents/AFlow
 - `ScEnsemble(solutions)` selects a candidate letter and returns that original
   solution. An invalid letter is an error, never a newly invented answer.
 
-These QA operators have no benchmark tool loop. Code-generation-specific
-operators and arbitrary dynamic tool workflows are not implemented by this
-adapter. The shared no-external-tools compatibility rules apply. Monetary cost
+The pinned QA operators themselves have no benchmark tool loop. Tool access is
+provided only by the explicit ToolSession/ToolDecision adaptation; arbitrary
+dynamic Python capabilities are not exposed. Monetary cost
 is unknown (`None`); provider token usage is recorded by RunContext. The default
 operator budget is 100 calls, configurable as `aflow_max_operator_calls`; the
 outer benchmark deadline still applies. XML parsing preserves upstream optional

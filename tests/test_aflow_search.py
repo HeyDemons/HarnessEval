@@ -3,7 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from benchmark_platform.harnesses.aflow import INITIAL_GRAPH, validate_artifact
+from benchmark_platform.harnesses.aflow import validate_runtime_artifact
+from benchmark_platform.harnesses.aflow_tools import INITIAL_GRAPH, INITIAL_PROMPT
 from benchmark_platform.harnesses.aflow_search import convergence, optimize, selection_probabilities
 from test_aflow_upstream import Client
 
@@ -24,7 +25,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
     async def test_convergence_stops_search_and_can_be_disabled(self):
         async def evaluate(artifact):
             return {"score": .5}
-        replies = [f"<graph>{INITIAL_GRAPH}\n# {n}</graph><prompt></prompt><modification>change-{n}</modification>"
+        replies = [f"<graph>{INITIAL_GRAPH}\n# {n}</graph><prompt>{INITIAL_PROMPT}</prompt><modification>change-{n}</modification>"
                    for n in range(10)]
         with tempfile.TemporaryDirectory() as directory:
             for enabled, expected in ((True, 5), (False, 8)):
@@ -39,7 +40,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         scores = iter([.9, .1, .2])
         async def evaluate(artifact):
             return {"score": next(scores)}
-        replies = [f"<graph>{INITIAL_GRAPH}\n# {n}</graph><prompt></prompt><modification>change-{n}</modification>"
+        replies = [f"<graph>{INITIAL_GRAPH}\n# {n}</graph><prompt>{INITIAL_PROMPT}</prompt><modification>change-{n}</modification>"
                    for n in (1, 1, 2)]
         client = Client(replies)
         with tempfile.TemporaryDirectory() as directory:
@@ -68,12 +69,12 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             seen.append(artifact)
             return {"score": next(scores), "feedback": "optimization-only diagnostic"}
 
-        replies = [f"<graph>{INITIAL_GRAPH}\n# candidate-{n}</graph><prompt></prompt><modification>change-{n}</modification>" for n in (1, 2)]
+        replies = [f"<graph>{INITIAL_GRAPH}\n# candidate-{n}</graph><prompt>{INITIAL_PROMPT}</prompt><modification>change-{n}</modification>" for n in (1, 2)]
         client = Client(replies)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "search"
             artifact = await optimize(client, evaluate, SPLIT, output, rounds=2, validation_rounds=2)
-            validate_artifact(artifact, benchmark="synthetic", case_id="heldout")
+            validate_runtime_artifact(artifact, benchmark="synthetic", case_id="heldout")
             self.assertEqual(artifact["provenance"]["selected_round"], 2)
             self.assertEqual(artifact["provenance"]["validation_score"], .8)
             history = json.loads((output / "history.json").read_text())

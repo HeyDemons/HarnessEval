@@ -1,10 +1,11 @@
 # AFlow tool workflow adaptation
 
-`aflow-tools` is an opt-in adaptation distinct from `aflow`, whose pinned
-HotpotQA operators and historical results remain unchanged. It transfers
-AFlow's offline Python graph search, parent selection, experience, validation
-and freezing to the benchmark's real tool lifecycle. It does not claim the
-original AFlow release evaluated these tool benchmarks.
+The public `aflow` method uses this adaptation on interactive tool benchmarks.
+It transfers AFlow's offline Python graph search, parent selection, experience,
+validation and freezing to the benchmark's real tool lifecycle. It does not
+claim the original AFlow release evaluated these tool benchmarks. Historical
+results named `aflow-tools` retain that old identity, but it is no longer a
+runnable method.
 
 The workflow has the usual `Workflow(name, llm_config, dataset)` constructor
 and async `__call__(problem)`. The QA operators remain available for planning,
@@ -23,10 +24,11 @@ Benchmark system/developer instructions remain authoritative. Native user
 messages and the existing episode scorer keep their original lifecycle.
 Terminal actions use the same task container as its verifier.
 
-Artifacts use `aflow-tools-python-v1`, incompatible with QA artifacts. Frozen
-artifacts must include a disjoint optimization/evaluation manifest and complete
-search provenance. Batch evaluation reads `HARNESS_AFLOW_TOOLS_ARTIFACT`, or
-`HARNESS_AFLOW_TOOLS_ARTIFACT_<BENCHMARK>` with hyphens replaced by underscores.
+Artifacts use the internal `aflow-tools-python-v1` format, incompatible with QA
+artifacts. Frozen artifacts must include a disjoint optimization/evaluation
+manifest and complete search provenance. Batch evaluation reads
+`HARNESS_AFLOW_ARTIFACT`, or `HARNESS_AFLOW_ARTIFACT_<BENCHMARK>` with hyphens
+replaced by underscores.
 The entire evaluation suite must exclude optimization cases, even when running
 a single evaluation case. The artifact and algorithm identity enter resume
 checks. BFCL's single-response suite remains incompatible.
@@ -35,7 +37,7 @@ Search example from a configured workspace:
 
 ```sh
 PYTHONPATH=HarnessEval python -m benchmark_platform.harnesses.aflow_search \
-  --adapter tools --problem-type 'interactive benchmark tool tasks' \
+  --problem-type 'interactive benchmark tool tasks' \
   --split-manifest /absolute/path/split.json \
   --evaluate-command '["/absolute/path/python", "/absolute/path/scripts/evaluate_aflow_candidate.py"]' \
   --output /absolute/path/runs/aflow-search/new-search
@@ -63,5 +65,6 @@ access and llm.ctx/controller access are rejected. Field permissions depend on
 their receiver; adding a prompt constant or Workflow field cannot authorize
 access to a similarly named controller attribute. The ordinary process deadline
 bounds pure-computation loops. This restriction matters particularly for native
-episodes, whose controller process holds the hidden state. The QA profile keeps
-its existing behavior; it is not the execution path of these tool graphs.
+episodes, whose controller process holds the hidden state. Pinned QA operators
+remain available as auxiliary nodes, while ToolSession and ToolDecision provide
+the only path to real benchmark actions.

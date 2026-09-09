@@ -55,8 +55,7 @@ PROFILE_RESPONSES = {
         '{"score":1.0,"success":true,"feedback":"complete"}',
     ],
     "memgpt": ['{"thought":"complete","function":"send_message","arguments":{"message":"ok"}}'],
-    "aflow": ["ok"],
-    "aflow-tools": ['{"final":"ok"}'],
+    "aflow": ['{"final":"ok"}'],
     "dylan": ['{"final":"ok"}'] * 4,
     "magentic-one": [
         "facts",
@@ -176,9 +175,6 @@ class EpisodeBrokerTests(unittest.TestCase):
                         client = ScriptedClient(list(PROFILE_RESPONSES[profile.id]))
                         policy = {"max_turns": 4}
                         if profile.id == "aflow":
-                            from benchmark_platform.harnesses.aflow import make_artifact
-                            policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
-                        if profile.id == "aflow-tools":
                             from benchmark_platform.harnesses.aflow_tools import make_artifact
                             policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
                         broker = EpisodeBroker(

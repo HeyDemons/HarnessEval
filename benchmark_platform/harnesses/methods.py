@@ -35,6 +35,25 @@ def action_protocol_error(detail: str) -> str:
 
 
 def _normalize_action(action: dict[str, Any], names: list[str]) -> dict[str, Any]:
+    # The function transport puts the action inside {"response": ...}, so a model that has
+    # seen that wire shape sometimes reproduces it even on the text transport, where the
+    # schema asks for the bare action. Measured on the 2026-09-08 AutomationBench sweep:
+    # 17 AFlow tool-workflow replies arrived wrapped this way and 24 of 36 arms died on
+    # "reply.tool is required", while the payload inside the envelope was a valid call.
+    # Unwrap only a single-key envelope holding an object, so a real action named
+    # "response" is untouched.
+    if set(action) == {"response"} and isinstance(action["response"], dict):
+        action = action["response"]
+    # A reserved key carrying a falsy value is the model annotating its own action
+    # ("final": false next to a real tool call), not claiming both shapes at once. The
+    # contract keeps tool and final mutually exclusive, but exclusivity is about the
+    # action taken, not about a bare key: measured on Tau2, 59 of 60 AFlow arms
+    # died because `{"tool": ..., "arguments": {...}, "final": false}` was rejected
+    # outright, and the reply itself was a valid send_message_to_user call.
+    if action.get("tool") and not action.get("final"):
+        action = {key: value for key, value in action.items() if key != "final"}
+    elif action.get("final") and not action.get("tool"):
+        action = {key: value for key, value in action.items() if key not in ("tool", "arguments")}
     if "tool" in action or "final" in action:
         return action
     if len(action) == 1:
@@ -404,11 +423,9 @@ async def run_profile(ctx: RunContext) -> str:
         run_sa,
     )
     from .rewoo import run_rewoo
-    from .aflow_tools import run_aflow_tools
 
     extended = {
         "aflow": run_aflow,
-        "aflow-tools": run_aflow_tools,
         "dylan": run_dylan,
         "dmas": run_dmas,
         "magentic-one": run_magentic_one,

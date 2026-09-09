@@ -66,9 +66,6 @@ class TaskProfileMatrixTests(unittest.TestCase):
             )
             policy = {"max_turns": 4}
             if profile_id == "aflow":
-                from benchmark_platform.harnesses.aflow import make_artifact
-                policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
-            if profile_id == "aflow-tools":
                 from benchmark_platform.harnesses.aflow_tools import make_artifact
                 policy.update(aflow_artifact=make_artifact(), aflow_allow_initialization=True)
             context = RunContext(

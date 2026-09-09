@@ -17,7 +17,7 @@ from .methods import ACTION_SYSTEM, parse_action_reply
 from .reply_contracts import action_schema
 
 FORMAT = "aflow-tools-python-v1"
-IMPLEMENTATION = "dynamic-tools-python-v2"
+IMPLEMENTATION = "aflow-tool-workflow-python-v3"
 SAFE_BUILTINS = {name: getattr(builtins, name) for name in
                  ("__build_class__", "str", "int", "float", "bool", "list", "dict", "tuple",
                   "range", "len", "enumerate", "zip", "min", "max", "sum", "sorted")}
@@ -58,7 +58,7 @@ def make_artifact(graph=INITIAL_GRAPH, prompt=INITIAL_PROMPT, *, provenance=None
 
 def validate_artifact(artifact, **kwargs):
     if not isinstance(artifact, dict) or artifact.get("format") != FORMAT:
-        raise ValueError("aflow-tools requires an aflow-tools-python-v1 workflow; QA artifacts are not tool workflows")
+        raise ValueError("AFlow tool execution requires an aflow-tools-python-v1 workflow; QA artifacts are not tool workflows")
     aflow.validate_artifact({**artifact, "format": aflow.FORMAT}, **kwargs)
     validate_graph(artifact['graph'], artifact['prompt'])
     return artifact
