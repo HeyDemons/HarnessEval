@@ -97,7 +97,8 @@ def expansion_prompt(parent: dict, history: list[dict], problem_type: str) -> st
 async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: dict, output: Path, *,
                    rounds: int = 20, validation_rounds: int = 5, sample: int = 4,
                    seed: int = 0, problem_type: str = "question answering",
-                   check_convergence: bool = True, max_generation_attempts: int | None = None) -> dict:
+                   check_convergence: bool = True, max_generation_attempts: int | None = None,
+                   resume: bool = False) -> dict:
     # The single public AFlow profile targets the benchmark tool lifecycle. The
     # original QA operators remain available as auxiliary nodes inside this graph.
     from .aflow_tools import make_artifact, validate_artifact
@@ -108,11 +109,50 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
         raise ValueError("check_convergence must be a boolean")
     if max_generation_attempts is not None and max_generation_attempts < 1:
         raise ValueError("max_generation_attempts must be positive or None")
-    output.mkdir(parents=True, exist_ok=False)
+    identity = {
+        "split": split,
+        "rounds": rounds,
+        "validation_rounds": validation_rounds,
+        "sample": sample,
+        "seed": seed,
+        "problem_type": problem_type,
+        "check_convergence": check_convergence,
+        "max_generation_attempts": max_generation_attempts,
+        "operator_adapter": "benchmark-tools",
+    }
+    state_path = output / "search.json"
+    if resume:
+        if not output.is_dir() or not (output / "history.json").is_file():
+            raise ValueError("AFlow resume requires an existing search history")
+        history = json.loads((output / "history.json").read_text())
+        generations = json.loads((output / "generations.json").read_text()) if (output / "generations.json").is_file() else []
+        if (not isinstance(history, list) or not history
+                or [row.get("round") for row in history] != list(range(1, len(history) + 1))):
+            raise ValueError("AFlow resume history must contain contiguous rounds starting at one")
+        if state_path.is_file():
+            state = json.loads(state_path.read_text())
+            if state.get("identity") != identity:
+                raise ValueError("AFlow resume configuration differs from the original search")
+        else:
+            # Search directories created before resumable metadata existed are
+            # accepted only through the explicit flag; main_async still checks
+            # their optimization-only manifest against the requested split.
+            state = {"identity": identity, "legacy_resume": True, "resume_count": 0}
+        state["resume_count"] = int(state.get("resume_count", 0)) + 1
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+        history: list[dict] = []
+        generations: list[dict] = []
+        state = {"identity": identity, "legacy_resume": False, "resume_count": 0}
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
     rng = random.Random(seed)
-    history: list[dict] = []
-    generations: list[dict] = []
-    stopped = {"converged": False, "start_round": None, "final_round": None}
+    if resume:
+        # Weighted random selection consumes one random draw per generation
+        # attempt. Replay them so future parent choices remain deterministic.
+        for _ in generations:
+            rng.random()
+    stopped = convergence(history)
 
     async def assess(artifact: dict) -> tuple[float, list]:
         scores, feedback = [], []
@@ -127,39 +167,60 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
                 feedback.append(result["feedback"])
         return sum(scores) / len(scores), feedback
 
-    artifact = make_artifact()
-    score, feedback = await assess(artifact)
-    history.append({"round": 1, "parent": None, "modification": "initialization", "artifact": artifact,
-                    "score": score, "feedback": feedback})
-    (output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
-    for round_id in range(2, rounds + 2):
-        attempt = 0
-        while True:
-            if max_generation_attempts is not None and attempt >= max_generation_attempts:
-                raise RuntimeError("AFlow same-round generation budget exhausted")
-            attempt += 1
-            # The pinned optimizer reselects the parent inside the regeneration loop.
-            candidates = sorted((row for row in history if row.get("score") is not None),
-                                key=lambda row: (-row["score"], row["round"]))[:sample]
-            parent = rng.choices(candidates, selection_probabilities([row["score"] for row in candidates]))[0]
-            row = {"round": round_id, "parent": parent["round"], "modification": "", "score": None}
-            # Provider failures remain missing measurements, never failed candidates.
-            reply = await client.complete([{"role": "user", "content": expansion_prompt(parent, history, problem_type)}])
-            (output / f"expansion-{round_id}-attempt-{attempt}.txt").write_text(reply.content)
+    if not resume:
+        artifact = make_artifact()
+        score, feedback = await assess(artifact)
+        history.append({"round": 1, "parent": None, "modification": "initialization", "artifact": artifact,
+                        "score": score, "feedback": feedback})
+        (output / "history.json").write_text(json.dumps(history, indent=2) + "\n")
+    start_round = history[-1]["round"] + 1
+    pending_convergence = check_convergence and stopped["converged"]
+    for round_id in (() if pending_convergence else range(start_round, rounds + 2)):
+        accepted = [item for item in generations
+                    if item.get("round") == round_id and item.get("rejection") is None]
+        if len(accepted) > 1:
+            raise ValueError(f"AFlow round {round_id} has multiple accepted expansions")
+        if accepted:
+            pending = output / f"expansion-{round_id}.txt"
+            if not pending.is_file():
+                raise ValueError(f"AFlow round {round_id} is missing its accepted expansion")
+            content = pending.read_text()
             fields = {key: match.group(1).strip() for key in ("graph", "prompt", "modification")
-                      if (match := re.search(fr"<{key}>(.*?)</{key}>", reply.content, re.DOTALL))}
-            modification = fields.get("modification", "")
-            repeated = any(r.get("parent") == parent["round"] and r["modification"] == modification
-                           for r in history)
-            retry = "empty_modification" if not modification else "repeated_modification" if repeated else None
-            generations.append({"round": round_id, "attempt": attempt, "parent": parent["round"],
-                                "modification": modification, "rejection": retry,
-                                "prompt_tokens": reply.prompt_tokens, "completion_tokens": reply.completion_tokens,
-                                "elapsed_seconds": reply.elapsed_seconds, "transport_retries": reply.transport_retries})
-            (output / "generations.json").write_text(json.dumps(generations, indent=2) + "\n")
-            if retry is None:
-                break
-        (output / f"expansion-{round_id}.txt").write_text(reply.content)
+                      if (match := re.search(fr"<{key}>(.*?)</{key}>", content, re.DOTALL))}
+            parent = next((item for item in history if item["round"] == accepted[0]["parent"]), None)
+            if parent is None:
+                raise ValueError(f"AFlow round {round_id} refers to a missing parent")
+            row = {"round": round_id, "parent": parent["round"], "modification": "", "score": None,
+                   "resumed_pending_evaluation": True}
+        else:
+            prior_attempts = [item for item in generations if item.get("round") == round_id]
+            attempt = max((item.get("attempt", 0) for item in prior_attempts), default=0)
+            while True:
+                if max_generation_attempts is not None and attempt >= max_generation_attempts:
+                    raise RuntimeError("AFlow same-round generation budget exhausted")
+                attempt += 1
+                # The pinned optimizer reselects the parent inside the regeneration loop.
+                candidates = sorted((item for item in history if item.get("score") is not None),
+                                    key=lambda item: (-item["score"], item["round"]))[:sample]
+                parent = rng.choices(candidates, selection_probabilities([item["score"] for item in candidates]))[0]
+                row = {"round": round_id, "parent": parent["round"], "modification": "", "score": None}
+                # Provider failures remain missing measurements, never failed candidates.
+                reply = await client.complete([{"role": "user", "content": expansion_prompt(parent, history, problem_type)}])
+                (output / f"expansion-{round_id}-attempt-{attempt}.txt").write_text(reply.content)
+                fields = {key: match.group(1).strip() for key in ("graph", "prompt", "modification")
+                          if (match := re.search(fr"<{key}>(.*?)</{key}>", reply.content, re.DOTALL))}
+                modification = fields.get("modification", "")
+                repeated = any(item.get("parent") == parent["round"] and item["modification"] == modification
+                               for item in history)
+                retry = "empty_modification" if not modification else "repeated_modification" if repeated else None
+                generations.append({"round": round_id, "attempt": attempt, "parent": parent["round"],
+                                    "modification": modification, "rejection": retry,
+                                    "prompt_tokens": reply.prompt_tokens, "completion_tokens": reply.completion_tokens,
+                                    "elapsed_seconds": reply.elapsed_seconds, "transport_retries": reply.transport_retries})
+                (output / "generations.json").write_text(json.dumps(generations, indent=2) + "\n")
+                if retry is None:
+                    break
+            (output / f"expansion-{round_id}.txt").write_text(reply.content)
         try:
             for key in ("graph", "prompt", "modification"):
                 if key not in fields:
@@ -172,6 +233,7 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
             row.update(artifact=artifact, modification=fields["modification"])
         except (ValueError, SyntaxError) as exc:
             row["error_type"] = type(exc).__name__
+            row["error"] = str(exc)
         else:
             row["score"], row["feedback"] = await assess(artifact)
         history.append(row)
@@ -183,7 +245,7 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
     frozen = make_artifact(best["artifact"]["graph"], best["artifact"]["prompt"], provenance={
         "kind": "optimized", "source_revision": REVISION, **split,
         "validation_score": best["score"], "selected_round": best["round"],
-        "search_history_sha256": digest(history), "optimizer": "aflow-score-mixture-python-v2",
+        "search_history_sha256": digest(history), "optimizer": "aflow-score-mixture-python-v3-resumable",
         "generations_sha256": digest(generations), "generation_calls": len(generations),
         "optimization_config": provider_identity(client),
         "seed": seed, "rounds": rounds, "validation_rounds": validation_rounds, "sample": sample,
@@ -191,6 +253,7 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
         "stop_reason": "converged" if check_convergence and stopped["converged"] else "round_budget",
         "convergence": stopped, "max_generation_attempts": max_generation_attempts,
         "operator_adapter": "benchmark-tools",
+        "resume_count": state["resume_count"],
     })
     validate_artifact(frozen)
     (output / "frozen.json").write_text(json.dumps(frozen, indent=2) + "\n")
@@ -206,9 +269,17 @@ async def main_async(args):
     counter = 0
     # Do not pass evaluation IDs to the evaluator or optimizer prompts.
     evaluations = args.output.with_name(args.output.name + "-evaluations")
-    evaluations.mkdir(parents=True, exist_ok=False)
+    evaluations.mkdir(parents=True, exist_ok=args.resume)
     opt_manifest = evaluations / "optimization-cases.json"
-    opt_manifest.write_text(json.dumps({"benchmark": split["benchmark"], "case_ids": split["optimization_case_ids"]}))
+    expected_manifest = {"benchmark": split["benchmark"], "case_ids": split["optimization_case_ids"]}
+    if args.resume:
+        if not opt_manifest.is_file() or json.loads(opt_manifest.read_text()) != expected_manifest:
+            raise ValueError("AFlow resume split differs from the existing optimization manifest")
+        existing = [int(match.group(1)) for path in evaluations.glob("candidate-*.json")
+                    if (match := re.fullmatch(r"candidate-(\d+)\.json", path.name))]
+        counter = max(existing, default=0)
+    else:
+        opt_manifest.write_text(json.dumps(expected_manifest))
 
     async def evaluate(artifact):
         nonlocal counter
@@ -233,7 +304,7 @@ async def main_async(args):
     await optimize(completion_client_from_env(), evaluate, split, args.output, rounds=args.rounds,
                    validation_rounds=args.validation_rounds, sample=args.sample, seed=args.seed,
                    problem_type=args.problem_type, check_convergence=args.check_convergence,
-                   max_generation_attempts=args.max_generation_attempts)
+                   max_generation_attempts=args.max_generation_attempts, resume=args.resume)
     print(str(args.output / "frozen.json"))
 
 
@@ -251,6 +322,7 @@ def main():
     parser.add_argument("--max-generation-attempts", type=int,
                         help="Optional per-round regeneration cap; unset matches the upstream unbounded loop")
     parser.add_argument("--evaluation-timeout", type=int, default=900)
+    parser.add_argument("--resume", action="store_true")
     asyncio.run(main_async(parser.parse_args()))
 
 

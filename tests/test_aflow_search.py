@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 import tempfile
@@ -99,3 +100,40 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
                 await optimize(Client([]), evaluate, SPLIT, target)
             self.assertFalse((target / "frozen.json").exists())
+
+    async def test_resume_retries_pending_evaluation_without_regenerating(self):
+        calls = 0
+        async def interrupted(artifact):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {"score": .2}
+            raise RuntimeError("provider unavailable")
+        reply = (
+            f"<graph>{INITIAL_GRAPH}\n# pending</graph>"
+            f"<prompt>{INITIAL_PROMPT}</prompt><modification>pending-change</modification>"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "search"
+            with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
+                await optimize(Client([reply]), interrupted, SPLIT, target,
+                               rounds=1, validation_rounds=1)
+            self.assertEqual(len(json.loads((target / "history.json").read_text())), 1)
+            self.assertTrue((target / "expansion-2.txt").is_file())
+
+            resumed_client = Client([])
+            result = await optimize(
+                resumed_client,
+                lambda artifact: asyncio.sleep(0, result={"score": .9}),
+                SPLIT,
+                target,
+                rounds=1,
+                validation_rounds=1,
+                resume=True,
+            )
+            history = json.loads((target / "history.json").read_text())
+            self.assertEqual([row["round"] for row in history], [1, 2])
+            self.assertTrue(history[1]["resumed_pending_evaluation"])
+            self.assertEqual(result["provenance"]["selected_round"], 2)
+            self.assertEqual(result["provenance"]["resume_count"], 1)
+            self.assertEqual(resumed_client.messages, [])
