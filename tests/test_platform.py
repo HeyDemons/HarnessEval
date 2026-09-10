@@ -449,8 +449,7 @@ class PlatformTests(unittest.TestCase):
             self.assertTrue(all(row["runnable"] for row in state_graded), benchmark)
             self.assertEqual(
                 {row["baseline_requirement"] for row in state_graded},
-                {"published_method_has_no_external_tool_loop",
-                 "frozen_workflow_from_disjoint_optimization_split"},
+                {"published_method_has_no_external_tool_loop"},
             )
         # tau2 is the deliberate exception: 7 of its 60 light cases require zero actions and
         # a text-only reply still becomes a graded assistant turn, so it stays eligible.
