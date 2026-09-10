@@ -2,40 +2,44 @@
 
 ## BFCL single-turn declarations
 
-The frozen single-turn BFCL suite scores one outward agent response. Native
-profiles `actor-only`, `react`, and `sa` generate that response directly and
-preserve its complete native call batch. SA makes no Speculator call because
-BFCL never executes a function. `multi-persona` retains its one-call text-only
-SPP protocol without function tools.
+The frozen 65-case comparison runs each eligible baseline's complete internal
+protocol. Tool-capable methods receive the function schemas and a final-output
+contract at the start: the method's own final response must contain exactly one
+`<BFCL_DECLARATIONS>` JSON list with the complete batch. The deterministic
+`bfcl-method-final-declarations-v1` publisher parses and records that existing
+response without making another model call. Planner, worker, router, memory and
+consensus calls remain part of their respective methods. LATS remains outside
+the experiment because the suite provides neither its published online reward
+nor branch snapshots.
 
-Multi-model profiles keep their complete internal planner/worker/orchestrator
-calls. Their declaration-only actions never execute. The bridge aggregates the
-actions selected by those internal roles into the system's single outward
-declaration batch and records every source response id. This is reported as
-`multi-model-declaration-aggregation-v1`; it is a benchmark output adapter, not
-a claim that all declarations came from one provider response. Internal model
-calls remain in cost/turn metrics and are not charged as extra BFCL dialogue
-turns. LATS remains outside the experiment because the suite provides neither
-its published online reward nor branch snapshots.
+BFCL functions never execute. Calls selected during internal reasoning are
+recorded as `proposal_calls` with `tool_proposal_request/result` trace events and
+receive a local acknowledgement containing no environment information. Only
+the declaration list explicitly returned by the method becomes
+`committed_calls`; proposals are never unioned, deduplicated, corrected or
+relabeled as the answer. Repeated entries in the method-final batch therefore
+reach the official scorer unchanged. Multi-Persona receives neither tool schema
+nor declaration-output instruction and publishes an empty call batch under its
+original no-external-tools contract.
 
-The response boundary is frozen even for an empty batch. A second generation
-cannot search for a later call. The tool environment returns local declaration
-acknowledgements without invoking handlers/subprocesses. Malformed batches are
-parsed before publication. Unexpected exceptions after declaration remain
-failed measurements; only an expected lifecycle stop counts as completion.
-
-Results include committed_response_id, source_response_ids,
-external_assistant_responses, declaration_protocol and environment_calls=0.
-The native single-response path still forbids merging or relabeling isolated
-records.
+The method-final response boundary is frozen even for an empty batch. Malformed
+batches are parsed before any call is committed. Results include
+`committed_response_id`, `publication_source_response_id`,
+`proposal_response_ids`, `internal_llm_calls`, `publisher_llm_calls=0`,
+`external_assistant_responses=1` and `environment_calls=0`. SA runs its independent Speculator and Actor protocol
+before publication. Every declared function is safe only for an isolated local
+proposal acknowledgement: no real function executes and no observation enters
+Actor memory. Thus SA exercises prediction/adoption but cannot hide real
+environment latency; this boundary is explicit in measurement identity.
 Outside BFCL, LATS retains each proposal's source ID; explicit SA adoption keeps
 both the speculative source ID and authoritative Actor ID.
 
-The workspace runner stamps the new protocol on native baseline measurement
-identities. Old BFCL results cannot silently resume under it. PERSEUS's product
-adapter is unchanged. Historical summaries remain included in merged reports
-even if a method is no longer runnable. These rules are specific to the current
-single-turn suite, not future stateful BFCL categories or native conversations.
+The workspace runner stamps the method-final protocol on every eligible baseline
+measurement identity. Old BFCL results cannot silently resume under it.
+Historical summaries remain included in merged
+reports even if a method is no longer runnable. These rules are specific to the
+current single-turn suite, not future stateful BFCL categories or native
+conversations.
 
 Reference: [Inspect Evals single-turn solver](https://github.com/UKGovernmentBEIS/inspect_evals/blob/ac481c7a7b4fb05d6befdfea59b47fc61b839a4f/src/inspect_evals/bfcl/solve/single_turn_solver.py).
 The reference informs generation/execution boundaries, not a replacement scorer.
@@ -63,7 +67,7 @@ This portable local stop supports reasoning/Responses providers without a
 compatible server-side stop parameter. Raw output and all provider usage remain
 in the trace. It corrects consumed-output semantics, not generation latency or
 tokens spent after the marker. The react_observation_stop event records both
-lengths. BFCL uses the separate native declaration adapter described above.
+lengths. On BFCL, ReAct's own Final Answer carries the declaration list described above.
 
 Reference: [ReAct notebook](https://github.com/ysymyth/ReAct/blob/6bdb3a1fd38b8188fc7ba4102969fe483df8fdc9/hotpotqa.ipynb).
 
@@ -176,8 +180,8 @@ LLMCompiler's non-streaming planner and SA's source-like waiting are declared
 configurations/adaptations, not modifications made in this correction.
 
 LATS still lacks an applicable batch environment with the required branching
-isolation and legitimate online reward. After rejecting BFCL's single-response
-lifecycle, no current batch benchmark is runnable for it. Its standalone
+isolation and legitimate online reward. It remains excluded from the BFCL-65
+method comparison and every other current batch benchmark. Its standalone
 model-value fallback is an adaptation; sequential proposal requests do not have
 the source's batched-sampling latency. Do not expose hidden gold to make it
 runnable or report these configurations as equivalent latency measurements.

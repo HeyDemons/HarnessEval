@@ -38,7 +38,11 @@ from benchmark_platform.harnesses.core import JsonlTrace, RunContext, ToolEnviro
 from benchmark_platform.harnesses.content import WIRE_IMAGE_MARKER, json_safe, wire_tool_result
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import PROFILES
-from benchmark_platform.harnesses.declaration import SINGLE_TURN_PROFILES
+from benchmark_platform.harnesses.declaration import (
+    DECLARATIONS_CLOSE,
+    DECLARATIONS_OPEN,
+    PUBLISHER_PROTOCOL,
+)
 from benchmark_platform.budgets import baseline_limits
 
 
@@ -132,6 +136,45 @@ RESPONSES = {
     ],
     "sa": ['{"final":"ok"}'],
 }
+
+
+def bfcl_declaration_text(*ids: str) -> str:
+    return DECLARATIONS_OPEN + json.dumps([
+        {"name": "lookup_item", "arguments": {"id": value}}
+        for value in ids
+    ]) + DECLARATIONS_CLOSE
+
+
+def bfcl_responses(profile_id: str) -> list:
+    block = bfcl_declaration_text("ok")
+    responses = list(RESPONSES[profile_id])
+    if profile_id in {"actor-only", "sa"}:
+        return [json.dumps({"final": block})]
+    if profile_id == "react":
+        return [f"Thought: complete\nFinal Answer: {block}"]
+    if profile_id == "plan-execute":
+        responses[-1] = json.dumps({"final": block})
+    elif profile_id == "cmas":
+        responses[-1] = json.dumps({"final": block})
+    elif profile_id == "dmas":
+        responses[-1] = json.dumps({"final": block})
+    elif profile_id == "memgpt":
+        responses[-1] = json.dumps({
+            "thought": "complete",
+            "function": "send_message",
+            "arguments": {"message": block},
+        })
+    elif profile_id == "aflow":
+        responses[-1] = json.dumps({"final": block})
+    elif profile_id == "dylan":
+        responses = [json.dumps({"final": block})] * 4
+    elif profile_id == "magentic-one":
+        responses[-1] = block
+    elif profile_id == "llmcompiler":
+        responses[-1] = json.dumps({"action": "finish", "answer": block})
+    elif profile_id == "rewoo":
+        responses[-1] = block
+    return responses
 
 
 def write_json(path: Path, value) -> None:
@@ -323,14 +366,13 @@ class BridgeMatrixTests(unittest.TestCase):
 
 
     def test_bfcl_keeps_parallel_calls_from_one_assistant_response(self) -> None:
-        async def one_response_batch(context):
+        async def internal_work(context):
             await context.complete("planner", [{"role": "user", "content": "plan"}])
             await asyncio.gather(
                 context.environment.call("lookup_item", {"id": "a"}),
                 context.environment.call("lookup_item", {"id": "b"}),
             )
-            await context.complete("must_not_run", [{"role": "user", "content": "again"}])
-            raise AssertionError("unreachable")
+            return await context.complete("method-final", [{"role": "user", "content": "finish"}])
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -339,16 +381,17 @@ class BridgeMatrixTests(unittest.TestCase):
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            client = RecordingClient(["planned", "must-not-run"])
+            client = RecordingClient(["planned", bfcl_declaration_text("a", "b")])
             with (
                 patch.object(bridge_runner, "completion_client_from_env", return_value=client),
-                patch.object(bridge_runner, "run_profile", new=one_response_batch),
+                patch.object(bridge_runner, "run_profile", new=internal_work),
             ):
                 result = asyncio.run(
-                    bridge_runner.execute("bfcl", "actor-only", "case", source, job, {})
+                    bridge_runner.execute("bfcl", "llmcompiler", "case", source, job, {})
                 )
 
-        self.assertEqual(len(client.requests), 1)
+        self.assertEqual(len(client.requests), 2)
+        self.assertEqual(len(result["proposal_calls"]), 2)
         self.assertEqual(
             result["committed_calls"],
             [
@@ -357,12 +400,12 @@ class BridgeMatrixTests(unittest.TestCase):
             ],
         )
 
-    def test_bfcl_aggregates_multi_agent_internal_calls_into_one_system_response(self) -> None:
+    def test_bfcl_scores_only_the_final_publisher_not_internal_calls(self) -> None:
         async def two_internal_responses(context):
             for value in ("a", "b"):
                 await context.complete("worker", [{"role": "user", "content": value}])
                 await context.environment.call("lookup_item", {"id": value})
-            return "workers completed"
+            return await context.complete("method-final", [{"role": "user", "content": "finish"}])
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -370,23 +413,69 @@ class BridgeMatrixTests(unittest.TestCase):
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            client = RecordingClient(["first", "second"])
+            client = RecordingClient(["first", "second", bfcl_declaration_text("final")])
             with patch.object(bridge_runner, "completion_client_from_env", return_value=client), \
                  patch.object(bridge_runner, "run_profile", new=two_internal_responses):
                 result = asyncio.run(
                     bridge_runner.execute("bfcl", "llmcompiler", "case", source, job,
                                           baseline_limits("bfcl"))
                 )
+            events = [
+                json.loads(line)
+                for line in (job / "harness_trace.jsonl").read_text().splitlines()
+            ]
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["llm_calls"], 2)
+        self.assertEqual(result["llm_calls"], 3)
+        self.assertEqual(result["internal_llm_calls"], 3)
+        self.assertEqual(result["publisher_llm_calls"], 0)
         self.assertEqual(result["external_assistant_responses"], 1)
         self.assertEqual(result["environment_calls"], 0)
-        self.assertEqual(result["declaration_protocol"], "multi-model-declaration-aggregation-v1")
-        self.assertEqual(result["source_response_ids"], [1, 2])
+        self.assertEqual(result["declaration_protocol"], PUBLISHER_PROTOCOL)
+        self.assertEqual(result["proposal_response_ids"], [1, 2])
         self.assertEqual(
-            [(call["name"], call["arguments"]) for call in result["committed_calls"]],
+            [(call["name"], call["arguments"]) for call in result["proposal_calls"]],
             [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "b"})],
         )
+        self.assertEqual(
+            [(call["name"], call["arguments"]) for call in result["committed_calls"]],
+            [("lookup_item", {"id": "final"})],
+        )
+        self.assertIn("BFCL_DECLARATIONS", str(client.requests[-1]))
+        self.assertEqual(sum(row["event"] == "tool_proposal_request" for row in events), 2)
+        self.assertEqual(sum(row["event"] == "tool_request" for row in events), 1)
+
+    def test_bfcl_bounds_agent_loops_and_preserves_publisher_duplicates(self) -> None:
+        async def repeats_one_declaration(context):
+            for _ in range(3):
+                await context.complete("executor", [{"role": "user", "content": "go"}])
+                await context.environment.call("lookup_item", {"id": "a"})
+            return await context.complete("method-final", [{"role": "user", "content": "finish"}])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = RecordingClient(
+                ["first", "second", "third", bfcl_declaration_text("a", "a")]
+            )
+            with patch.object(bridge_runner, "completion_client_from_env", return_value=client), \
+                 patch.object(bridge_runner, "run_profile", new=repeats_one_declaration):
+                result = asyncio.run(
+                    bridge_runner.execute("bfcl", "plan-execute", "case", source, job,
+                                          baseline_limits("bfcl"))
+                )
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(len(result["proposal_calls"]), 3)
+        self.assertEqual(
+            [(call["name"], call["arguments"]) for call in result["committed_calls"]],
+            [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "a"})],
+        )
+        self.assertEqual(result["tool_calls"], 2)
+        self.assertNotIn("model_response_limit", result["policy"])
+        self.assertEqual(result["policy"]["max_turns"], 6)
+        self.assertLess(result["policy"]["max_turns"], baseline_limits("bfcl")["max_turns"])
 
 
 
@@ -786,7 +875,12 @@ class BridgeMatrixTests(unittest.TestCase):
 
     def test_all_profiles_use_production_workspace_and_declaration_wiring(self) -> None:
         async def exercise(root: Path, benchmark: str, profile_id: str):
-            client = RecordingClient(list(RESPONSES[profile_id]))
+            responses = (
+                bfcl_responses(profile_id)
+                if benchmark == "bfcl"
+                else list(RESPONSES[profile_id])
+            )
+            client = RecordingClient(responses)
             policy = baseline_limits(benchmark)
             if profile_id == "aflow":
                 from benchmark_platform.harnesses.aflow_tools import make_artifact
@@ -818,13 +912,18 @@ class BridgeMatrixTests(unittest.TestCase):
                             continue
                         result, client = asyncio.run(exercise(root, benchmark, profile.id))
                         self.assertEqual(result["status"], "completed", result.get("error"))
-                        self.assertTrue(result["final_answer"])
                         if benchmark == "bfcl":
                             self.assertEqual(result["environment_calls"], 0)
-                            expected = ("native-single-response-v1" if profile.id in SINGLE_TURN_PROFILES
-                                        else "multi-model-declaration-aggregation-v1")
-                            self.assertEqual(result["declaration_protocol"], expected)
+                            self.assertEqual(result["declaration_protocol"], PUBLISHER_PROTOCOL)
                             self.assertEqual(result["external_assistant_responses"], 1)
+                            self.assertEqual(result["publisher_llm_calls"], 0)
+                            expected_calls = 0 if profile.tool_contract == "no-external-tools" else 1
+                            self.assertEqual(len(result["committed_calls"]), expected_calls)
+                            if profile.id == "sa":
+                                self.assertEqual(result["speculator_llm_calls"], 1)
+                                self.assertEqual(result["internal_llm_calls"], 2)
+                        else:
+                            self.assertTrue(result["final_answer"])
                         tool_name = load_case(benchmark, "case", root).tools[0].name
                         transcript = json.dumps(
                             {"requests": client.requests, "native_tools": client.native_tools},

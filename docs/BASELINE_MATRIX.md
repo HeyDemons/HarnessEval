@@ -31,8 +31,8 @@ nowhere. See [baseline protocol corrections](BASELINE_PROTOCOLS.md).
 
 | Profile | Tool contract | Fidelity boundary |
 | --- | --- | --- |
-| Actor-only | Dynamic | Native API-tool loop on AutomationBench; single native declaration on BFCL; JSON control on other bridges |
-| ReAct | Dynamic | Batch default: native serial tool loop with explicit finish; optional text protocol with local Observation stop; separate single-response adapter on BFCL |
+| Actor-only | Dynamic | Native API-tool loop on AutomationBench; JSON proposal loop whose own final response declares the BFCL batch; JSON control on other bridges |
+| ReAct | Dynamic | Batch default: native serial tool loop with explicit finish; optional text protocol with local Observation stop; BFCL parses declarations from ReAct's own final answer |
 | Plan-and-Execute | Dynamic | Minimal planner; sequential executors receive the original objective, previous steps and current objective (the source's optional include_task_in_prompt mode); last step response is returned |
 | CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
@@ -72,10 +72,12 @@ failure. Exposing hidden user scenarios as prompts, replacing task containers
 with text questions, or silently giving either method a ReAct loop would produce
 an easier but invalid comparison.
 
-BFCL single-turn accepts actor-only, ReAct, SA and text-only SPP. Multi-response
-methods are gated instead of truncated or merged into one response. LATS also
-lacks a branch-safe environment on the other batch benchmarks, so there is
-currently no runnable batch benchmark for it. See [protocol corrections](BASELINE_PROTOCOLS.md).
+BFCL single-turn asks every tool-capable profile to emit the complete declaration
+list in its own final response. A deterministic, zero-model publisher validates
+that list; internal calls are non-executed proposals and remain separate from
+the published response. Multi-Persona receives no schema. LATS is gated because the suite has neither its
+published online reward nor branch snapshots. See
+[protocol corrections](BASELINE_PROTOCOLS.md).
 
 The generic harness does not expose hidden benchmark answers to a baseline
 during execution. LATS therefore uses its language-model value evaluations for

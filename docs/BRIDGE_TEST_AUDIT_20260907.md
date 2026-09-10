@@ -1,5 +1,10 @@
 # Bridge contract test review — 2026-09-07
 
+> Historical audit note: the later 65-case method-comparison contract replaced
+> both paths below with `bfcl-method-final-declarations-v1`. Internal calls are
+> proposal-only and only declarations explicitly present in the method's own
+> final response are scored; publication makes no model call.
+
 Scope: BFCL, Tau2, AutomationBench, GAIA and Terminal-Bench-2; plus a
 defensive rejection check for LATS/Trajectory-Bench. No Perseus execution,
 VitaBench integration work, algorithm changes or scoring changes.
@@ -10,9 +15,8 @@ VitaBench integration work, algorithm changes or scoring changes.
    ToolEnvironment without declaration-only wiring. It therefore exercised a
    different lifecycle and accepted eleven multi-response profiles. The matrix
    now calls `bridges.runner.execute`. A later all-baseline campaign added the
-   explicit multi-model declaration aggregation protocol; the matrix now checks
-   that protocol separately from native single-response methods and preserves
-   zero environment executions in both paths.
+   explicit multi-model declaration aggregation protocol. That intermediate
+   protocol was subsequently retired by the publisher contract noted above.
 2. **Tau2 broker fixture: confirmed.** An unmarked lookup never enabled SA
    speculation. The fixture now exposes a parallel read-only lookup and asserts
    that a broker without a native isolation adapter fails before model calls or

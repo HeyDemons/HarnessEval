@@ -20,6 +20,11 @@ from benchmark_platform.harnesses.core import (
     normalize_json_schema,
 )
 from benchmark_platform.harnesses.methods import run_profile
+from benchmark_platform.harnesses.declaration import (
+    DECLARATIONS_CLOSE,
+    DECLARATIONS_OPEN,
+    publish_method_declaration,
+)
 from benchmark_platform.harnesses.rewoo import parse_rewoo_plan
 
 
@@ -195,17 +200,26 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(metrics["llm_calls"], 5)
 
     def test_agent_turns_counts_a_parallel_action_set_once(self) -> None:
-        # BFCL returns directly after its one response declares a parallel batch.
+        # Deterministic BFCL publication adds no generation to the method's final turn.
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            environment = ToolEnvironment(tool_specs(), trace, declaration_only=True)
-            message = native_tool_call("lookup", {"key": "alpha"})
-            message["tool_calls"].append({"id": "call-2", "type": "function", "function": {
-                "name": "multiply", "arguments": '{"a":6,"b":7}'}})
+            environment = ToolEnvironment(tool_specs(), trace, proposal_only=True)
+            output = DECLARATIONS_OPEN + json.dumps([
+                {"name": "lookup", "arguments": {"key": "alpha"}},
+                {"name": "multiply", "arguments": {"a": 6, "b": 7}},
+            ]) + DECLARATIONS_CLOSE
             context = RunContext(
-                "actor-only", "p", ScriptedClient([message]), environment, trace, {"max_turns": 8}
+                "actor-only", "p", ScriptedClient([output]), environment, trace, {"max_turns": 8}
             )
-            asyncio.run(run_profile(context))
+            async def publish():
+                method_output = await context.complete("method-final", [{"role": "user", "content": "p"}])
+                await publish_method_declaration(
+                    context,
+                    method_output=method_output,
+                    proposal_calls=[],
+                    tool_capable=True,
+                )
+            asyncio.run(publish())
             self.assertEqual(len(environment.calls), 2)
             self.assertEqual(context.agent_turns, 1)
 
@@ -818,7 +832,7 @@ class HarnessTests(unittest.TestCase):
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
             environment = ToolEnvironment(tool_specs(), trace, declaration_only=True)
             context = RunContext("lats", "declare calls", ScriptedClient([]), environment, trace, {})
-            with self.assertRaisesRegex(ValueError, "multi-response"):
+            with self.assertRaisesRegex(ValueError, "LATS.*publisher"):
                 asyncio.run(run_profile(context))
             self.assertEqual(context.llm_calls, 0)
             self.assertEqual(environment.calls, [])

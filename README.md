@@ -252,11 +252,15 @@ the lifecycle bridge exists; it does not mean the case succeeded or that a
 publishable native score is available. See
 [the baseline matrix](docs/BASELINE_MATRIX.md).
 
-The current BFCL single-turn suite uses one native response for actor-only,
-ReAct and SA; multi-response algorithms are marked incompatible. Magentic-One
-now separates specialist tools and executes code without an Executor model
-call. The workspace batch runner defaults to native-tool ReAct outside BFCL;
-`HARNESS_REACT_PROTOCOL=text` selects the corrected legacy text protocol.
+The current 65-case BFCL comparison runs every eligible baseline's internal
+protocol and requires that method's own final response to contain one complete
+declaration list. A deterministic publisher parses that list without another
+model call; internal function choices remain non-executed proposals and never
+become the answer implicitly. Multi-Persona retains its text-only, no-schema
+contract, and LATS remains incompatible. Magentic-One now separates specialist tools and executes
+code without an Executor model call. The workspace batch runner defaults to
+native-tool ReAct outside BFCL; `HARNESS_REACT_PROTOCOL=text` selects the
+corrected legacy text protocol.
 See [baseline protocol corrections](docs/BASELINE_PROTOCOLS.md).
 
 Benchmark-native limits and local timeout envelopes are resolved centrally;

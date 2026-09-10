@@ -27,20 +27,23 @@ Final-response reservations are recorded per asynchronous Actor task. MemGPT's
 repair request switches to the final-message schema if it consumes the reserved
 last slot. The processor and environment boundary both prevent a last-slot
 reply from performing a new tool action. Earlier concurrent workers retain
-their own response scope. Native user communication and BFCL declaration-only
-acknowledgements retain their existing lifecycle. Explicitly disabled
+their own response scope. Native user communication and BFCL proposal-only
+acknowledgements retain their lifecycle. On BFCL, a method's final text carries
+the complete declaration-list block and deterministic publication adds no JSON
+repair or model request. Explicitly disabled
 finalization remains disabled.
 
 The batch measurement identity records `json_reply_contract=role-schema-v2` for
 affected methods, action controllers use `external-controller-v3`, and MemGPT
 uses `source-token-pressure-v3`. Native actor-only on AutomationBench,
-native BFCL declarations and other unaffected methods do not acquire an unused
+the BFCL method-final declaration adapter and other unaffected methods do not acquire an unused
 JSON-contract identity. Old affected results require new measurements; they
 cannot silently resume as this version. Scorers, task data and official budgets
 are unchanged.
 
 `final_response_action_contract=task-local-final-slot-v1` separately versions
 the shared environment guard for baselines with a reserved final model response,
-including non-JSON planners. BFCL declaration-only and product arms are excluded.
+including non-JSON planners. BFCL's internal JSON-action profiles use this
+contract before their own method-final declaration output.
 
 API format reference: [OpenAI structured outputs](https://developers.openai.com/api/docs/guides/structured-outputs).

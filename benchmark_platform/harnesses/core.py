@@ -361,6 +361,7 @@ class ToolEnvironment:
         handlers: Mapping[str, ToolHandler] | None = None,
         *,
         declaration_only: bool = False,
+        proposal_only: bool = False,
         validate_schema: bool = True,
         isolated_calls_supported: bool = True,
         isolated_handlers: Mapping[str, ToolHandler] | None = None,
@@ -381,6 +382,7 @@ class ToolEnvironment:
         self.trace = trace
         self.calls: list[dict[str, Any]] = []
         self.declaration_only = declaration_only
+        self.proposal_only = proposal_only
         self.validate_schema = validate_schema
         # Read-only business data does not imply transcript/budget isolation.
         self.isolated_calls_supported = isolated_calls_supported
@@ -427,6 +429,40 @@ class ToolEnvironment:
             self._declaration_committed = True
             self._committed_response_id = response_id
 
+    def begin_declaration_publication(self) -> None:
+        """End proposal collection and make the next Actor response the BFCL answer."""
+
+        if self._declaration_committed:
+            raise DeclarationOnlyComplete("The declaration response is already committed")
+        self.proposal_only = False
+        self.declaration_only = True
+
+    async def publish_declaration_batch(
+        self,
+        response_id: int,
+        batch: list[tuple[str, dict[str, Any], Any]],
+    ) -> None:
+        """Commit a parsed method-final batch without making another model call."""
+
+        self.begin_declaration_publication()
+        self.commit_declaration_response(response_id)
+        token = _ASSISTANT_RESPONSE_ID.set(response_id)
+        try:
+            for name, arguments, tool_call_id in batch:
+                await self.call(name, arguments)
+                await self.trace.emit(
+                    "declaration_native_call",
+                    tool_call_id=tool_call_id,
+                    name=name,
+                    assistant_response_id=response_id,
+                )
+        finally:
+            _ASSISTANT_RESPONSE_ID.reset(token)
+
+    @property
+    def proposal_calls(self) -> list[dict[str, Any]]:
+        return [record for record in self.calls if record.get("proposal_only") is True]
+
     @property
     def committed_calls(self) -> list[dict[str, Any]]:
         if not self.declaration_only or not self._declaration_committed:
@@ -434,7 +470,8 @@ class ToolEnvironment:
         return [
             {"name": str(record["name"]), "arguments": dict(record.get("arguments") or {})}
             for record in self.calls
-            if record.get("assistant_response_id") == self._committed_response_id
+            if (record.get("assistant_response_id") == self._committed_response_id
+                and record.get("proposal_only") is not True)
         ]
 
     def _accept_declaration_call(self, response_id: int | None) -> bool:
@@ -500,8 +537,10 @@ class ToolEnvironment:
             )
             return result
         tool = self.tools.get(name)
+        proposal = self.proposal_only and not self.declaration_only
+        event_prefix = "tool_proposal" if proposal else "tool"
         await self.trace.emit(
-            "tool_request",
+            f"{event_prefix}_request",
             name=name,
             arguments=arguments,
             assistant_response_id=response_id,
@@ -526,7 +565,9 @@ class ToolEnvironment:
             finally:
                 # A failed mutating tool may have applied a partial side effect. Treat
                 # every invocation as a state boundary; invalid arguments never enter.
-                await self._leave_exclusive(mutated=not tool.read_only and not self.declaration_only)
+                await self._leave_exclusive(
+                    mutated=not tool.read_only and not self.declaration_only and not self.proposal_only
+                )
         record = {
             "name": name,
             "arguments": arguments,
@@ -534,10 +575,11 @@ class ToolEnvironment:
             "state_version_before": state_before,
             "state_version_after": self._state_version,
             "assistant_response_id": response_id,
+            "proposal_only": proposal,
         }
         self._remember_images(result)
         self.calls.append(record)
-        await self.trace.emit("tool_result", **record)
+        await self.trace.emit(f"{event_prefix}_result", **record)
         return result
 
     async def call_isolated(
@@ -623,15 +665,18 @@ class ToolEnvironment:
                     committed_response_id=self._committed_response_id,
                 )
                 continue
+            proposal = self.proposal_only and not self.declaration_only
+            record = {**record, "proposal_only": proposal}
+            event_prefix = "tool_proposal" if proposal else "tool"
             await self.trace.emit(
-                "tool_request",
+                f"{event_prefix}_request",
                 name=name,
                 arguments=arguments,
                 assistant_response_id=response_id,
             )
             self._remember_images(record["result"])
             self.calls.append(record)
-            await self.trace.emit("tool_result", **record)
+            await self.trace.emit(f"{event_prefix}_result", **record)
 
     async def _execute_isolated_read_only_call(
         self, tool: ToolSpec, arguments: dict[str, Any]
@@ -662,6 +707,7 @@ class ToolEnvironment:
             "state_version_before": state_before,
             "state_version_after": self._state_version,
             "assistant_response_id": _ASSISTANT_RESPONSE_ID.get(),
+            "proposal_only": self.proposal_only and not self.declaration_only,
         }
         return record
 
@@ -718,6 +764,9 @@ class ToolEnvironment:
         if self.declaration_only:
             from ..bridges.bfcl import declaration_only_result
             return {"ok": True, "result": declaration_only_result(tool.name, arguments)}
+        if self.proposal_only:
+            from ..bridges.bfcl import proposal_only_result
+            return {"ok": True, "result": proposal_only_result(tool.name, arguments)}
         if handler := self.handlers.get(tool.name):
             try:
                 value = await handler(arguments)

@@ -182,3 +182,23 @@ def declaration_only_result(function_name: str, arguments: dict[str, Any]) -> di
             "does not execute the functions, and does not permit a later assistant turn."
         ),
     }
+
+
+def proposal_only_result(function_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Acknowledge an internal BFCL candidate without publishing or executing it."""
+
+    return {
+        "recorded_function_proposal": function_name,
+        "arguments": arguments,
+        # MemGPT uses this marker to schedule its normal follow-up heartbeat without
+        # adding request_heartbeat to the benchmark-owned function schema.
+        "declaration_only": True,
+        "proposal_only": True,
+        "execution": "not_run",
+        "terminate": False,
+        "instruction": (
+            "This is an internal candidate for the final BFCL answer. It was not executed "
+            "or published and contains no environment observation. Continue the method, remember all required "
+            "calls, and place the complete batch in your own final BFCL_DECLARATIONS block."
+        ),
+    }
