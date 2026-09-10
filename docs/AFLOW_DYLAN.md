@@ -6,24 +6,30 @@ task-specific experiment in the papers.
 
 ## AFlow
 
-`aflow` executes a frozen **Python** `Workflow`, not a list of operator names.
-It preserves data dependencies, custom instructions, loops, and conditions.
-For tool benchmarks, the public `aflow` method uses the capability-limited
-ToolSession/ToolDecision adaptation described in [AFLOW_TOOLS.md](AFLOW_TOOLS.md).
-There is no separate runnable `aflow-tools` method.
+`aflow` first reproduces the pinned FoundationAgents/AFlow optimizer and
+dataset-profiled operator library. Benchmark integration is a second layer.
+It executes a frozen **Python** `Workflow`, preserving data dependencies,
+custom prompts, loops and conditions; an operator-name list is not an AFlow
+graph.
 
-The supported operator library is FoundationAgents/AFlow
-`3f457218fc716093fe53f6df8a5d5e6379d66346`, HotpotQA:
+The supported official operator profiles at FoundationAgents/AFlow
+`3f457218fc716093fe53f6df8a5d5e6379d66346` are:
 
-- `Custom(input, instruction)` makes one plain text generation with the literal
-  concatenation `instruction + input` and returns `{"response": text}`.
-- `AnswerGenerate(input)` uses its own prompt and XML `thought`/`answer` fields.
-- `ScEnsemble(solutions)` selects a candidate letter and returns that original
-  solution. An invalid letter is an error, never a newly invented answer.
+| Profile | Official datasets | Operators |
+| --- | --- | --- |
+| `qa` | HotpotQA, DROP | Custom, AnswerGenerate, ScEnsemble |
+| `math` | MATH, GSM8K | Custom, Programmer, ScEnsemble |
+| `code` | MBPP, HumanEval | Custom, CustomCodeGenerate, ScEnsemble, Test |
 
-The pinned QA operators themselves have no benchmark tool loop. Tool access is
-provided only by the explicit ToolSession/ToolDecision adaptation; arbitrary
-dynamic Python capabilities are not exposed. Monetary cost
+Their union is six classes, but the upstream optimizer never exposes all six
+to every dataset. `Programmer` execution and `Test` public cases are disabled
+unless an isolated public-test sandbox explicitly enables them. Hidden
+benchmark verifiers are never operator inputs.
+
+For Tau2, AutomationBench and Terminal-Bench, the public method consumes an
+artifact with operator profile `benchmark-tools`. That secondary adapter adds
+ToolSession/ToolDecision as documented in [AFLOW_TOOLS.md](AFLOW_TOOLS.md); it
+does not relabel those operators as official AFlow. Monetary cost
 is unknown (`None`); provider token usage is recorded by RunContext. The default
 operator budget is 100 calls, configurable as `aflow_max_operator_calls`; the
 outer benchmark deadline still applies. XML parsing preserves upstream optional
@@ -34,7 +40,9 @@ transport retries use HarnessEval's configured retry policy.
 ### Offline search and freezing
 
 `python -m benchmark_platform.harnesses.aflow_search --help` exposes the search
-driver. It implements the pinned optimizer's top-score parent pool, mixed
+driver. Official profiles are selected by `--operator-profile qa|math|code`;
+the separate integration profile is `benchmark-tools`. It implements the
+pinned optimizer's top-score parent pool, mixed
 uniform/softmax selection (`lambda=.3`, `alpha=.2` on scores multiplied by 100),
 LLM graph/prompt edits, repeated validation, parent-indexed success/failure
 experience, and final selection by mean validation score. Defaults are 20
@@ -90,6 +98,11 @@ trial records include token usage; AFlow generation records include rejected
 attempt usage. An external importance table explicitly has unreported provider
 provenance unless its caller supplies configuration.
 
+Official AFlow uses separate optimizer and executor LLM configurations. The
+executor uses `HARNESS_MODEL`; the optimizer requires the explicit
+`HARNESS_AFLOW_OPT_MODEL`. Optimizer endpoint/key/transport inherit the actor
+unless corresponding `HARNESS_AFLOW_OPT_*` variables override them.
+
 The workspace batch runner reads `HARNESS_AFLOW_ARTIFACT` or a benchmark-specific
 override such as `HARNESS_AFLOW_ARTIFACT_GAIA`. It validates the benchmark and
 case membership, embeds the artifact in the agent request, and records its
@@ -101,6 +114,11 @@ For isolated operator tests only, `make_artifact()` plus the explicit policy
 `aflow_allow_initialization=True` runs round-one Custom. This is not the default
 evaluation path and must not be reported as an optimized AFlow result. Historical
 `aflow_workflow: ["Custom"]` requests are rejected, not reinterpreted.
+
+Artifact formats are versioned. `aflow-official-python-v2` records an official
+operator profile; `aflow-benchmark-tools-python-v2` records the secondary tool
+adapter. Earlier `aflow-python-v1` and `aflow-tools-python-v1` artifacts are
+historical and cannot silently resume or run under this implementation.
 
 ### Code execution boundary
 

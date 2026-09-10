@@ -1,8 +1,10 @@
-"""Offline AFlow code search; evaluation is delegated to an isolated process.
+"""Pinned official AFlow MCTS-variant search with isolated evaluation.
 
-Implements the pinned optimizer's score-mixture selection, LLM code expansion,
-repeated validation, and parent-indexed success/failure experience. The CLI
-never executes generated graph code and never loads benchmark answer keys.
+Implements FoundationAgents/AFlow@3f45721 score-mixture selection, official
+optimizer prompts, dataset-profiled operators, LLM code expansion, repeated
+validation, parent-indexed experience and convergence. ``benchmark-tools`` is
+an explicit secondary operator adapter. The CLI never executes generated graph
+code and never loads benchmark answer keys.
 An evaluation command receives a candidate artifact path and the optimization
 case manifest path; it must run agents in sandboxes and score only after exit.
 """
@@ -17,8 +19,9 @@ import random
 import re
 from typing import Awaitable, Callable
 
+from . import aflow_official as official
 from .aflow import REVISION, digest
-from .api import completion_client_from_env
+from .api import aflow_optimizer_client_from_env
 from .artifact_provenance import provider_identity
 
 
@@ -69,28 +72,59 @@ def validate_split(split: dict):
         raise ValueError("AFlow optimization and evaluation cases overlap")
 
 
-def expansion_prompt(parent: dict, history: list[dict], problem_type: str) -> str:
-    experience = [{"modification": row["modification"], "before": parent["score"],
-                   "after": row.get("score"), "succeed": row.get("score") is not None and row["score"] > parent["score"]}
-                  for row in history if row.get("parent") == parent["round"]]
-    from .aflow_tools import OPERATOR_DESCRIPTION
+def _format_experience(parent: dict, history: list[dict]) -> str:
+    children = [row for row in history if row.get("parent") == parent["round"]]
+    if not children:
+        return f"No experience data found for round {parent['round']}."
+    lines = [f"Original Score: {parent['score']}", "These are some conclusions drawn from experience:", ""]
+    for row in children:
+        if row.get("score") is not None and row["score"] > parent["score"]:
+            continue
+        lines.append(f"-Absolutely prohibit {row['modification']} (Score: {row.get('score')})")
+    # The pinned source uses the same 'Absolutely prohibit' wording for successful
+    # children too. Preserve it as algorithm behavior rather than silently fixing it.
+    for row in children:
+        if row.get("score") is not None and row["score"] > parent["score"]:
+            lines.append(f"-Absolutely prohibit {row['modification']}")
+    lines.extend(["", "Note: Take into account past failures and avoid repeating the same mistakes, as these failures indicate that these approaches are ineffective. You must fundamentally change your way of thinking, rather than simply using more advanced Python syntax like for, if, else, etc., or modifying the prompt."])
+    return "\n".join(lines)
+
+
+def _operator_description(profile: str) -> str:
+    if profile in official.OPERATOR_PROFILES:
+        return official.operator_description(profile)
+    if profile == "benchmark-tools":
+        from .aflow_tools import OPERATOR_DESCRIPTION
+
+        return official.operator_description("qa") + "\n" + OPERATOR_DESCRIPTION
+    raise ValueError(f"Unknown AFlow operator profile: {profile}")
+
+
+def expansion_prompt(parent: dict, history: list[dict], problem_type: str,
+                     operator_profile: str = "qa") -> str:
+    adapter = ""
+    if operator_profile == "benchmark-tools":
+        adapter = (
+            "\nThis operator profile is an explicit benchmark adapter, not an official AFlow dataset. "
+            "Preserve exactly one ToolSession and its real observation/commit boundary. Generated code runs "
+            "with restricted builtins: no imports, reflection, filesystem access, direct context access, or "
+            "invented observations. Return session.answer after the session becomes inactive."
+        )
+    graph_input = official.WORKFLOW_INPUT.format(
+        experience=_format_experience(parent, history),
+        score=parent["score"],
+        graph=parent["artifact"]["graph"],
+        prompt=parent["artifact"]["prompt"],
+        operator_description=_operator_description(operator_profile),
+        type=problem_type,
+        log=json.dumps(parent.get("feedback", [])),
+    )
     return (
-        f"Optimize this Python AFlow workflow for {problem_type} tasks. Change one detail at a time, at most five "
-        "graph lines. You may add/remove operators, change their parameters or custom prompts, and use Python "
-        "loops and conditions. Keep at most ten logical nodes. Preserve Workflow(name,llm_config,dataset) "
-        "and its async __call__(problem) returning (answer, cost).\n"
-        "Available operators: Custom(llm)(input,instruction) -> {'response':str}; "
-        "AnswerGenerate(llm)(input) -> {'thought':str,'answer':str}; "
-        "ScEnsemble(llm)(solutions) -> {'response':str}, selecting one original candidate. "
-        "create_llm_instance(llm_config), operator and prompt_custom are supplied. "
-        + OPERATOR_DESCRIPTION + "\n" +
-        "All custom prompt constants must be defined in the prompt source. Do not redefine built-in operator prompts. "
-        "Custom concatenates instruction+input literally; pass prior results explicitly. Do not put answers in code. "
-        "Avoid modifications already attempted from this parent. Output complete Python sources in "
-        "<graph>...</graph> and <prompt>...</prompt>, and describe the single change in <modification>...</modification>.\n"
-        f"Validation score: {parent['score']}\nGraph:\n{parent['artifact']['graph']}\n"
-        f"Prompt:\n{parent['artifact']['prompt']}\nExperience:\n{json.dumps(experience)}\n"
-        f"Optimization-split feedback:\n{json.dumps(parent.get('feedback', []))}"
+        graph_input
+        + official.WORKFLOW_CUSTOM_USE
+        + official.WORKFLOW_OPTIMIZE_PROMPT.format(type=problem_type)
+        + adapter
+        + official.GRAPH_RESPONSE_FORMAT
     )
 
 
@@ -98,10 +132,18 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
                    rounds: int = 20, validation_rounds: int = 5, sample: int = 4,
                    seed: int = 0, problem_type: str = "question answering",
                    check_convergence: bool = True, max_generation_attempts: int | None = None,
-                   resume: bool = False) -> dict:
-    # The single public AFlow profile targets the benchmark tool lifecycle. The
-    # original QA operators remain available as auxiliary nodes inside this graph.
-    from .aflow_tools import make_artifact, validate_artifact
+                   resume: bool = False, operator_profile: str = "qa") -> dict:
+    if operator_profile == "benchmark-tools":
+        from .aflow_tools import make_artifact, validate_artifact
+    elif operator_profile in official.OPERATOR_PROFILES:
+        from .aflow import make_artifact as official_make_artifact, validate_artifact
+
+        def make_artifact(graph=None, prompt="", *, provenance=None):
+            return official_make_artifact(
+                graph, prompt, operator_profile=operator_profile, provenance=provenance
+            )
+    else:
+        raise ValueError(f"Unknown AFlow operator profile: {operator_profile}")
     validate_split(split)
     if min(rounds, validation_rounds, sample) < 1:
         raise ValueError("AFlow search budgets must be positive")
@@ -118,7 +160,7 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
         "problem_type": problem_type,
         "check_convergence": check_convergence,
         "max_generation_attempts": max_generation_attempts,
-        "operator_adapter": "benchmark-tools",
+        "operator_profile": operator_profile,
     }
     state_path = output / "search.json"
     if resume:
@@ -205,7 +247,10 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
                 parent = rng.choices(candidates, selection_probabilities([item["score"] for item in candidates]))[0]
                 row = {"round": round_id, "parent": parent["round"], "modification": "", "score": None}
                 # Provider failures remain missing measurements, never failed candidates.
-                reply = await client.complete([{"role": "user", "content": expansion_prompt(parent, history, problem_type)}])
+                reply = await client.complete([{
+                    "role": "user",
+                    "content": expansion_prompt(parent, history, problem_type, operator_profile),
+                }])
                 (output / f"expansion-{round_id}-attempt-{attempt}.txt").write_text(reply.content)
                 fields = {key: match.group(1).strip() for key in ("graph", "prompt", "modification")
                           if (match := re.search(fr"<{key}>(.*?)</{key}>", reply.content, re.DOTALL))}
@@ -245,14 +290,16 @@ async def optimize(client, evaluate: Callable[[dict], Awaitable[dict]], split: d
     frozen = make_artifact(best["artifact"]["graph"], best["artifact"]["prompt"], provenance={
         "kind": "optimized", "source_revision": REVISION, **split,
         "validation_score": best["score"], "selected_round": best["round"],
-        "search_history_sha256": digest(history), "optimizer": "aflow-score-mixture-python-v3-resumable",
+        "search_history_sha256": digest(history), "optimizer": "foundationagents-aflow-mcts-v1-port",
+        "optimizer_source_revision": REVISION,
         "generations_sha256": digest(generations), "generation_calls": len(generations),
         "optimization_config": provider_identity(client),
         "seed": seed, "rounds": rounds, "validation_rounds": validation_rounds, "sample": sample,
         "completed_rounds": len(history) - 1, "check_convergence": check_convergence,
         "stop_reason": "converged" if check_convergence and stopped["converged"] else "round_budget",
         "convergence": stopped, "max_generation_attempts": max_generation_attempts,
-        "operator_adapter": "benchmark-tools",
+        "operator_profile": operator_profile,
+        "benchmark_adapter": operator_profile == "benchmark-tools",
         "resume_count": state["resume_count"],
     })
     validate_artifact(frozen)
@@ -301,10 +348,11 @@ async def main_async(args):
             raise RuntimeError("AFlow evaluator failed; inspect isolated evaluation artifacts")
         return json.loads(stdout)
 
-    await optimize(completion_client_from_env(), evaluate, split, args.output, rounds=args.rounds,
+    await optimize(aflow_optimizer_client_from_env(), evaluate, split, args.output, rounds=args.rounds,
                    validation_rounds=args.validation_rounds, sample=args.sample, seed=args.seed,
                    problem_type=args.problem_type, check_convergence=args.check_convergence,
-                   max_generation_attempts=args.max_generation_attempts, resume=args.resume)
+                   max_generation_attempts=args.max_generation_attempts, resume=args.resume,
+                   operator_profile=args.operator_profile)
     print(str(args.output / "frozen.json"))
 
 
@@ -318,6 +366,8 @@ def main():
     parser.add_argument("--sample", type=int, default=4)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--problem-type", default="question answering")
+    parser.add_argument("--operator-profile", choices=(*official.OPERATOR_PROFILES, "benchmark-tools"),
+                        default="qa")
     parser.add_argument("--check-convergence", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--max-generation-attempts", type=int,
                         help="Optional per-round regeneration cap; unset matches the upstream unbounded loop")

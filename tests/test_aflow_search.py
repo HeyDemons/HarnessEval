@@ -4,7 +4,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from benchmark_platform.harnesses.aflow import validate_runtime_artifact
+from benchmark_platform.harnesses.aflow import validate_artifact, validate_runtime_artifact
+from benchmark_platform.harnesses.aflow_official import INITIAL_GRAPH as OFFICIAL_INITIAL_GRAPH
 from benchmark_platform.harnesses.aflow_tools import INITIAL_GRAPH, INITIAL_PROMPT
 from benchmark_platform.harnesses.aflow_search import convergence, optimize, selection_probabilities
 from test_aflow_upstream import Client
@@ -14,6 +15,25 @@ SPLIT = {"benchmark": "synthetic", "optimization_case_ids": ["train"], "evaluati
 
 
 class SearchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_default_search_is_official_qa_not_the_benchmark_adapter(self):
+        scores = iter([.2, .8])
+        async def evaluate(artifact):
+            validate_artifact(artifact, allow_initialization=True)
+            return {"score": next(scores)}
+        reply = (
+            f"<graph>{OFFICIAL_INITIAL_GRAPH}\n# official candidate</graph>"
+            "<prompt></prompt><modification>add official candidate marker</modification>"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            result = await optimize(
+                Client([reply]), evaluate, SPLIT, Path(directory) / "official",
+                rounds=1, validation_rounds=1,
+            )
+        self.assertEqual(result["operator_profile"], "qa")
+        self.assertEqual(result["provenance"]["operator_profile"], "qa")
+        self.assertFalse(result["provenance"]["benchmark_adapter"])
+        self.assertEqual(result["provenance"]["selected_round"], 2)
+
     def test_convergence_counts_only_scored_rounds_and_resets_on_improvement(self):
         self.assertFalse(convergence([{"round": i, "score": .5} for i in range(1, 6)])["converged"])
         rows = [{"round": i, "score": .5} for i in range(1, 7)]
@@ -32,7 +52,8 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             for enabled, expected in ((True, 5), (False, 8)):
                 client = Client(replies)
                 result = await optimize(client, evaluate, SPLIT, Path(directory) / str(enabled),
-                                        rounds=8, validation_rounds=1, check_convergence=enabled)
+                                        rounds=8, validation_rounds=1, check_convergence=enabled,
+                                        operator_profile="benchmark-tools")
                 self.assertEqual(len(client.messages), expected)
                 self.assertEqual(result["provenance"]["completed_rounds"], expected)
                 self.assertEqual(result["provenance"]["stop_reason"], "converged" if enabled else "round_budget")
@@ -46,7 +67,8 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         client = Client(replies)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "search"
-            result = await optimize(client, evaluate, SPLIT, output, rounds=2, validation_rounds=1, sample=1)
+            result = await optimize(client, evaluate, SPLIT, output, rounds=2, validation_rounds=1,
+                                    sample=1, operator_profile="benchmark-tools")
             history = json.loads((output / "history.json").read_text())
             generations = json.loads((output / "generations.json").read_text())
             self.assertEqual(len(history), 3)
@@ -74,7 +96,8 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         client = Client(replies)
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "search"
-            artifact = await optimize(client, evaluate, SPLIT, output, rounds=2, validation_rounds=2)
+            artifact = await optimize(client, evaluate, SPLIT, output, rounds=2, validation_rounds=2,
+                                      operator_profile="benchmark-tools")
             validate_runtime_artifact(artifact, benchmark="synthetic", case_id="heldout")
             self.assertEqual(artifact["provenance"]["selected_round"], 2)
             self.assertEqual(artifact["provenance"]["validation_score"], .8)
@@ -90,7 +113,8 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             self.fail("overlapping split reached evaluator")
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaisesRegex(ValueError, "overlap"):
-                await optimize(Client([]), evaluate, {**SPLIT, "evaluation_case_ids": ["train"]}, Path(directory) / "search")
+                await optimize(Client([]), evaluate, {**SPLIT, "evaluation_case_ids": ["train"]},
+                               Path(directory) / "search", operator_profile="benchmark-tools")
 
     async def test_provider_failure_is_not_scored_as_zero(self):
         async def evaluate(artifact):
@@ -98,7 +122,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             target = Path(directory) / "search"
             with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
-                await optimize(Client([]), evaluate, SPLIT, target)
+                await optimize(Client([]), evaluate, SPLIT, target, operator_profile="benchmark-tools")
             self.assertFalse((target / "frozen.json").exists())
 
     async def test_resume_retries_pending_evaluation_without_regenerating(self):
@@ -117,7 +141,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             target = Path(directory) / "search"
             with self.assertRaisesRegex(RuntimeError, "provider unavailable"):
                 await optimize(Client([reply]), interrupted, SPLIT, target,
-                               rounds=1, validation_rounds=1)
+                               rounds=1, validation_rounds=1, operator_profile="benchmark-tools")
             self.assertEqual(len(json.loads((target / "history.json").read_text())), 1)
             self.assertTrue((target / "expansion-2.txt").is_file())
 
@@ -130,6 +154,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
                 rounds=1,
                 validation_rounds=1,
                 resume=True,
+                operator_profile="benchmark-tools",
             )
             history = json.loads((target / "history.json").read_text())
             self.assertEqual([row["round"] for row in history], [1, 2])

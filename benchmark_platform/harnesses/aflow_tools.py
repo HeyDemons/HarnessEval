@@ -1,8 +1,9 @@
-"""AFlow workflow search with explicitly adapted, serial benchmark tool operators.
+"""Secondary benchmark-tool adapter for the pinned official AFlow core.
 
-The original QA profile is unchanged. Generated workflows run only in the agent
-sandbox; the optimizer and scorer must never import them. Proposals have no tool
-side effects, and only a current, unconsumed proposal may be committed.
+Official QA/math/code operator profiles remain in ``aflow_official``. Generated
+adapter workflows run only in the agent sandbox; the optimizer and scorer never
+import them. Proposals have no tool side effects, and only a current, unconsumed
+proposal may be committed.
 """
 from __future__ import annotations
 
@@ -16,8 +17,8 @@ from .core import RunContext, tool_result_content
 from .methods import ACTION_SYSTEM, parse_action_reply
 from .reply_contracts import action_schema
 
-FORMAT = "aflow-tools-python-v1"
-IMPLEMENTATION = "aflow-tool-workflow-python-v3"
+FORMAT = "aflow-benchmark-tools-python-v2"
+IMPLEMENTATION = "aflow-official-core-benchmark-adapter-v4"
 SAFE_BUILTINS = {name: getattr(builtins, name) for name in
                  ("__build_class__", "str", "int", "float", "bool", "list", "dict", "tuple",
                   "range", "len", "enumerate", "zip", "min", "max", "sum", "sorted")}
@@ -51,14 +52,16 @@ OPERATOR_DESCRIPTION = (
 
 
 def make_artifact(graph=INITIAL_GRAPH, prompt=INITIAL_PROMPT, *, provenance=None):
-    artifact = aflow.make_artifact(graph, prompt, provenance=provenance)
+    artifact = aflow.make_artifact(
+        graph, prompt, operator_profile="benchmark-tools", provenance=provenance
+    )
     artifact["format"] = FORMAT
     return artifact
 
 
 def validate_artifact(artifact, **kwargs):
     if not isinstance(artifact, dict) or artifact.get("format") != FORMAT:
-        raise ValueError("AFlow tool execution requires an aflow-tools-python-v1 workflow; QA artifacts are not tool workflows")
+        raise ValueError("AFlow tool execution requires an aflow-benchmark-tools-python-v2 artifact")
     aflow.validate_artifact({**artifact, "format": aflow.FORMAT}, **kwargs)
     validate_graph(artifact['graph'], artifact['prompt'])
     return artifact
@@ -208,7 +211,7 @@ async def run_aflow_tools(ctx: RunContext) -> str:
     await ctx.trace.emit("aflow_artifact", code_sha256=artifact["code_sha256"],
                          provenance=artifact["provenance"], implementation=IMPLEMENTATION,
                          benchmark_adapter=True)
-    llm = aflow.OperatorLLM(ctx)
+    llm = aflow.OperatorLLM(ctx, "benchmark-tools")
     namespace = aflow.graph_namespace(artifact, llm, operators={"ToolSession": ToolSession, "ToolDecision": ToolDecision},
                                       builtins_override=SAFE_BUILTINS)
     workflow = namespace.get("Workflow")

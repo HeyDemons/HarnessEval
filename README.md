@@ -226,14 +226,18 @@ and tau keep the hidden user and mutable official environment outside the
 baseline. Terminal-Bench and SWE-bench give the baseline only the task
 workspace; verifier tests and reference solutions never enter its container.
 
-`aflow` executes frozen Python workflows with the pinned QA operators and requires
-a disjoint optimization artifact. The workspace runner no longer supplies a
-single Custom fallback. `dylan` requires a team frozen from importance averaged
+`aflow` executes frozen Python workflows from the pinned official MCTS variant.
+Official QA, math and code searches use their dataset-specific operator profiles;
+their union is six operators, not one universal six-operator menu. Tool benchmarks
+use a separately identified ToolSession/ToolDecision adapter artifact. The optimizer
+model is explicit and separate from the executor model, and every evaluation requires
+a disjoint optimization artifact. The workspace runner supplies no single-Custom
+fallback. `dylan` requires a team frozen from importance averaged
 over a disjoint optimization split; evaluation runs only that team's text network.
 `dylan-query-local` explicitly retains the per-query trial/selection/solve adaptation. See
 [algorithm configuration and artifact workflow](docs/AFLOW_DYLAN.md).
-These AFlow QA and DyLAN text profiles receive no external tools; DyLAN's paper
-also includes separate tool-enabled experiments. Multi-Persona uses a generic SPP
+Official AFlow operators receive no benchmark tools; only its declared secondary
+adapter does. DyLAN's paper also includes separate tool-enabled experiments. Multi-Persona uses a generic SPP
 profile prompt with two complete demonstrations rather than a schematic example.
 
 LATS preserves tree expansion over independent environment states. It runs only

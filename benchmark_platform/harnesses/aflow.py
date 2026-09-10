@@ -1,10 +1,10 @@
-"""Execute frozen AFlow workflows, including the tool-benchmark adaptation.
+"""Execute pinned official AFlow workflows, then explicit benchmark adapters.
 
 Source: FoundationAgents/AFlow 3f457218, HotpotQA/workflows/template and
 scripts/formatter.py. Artifacts contain code and must run in the benchmark's
 agent sandbox, never in a scorer process holding evaluation labels. The public
-``aflow`` profile accepts both pinned QA artifacts and capability-limited tool
-workflow artifacts; the latter are an explicit benchmark adaptation.
+``aflow`` profile accepts official QA/math/code artifacts and capability-limited
+tool-workflow artifacts; their operator profiles and formats cannot be confused.
 """
 from __future__ import annotations
 
@@ -17,34 +17,12 @@ import re
 from types import SimpleNamespace
 from typing import Any, Literal
 
+from . import aflow_official as official
 from .core import RunContext
 
-REVISION = "3f457218fc716093fe53f6df8a5d5e6379d66346"
-FORMAT = "aflow-python-v1"
-INITIAL_GRAPH = '''class Workflow:
-    def __init__(self, name, llm_config, dataset):
-        self.llm = create_llm_instance(llm_config)
-        self.custom = operator.Custom(self.llm)
-
-    async def __call__(self, problem):
-        solution = await self.custom(input=problem, instruction="")
-        return solution["response"], self.llm.get_usage_summary()["total_cost"]
-'''
-
-ANSWER_PROMPT = '''
-Think step by step and solve the problem.
-1. In the "thought" field, explain your thinking process in detail.
-2. In the "answer" field, provide the final answer concisely and clearly. The answer should be a direct response to the question, without including explanations or reasoning.
-Your task: {input}
-'''
-ENSEMBLE_PROMPT = '''
-Several answers have been generated to a same question. They are as follows:
-{solutions}
-
-Identify the concise answer that appears most frequently across them. This consistency in answers is crucial for determining the most reliable solution.
-In the "thought" field, provide a detailed explanation of your thought process. In the "solution_letter" field, output only the single letter ID (A, B, C, etc.) corresponding to the most consistent solution. Do not include any additional text or explanation in the "solution_letter" field.
-'''
-
+REVISION = official.REVISION
+FORMAT = "aflow-official-python-v2"
+INITIAL_GRAPH = official.INITIAL_GRAPH
 
 def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
@@ -53,7 +31,10 @@ def digest(value: Any) -> str:
 def validate_artifact(artifact: Any, *, allow_initialization: bool = False,
                       benchmark: str | None = None, case_id: str | None = None) -> dict:
     if not isinstance(artifact, dict) or artifact.get("format") != FORMAT:
-        raise ValueError("AFlow requires a frozen aflow-python-v1 artifact; operator lists are not optimized graphs")
+        raise ValueError("AFlow requires a frozen aflow-official-python-v2 artifact")
+    profile = artifact.get("operator_profile")
+    if profile not in {*official.OPERATOR_PROFILES, "benchmark-tools"}:
+        raise ValueError("AFlow artifact requires an explicit official or benchmark-adapter operator profile")
     if not isinstance(artifact.get("graph"), str) or not artifact["graph"].strip():
         raise ValueError("AFlow artifact must contain Python graph source")
     if not isinstance(artifact.get("prompt"), str):
@@ -69,6 +50,10 @@ def validate_artifact(artifact: Any, *, allow_initialization: bool = False,
         return artifact
     if provenance.get("kind") != "optimized":
         raise ValueError("AFlow evaluation requires an optimized artifact, not an initialization control")
+    if provenance.get("operator_profile") != profile:
+        raise ValueError("AFlow artifact operator profile does not match its search provenance")
+    if (profile == "benchmark-tools") != (provenance.get("benchmark_adapter") is True):
+        raise ValueError("AFlow benchmark-adapter provenance does not match its operator profile")
     for key in ("optimization_case_ids", "evaluation_case_ids"):
         values = provenance.get(key)
         if not isinstance(values, list) or not values or any(not isinstance(x, str) or not x for x in values):
@@ -93,7 +78,7 @@ def validate_artifact(artifact: Any, *, allow_initialization: bool = False,
 def validate_runtime_artifact(artifact: Any, *, allow_initialization: bool = False,
                               benchmark: str | None = None, case_id: str | None = None) -> dict:
     """Validate either artifact family accepted by the public ``aflow`` method."""
-    if isinstance(artifact, dict) and artifact.get("format") == "aflow-tools-python-v1":
+    if isinstance(artifact, dict) and artifact.get("format") == "aflow-benchmark-tools-python-v2":
         from .aflow_tools import validate_artifact as validate_tool_artifact
 
         return validate_tool_artifact(
@@ -110,15 +95,23 @@ def validate_runtime_artifact(artifact: Any, *, allow_initialization: bool = Fal
     )
 
 
-def make_artifact(graph: str = INITIAL_GRAPH, prompt: str = "", *, provenance: dict | None = None) -> dict:
-    return {"format": FORMAT, "graph": graph, "prompt": prompt,
+def make_artifact(graph: str | None = None, prompt: str = "", *, operator_profile: str = "qa",
+                  provenance: dict | None = None) -> dict:
+    if operator_profile not in {*official.OPERATOR_PROFILES, "benchmark-tools"}:
+        raise ValueError(f"Unknown AFlow operator profile: {operator_profile}")
+    if graph is None:
+        if operator_profile == "benchmark-tools":
+            raise ValueError("Benchmark-tool AFlow requires an adapter graph")
+        graph = official.initial_graph(operator_profile)
+    return {"format": FORMAT, "operator_profile": operator_profile, "graph": graph, "prompt": prompt,
             "code_sha256": digest({"graph": graph, "prompt": prompt}),
             "provenance": provenance or {"kind": "initialization", "source_revision": REVISION}}
 
 
 class OperatorLLM:
-    def __init__(self, ctx: RunContext):
+    def __init__(self, ctx: RunContext, operator_profile: str = "qa"):
         self.ctx = ctx
+        self.operator_profile = operator_profile
         self.calls = 0
 
     async def generate(self, name: str, prompt: str, fields: dict[str, str] | None = None):
@@ -138,6 +131,27 @@ class OperatorLLM:
         # or `solution_letter`; missing `thought` must not fail that graph.
         return {key: value.strip() for key, value in re.findall(r"<(\w+)>(.*?)</\1>", raw, re.DOTALL)}
 
+    async def generate_code(self, name: str, prompt: str, function_name: str | None = None):
+        suffix = (
+            "\n\nPlease write your code solution in Python. Return ONLY the complete, runnable code "
+            "without explanations. Use proper Python syntax and formatting."
+        )
+        if function_name:
+            suffix += f"\nMake sure to include a function named '{function_name}' in your solution."
+        value = await self.generate(name, prompt + suffix)
+        raw = value["response"]
+        match = re.search(r"```python\s*(.*?)\s*```", raw, re.DOTALL) or re.search(
+            r"```\s*(.*?)\s*```", raw, re.DOTALL
+        )
+        code = (match.group(1) if match else raw).strip()
+        ast.parse(code)
+        if function_name and not any(
+            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
+            for node in ast.parse(code).body
+        ):
+            raise ValueError(f"AFlow generated code omitted entry point {function_name}")
+        return {"response": code}
+
     def get_usage_summary(self):
         # The public SDK returns cost with the answer. We have no provider price
         # table here; token counters remain authoritative and monetary cost unknown.
@@ -145,39 +159,14 @@ class OperatorLLM:
                 "completion_tokens": self.ctx.completion_tokens}
 
 
-class Custom:
-    def __init__(self, llm: OperatorLLM, name: str = "Custom"):
-        self.llm, self.name = llm, name
-
-    async def __call__(self, input: str, instruction: str):
-        return await self.llm.generate(self.name, instruction + input)
-
-
-class AnswerGenerate:
-    def __init__(self, llm: OperatorLLM, name: str = "AnswerGenerate"):
-        self.llm, self.name = llm, name
-
-    async def __call__(self, input: str, mode: str | None = None):
-        return await self.llm.generate(self.name, ANSWER_PROMPT.format(input=input),
-                                      {"thought": "The step by step thinking process", "answer": "The final answer to the question"})
-
-
-class ScEnsemble:
-    def __init__(self, llm: OperatorLLM, name: str = "ScEnsemble"):
-        self.llm, self.name = llm, name
-
-    async def __call__(self, solutions: list[str]):
-        if not solutions or len(solutions) > 26:
-            raise ValueError("AFlow ScEnsemble requires 1 to 26 candidates")
-        text = "".join(f"{chr(65 + index)}: \n{solution}\n\n\n" for index, solution in enumerate(solutions))
-        value = await self.llm.generate(self.name, ENSEMBLE_PROMPT.format(solutions=text),
-                                       {"thought": "The thought of the most consistent solution.",
-                                        "solution_letter": "The letter of most consistent solution."})
-        letter = value.get("solution_letter", "").strip().upper()
-        mapping = {chr(65 + index): solution for index, solution in enumerate(solutions)}
-        if letter not in mapping:
-            raise ValueError("AFlow ScEnsemble returned an invalid candidate identifier")
-        return {"response": mapping[letter]}
+# Public names remain import-compatible while their semantics come from the
+# pinned official operator module.
+Custom = official.Custom
+AnswerGenerate = official.AnswerGenerate
+ScEnsemble = official.ScEnsemble
+Programmer = official.Programmer
+CustomCodeGenerate = official.CustomCodeGenerate
+Test = official.Test
 
 
 def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None = None,
@@ -189,8 +178,9 @@ def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None 
     """
     prompts: dict[str, Any] = {} if builtins_override is None else {"__builtins__": builtins_override}
     exec(compile(artifact["prompt"], "<aflow-prompts>", "exec"), prompts)
-    namespace = {"operator": SimpleNamespace(Custom=Custom, AnswerGenerate=AnswerGenerate, ScEnsemble=ScEnsemble,
-                                             **(operators or {})),
+    profile = artifact.get("operator_profile", "qa")
+    official_profile = "qa" if profile == "benchmark-tools" else profile
+    namespace = {"operator": SimpleNamespace(**official.namespace(official_profile), **(operators or {})),
                  "prompt_custom": SimpleNamespace(**{k: v for k, v in prompts.items() if not k.startswith("__")}),
                  "create_llm_instance": lambda config: llm, "DatasetType": str, "Literal": Literal}
     if builtins_override is not None:
@@ -202,8 +192,9 @@ def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None 
             aliases = []
             for alias in statement.names:
                 if alias.name.startswith("workspace."):
-                    if not alias.name.startswith("workspace.HotpotQA.workflows.") or alias.asname not in {"operator", "prompt_custom"}:
-                        raise ValueError("Unsupported AFlow dataset/operator import; this adapter pins HotpotQA operators")
+                    dataset = official.DATASET_BY_PROFILE.get(official_profile, "HotpotQA")
+                    if not alias.name.startswith(f"workspace.{dataset}.workflows.") or alias.asname not in {"operator", "prompt_custom"}:
+                        raise ValueError("AFlow graph imports a dataset/operator profile inconsistent with its artifact")
                 else:
                     aliases.append(alias)
             if aliases:
@@ -222,21 +213,30 @@ def graph_namespace(artifact: dict, llm: OperatorLLM, *, operators: dict | None 
 
 async def run_aflow(ctx: RunContext) -> str:
     raw_artifact = ctx.policy.get("aflow_artifact")
-    if isinstance(raw_artifact, dict) and raw_artifact.get("format") == "aflow-tools-python-v1":
+    if isinstance(raw_artifact, dict) and raw_artifact.get("format") == "aflow-benchmark-tools-python-v2":
         from .aflow_tools import run_aflow_tools
 
         return await run_aflow_tools(ctx)
     artifact = validate_artifact(raw_artifact,
                                  allow_initialization=ctx.policy.get("aflow_allow_initialization") is True,
                                  benchmark=ctx.policy.get("aflow_benchmark"), case_id=ctx.policy.get("aflow_case_id"))
+    profile = artifact["operator_profile"]
     await ctx.trace.emit("aflow_artifact", code_sha256=artifact["code_sha256"],
-                         provenance=artifact["provenance"], implementation="qa-python-v2")
-    namespace = graph_namespace(artifact, OperatorLLM(ctx))
+                         provenance=artifact["provenance"], implementation="official-python-v3",
+                         operator_profile=profile, source_revision=REVISION)
+    namespace = graph_namespace(artifact, OperatorLLM(ctx, profile))
     workflow_type = namespace.get("Workflow")
     if not inspect.isclass(workflow_type):
         raise ValueError("AFlow graph must define Workflow")
-    workflow = workflow_type(name="AFlow", llm_config={}, dataset="HotpotQA")
-    result = await workflow(ctx.prompt)
+    dataset = official.DATASET_BY_PROFILE[profile]
+    workflow = workflow_type(name="AFlow", llm_config={}, dataset=dataset)
+    if profile == "code":
+        entry_point = ctx.policy.get("aflow_entry_point")
+        if not isinstance(entry_point, str) or not entry_point:
+            raise ValueError("Official AFlow code workflow requires policy.aflow_entry_point")
+        result = await workflow(ctx.prompt, entry_point)
+    else:
+        result = await workflow(ctx.prompt)
     answer = result[0] if isinstance(result, tuple) and len(result) == 2 else result
     if not isinstance(answer, str):
         raise ValueError("AFlow Workflow must return an answer string (optionally with cost)")

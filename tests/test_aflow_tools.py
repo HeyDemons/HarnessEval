@@ -105,10 +105,12 @@ class AFlowToolTests(unittest.IsolatedAsyncioTestCase):
             return {'score': len(seen) / 2}
         with tempfile.TemporaryDirectory() as directory:
             result = await optimize(client, evaluate, split, Path(directory) / 'search',
-                                    rounds=1, validation_rounds=1)
+                                    rounds=1, validation_rounds=1,
+                                    operator_profile='benchmark-tools')
         aflow_tools.validate_artifact(result, benchmark='synthetic', case_id='secret-eval-id')
         self.assertEqual(result['provenance']['selected_round'], 2)
-        self.assertEqual(result['provenance']['operator_adapter'], 'benchmark-tools')
+        self.assertEqual(result['provenance']['operator_profile'], 'benchmark-tools')
+        self.assertTrue(result['provenance']['benchmark_adapter'])
         self.assertNotIn('secret-eval-id', str(client.messages))
         self.assertIn('ToolSession', str(client.messages))
         with self.assertRaisesRegex(ValueError, 'evaluation manifest'):

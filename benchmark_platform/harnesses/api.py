@@ -143,6 +143,38 @@ class ApiConfig:
             ),
         )
 
+    @classmethod
+    def from_aflow_optimizer_env(cls, actor: "ApiConfig") -> "ApiConfig":
+        """Build AFlow's independently selected workflow-optimizer client.
+
+        The pinned implementation has separate ``opt_llm_config`` and
+        ``exec_llm_config``. Endpoint credentials and transport may inherit,
+        but the optimizer model must be named explicitly so a reproduction
+        cannot silently collapse those roles.
+        """
+        model = os.getenv("HARNESS_AFLOW_OPT_MODEL", "").strip()
+        if not model:
+            raise RuntimeError("Set HARNESS_AFLOW_OPT_MODEL for the official AFlow optimizer role")
+        raw_max = os.getenv("HARNESS_AFLOW_OPT_MAX_OUTPUT_TOKENS", "").strip()
+        raw_stream = os.getenv("HARNESS_AFLOW_OPT_API_STREAM", "").strip().lower()
+        return cls(
+            base_url=(os.getenv("HARNESS_AFLOW_OPT_API_BASE", "").strip().rstrip("/") or actor.base_url),
+            api_key=os.getenv("HARNESS_AFLOW_OPT_API_KEY", "").strip() or actor.api_key,
+            model=model,
+            temperature=float(os.getenv("HARNESS_AFLOW_OPT_TEMPERATURE", "").strip() or actor.temperature),
+            timeout_seconds=float(os.getenv("HARNESS_AFLOW_OPT_API_TIMEOUT_S", "").strip() or actor.timeout_seconds),
+            transport_retries=max(0, int(os.getenv("HARNESS_AFLOW_OPT_API_RETRIES", "").strip()
+                                         or actor.transport_retries)),
+            max_output_tokens=int(raw_max) if raw_max else actor.max_output_tokens,
+            api_type=(os.getenv("HARNESS_AFLOW_OPT_API_TYPE", "").strip() or actor.api_type),
+            api_auth=(os.getenv("HARNESS_AFLOW_OPT_API_AUTH", "").strip().lower() or actor.api_auth),
+            reasoning_effort=_reasoning_effort(
+                os.getenv("HARNESS_AFLOW_OPT_REASONING_EFFORT", ""), default=actor.reasoning_effort
+            ),
+            stream=(actor.stream if not raw_stream else raw_stream not in {"0", "false", "no"}),
+            user_agent=(os.getenv("HARNESS_AFLOW_OPT_API_USER_AGENT", "").strip() or actor.user_agent),
+        )
+
 
 class StreamInterrupted(Exception):
     """A stream that ended without a finish_reason, or carried an error frame instead.
@@ -774,6 +806,13 @@ def _completion_client(config: ApiConfig, *, variable: str) -> CompletionClient:
 
 def completion_client_from_env() -> CompletionClient:
     return _completion_client(ApiConfig.from_env(), variable="HARNESS_API_TYPE")
+
+
+def aflow_optimizer_client_from_env() -> CompletionClient:
+    actor = ApiConfig.from_env()
+    return _completion_client(
+        ApiConfig.from_aflow_optimizer_env(actor), variable="HARNESS_AFLOW_OPT_API_TYPE"
+    )
 
 
 def sa_speculator_client_from_env(actor: CompletionClient) -> CompletionClient:

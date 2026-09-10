@@ -109,15 +109,15 @@ PROFILES = (
     HarnessProfile(
         id="aflow",
         name="AFlow frozen workflow",
-        topology="offline AFlow search -> frozen tool workflow -> execution",
-        provenance="algorithm-adaptation",
+        topology="pinned official MCTS -> dataset-profiled operator graph -> optional benchmark adapter",
+        provenance="official-algorithm-with-declared-adapter",
         source="https://github.com/FoundationAgents/AFlow",
         revision="3f457218fc716093fe53f6df8a5d5e6379d66346",
         tool_contract="dynamic",
-        notes=("Uses the pinned AFlow score-mixture tree search and QA operators, extended with a "
-               "capability-limited ToolSession/ToolDecision operator pair for benchmark tools. Requires a "
-               "frozen artifact from a disjoint optimization split; no hand-declared or initialization fallback. "
-               "The tool operator family is an adaptation, not an upstream AFlow task implementation."),
+        notes=("Pins the official QA, math and code operator profiles whose union is Custom, AnswerGenerate, "
+               "ScEnsemble, Programmer, CustomCodeGenerate and Test. The optimizer and executor models are "
+               "separate explicit roles. ToolSession/ToolDecision is a capability-limited secondary adapter for "
+               "benchmarks outside the six official datasets, never part of the claimed official operator set."),
     ),
     HarnessProfile(
         id="dylan",

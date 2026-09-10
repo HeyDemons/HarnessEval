@@ -97,7 +97,8 @@ class AFlowTests(unittest.IsolatedAsyncioTestCase):
     def test_artifact_identity_and_split_validation(self):
         artifact = make_artifact(provenance={"kind": "optimized", "source_revision": REVISION,
             "benchmark": "gaia", "optimization_case_ids": ["train"], "evaluation_case_ids": ["test"],
-            "validation_score": .5, "search_history_sha256": "a" * 64})
+            "validation_score": .5, "search_history_sha256": "a" * 64,
+            "operator_profile": "qa", "benchmark_adapter": False})
         validate_artifact(artifact, benchmark="gaia", case_id="test")
         for key, value in (("benchmark", "bfcl"), ("case_id", "train")):
             with self.assertRaises(ValueError):

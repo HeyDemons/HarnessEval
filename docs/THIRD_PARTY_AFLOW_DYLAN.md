@@ -1,7 +1,9 @@
 # Third-party notices
 
-The AFlow QA operator prompts/protocol and DyLAN role/message prompts and
-network algorithms are adapted from the following MIT-licensed projects:
+The AFlow optimizer prompts, score-mixture MCTS variant, QA/math/code operator
+profiles (Custom, AnswerGenerate, ScEnsemble, Programmer,
+CustomCodeGenerate, Test), and DyLAN role/message prompts and network
+algorithms are adapted from the following MIT-licensed projects:
 
 - FoundationAgents/AFlow, revision `3f457218fc716093fe53f6df8a5d5e6379d66346`.
   Copyright (c) 2025 FoundationAgents.

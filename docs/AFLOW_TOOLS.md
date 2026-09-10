@@ -1,11 +1,11 @@
 # AFlow tool workflow adaptation
 
-The public `aflow` method uses this adaptation on interactive tool benchmarks.
-It transfers AFlow's offline Python graph search, parent selection, experience,
-validation and freezing to the benchmark's real tool lifecycle. It does not
-claim the original AFlow release evaluated these tool benchmarks. Historical
-results named `aflow-tools` retain that old identity, but it is no longer a
-runnable method.
+This is a secondary adapter beneath the official AFlow core. The public
+`aflow` method uses it only on interactive tool benchmarks. It transfers the
+pinned MCTS selection, expansion, experience, validation and freezing process
+to the benchmark's real tool lifecycle, without claiming ToolSession or
+ToolDecision are official operators. Historical results named `aflow-tools`
+retain that old identity, but it is no longer a runnable method.
 
 The workflow has the usual `Workflow(name, llm_config, dataset)` constructor
 and async `__call__(problem)`. The QA operators remain available for planning,
@@ -24,7 +24,7 @@ Benchmark system/developer instructions remain authoritative. Native user
 messages and the existing episode scorer keep their original lifecycle.
 Terminal actions use the same task container as its verifier.
 
-Artifacts use the internal `aflow-tools-python-v1` format, incompatible with QA
+Artifacts use `aflow-benchmark-tools-python-v2`, incompatible with official
 artifacts. Frozen artifacts must include a disjoint optimization/evaluation
 manifest and complete search provenance. Batch evaluation reads
 `HARNESS_AFLOW_ARTIFACT`, or `HARNESS_AFLOW_ARTIFACT_<BENCHMARK>` with hyphens
@@ -37,6 +37,7 @@ Search example from a configured workspace:
 
 ```sh
 PYTHONPATH=HarnessEval python -m benchmark_platform.harnesses.aflow_search \
+  --operator-profile benchmark-tools \
   --problem-type 'interactive benchmark tool tasks' \
   --split-manifest /absolute/path/split.json \
   --evaluate-command '["/absolute/path/python", "/absolute/path/scripts/evaluate_aflow_candidate.py"]' \

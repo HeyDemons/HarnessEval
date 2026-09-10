@@ -14,6 +14,7 @@ from benchmark_platform.harnesses.api import (
     ApiConfig,
     OpenAICompatibleClient,
     ProviderError,
+    aflow_optimizer_client_from_env,
     completion_client_from_env,
     sa_speculator_client_from_env,
 )
@@ -361,6 +362,34 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(speculator.config.api_key, actor.config.api_key)
         self.assertEqual(speculator.config.timeout_seconds, 91)
         self.assertTrue(speculator.config.stream)
+
+    def test_aflow_optimizer_requires_explicit_model_and_inherits_actor_transport(self) -> None:
+        actor_env = {
+            "HARNESS_API_BASE": "https://actor.invalid/v1",
+            "HARNESS_API_KEY": "actor-secret",
+            "HARNESS_MODEL": "executor-model",
+            "HARNESS_API_TIMEOUT_S": "91",
+            "HARNESS_API_RETRIES": "2",
+            "HARNESS_API_STREAM": "1",
+            "HARNESS_REASONING_EFFORT": "high",
+        }
+        with patch.dict("os.environ", actor_env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "HARNESS_AFLOW_OPT_MODEL"):
+                aflow_optimizer_client_from_env()
+        with patch.dict(
+            "os.environ",
+            {**actor_env, "HARNESS_AFLOW_OPT_MODEL": "optimizer-model",
+             "HARNESS_AFLOW_OPT_REASONING_EFFORT": "medium"},
+            clear=True,
+        ):
+            optimizer = aflow_optimizer_client_from_env()
+        self.assertIsInstance(optimizer, OpenAICompatibleClient)
+        self.assertEqual(optimizer.config.model, "optimizer-model")
+        self.assertEqual(optimizer.config.base_url, actor_env["HARNESS_API_BASE"])
+        self.assertEqual(optimizer.config.api_key, actor_env["HARNESS_API_KEY"])
+        self.assertEqual(optimizer.config.timeout_seconds, 91)
+        self.assertEqual(optimizer.config.transport_retries, 2)
+        self.assertEqual(optimizer.config.reasoning_effort, "medium")
 
     def test_speculator_effort_off_sends_no_reasoning_effort(self) -> None:
         actor = OpenAICompatibleClient(

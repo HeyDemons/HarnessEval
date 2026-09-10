@@ -37,7 +37,7 @@ def compatibility_rows(
                 benchmark.id, (benchmark.adapter["kind"], "blocked_no_baseline_bridge")
             )
             if profile.id == "aflow":
-                baseline_requirement = "frozen_workflow_from_disjoint_optimization_split"
+                baseline_requirement = "official_mcts_frozen_workflow_from_disjoint_split_with_declared_operator_profile"
             elif profile.id == "dylan":
                 baseline_requirement = "published_optimized_teams_with_dynamic_tool_policy"
             elif profile.id == "dmas":
