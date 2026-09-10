@@ -22,16 +22,30 @@ def context(replies, **policy):
 
 WRITE = '{"tool":"write","arguments":{"value":"actual"}}'
 FINAL = '{"final":"finished"}'
+PLAN = 'Inspect the task, perform the required write, and verify it.'
 
 
 class AFlowToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_workflow_executes_tools_observes_result_and_preserves_task_policy(self):
-        ctx = context([WRITE, FINAL])
+        ctx = context([PLAN, WRITE, FINAL])
         self.assertEqual(await run_profile(ctx), 'finished')
         self.assertEqual(len(ctx.environment.calls), 1)
-        self.assertIn('saved', str(ctx.client.messages[1]))
+        self.assertTrue(any('saved' in str(messages) for messages in ctx.client.messages))
         self.assertTrue(all('PUBLIC_BENCHMARK_POLICY' in str(m) for m in ctx.client.messages))
-        self.assertEqual(ctx.actor_llm_calls, 2)
+        self.assertEqual(ctx.actor_llm_calls, 3)
+
+    def test_tool_workflow_must_execute_an_official_qa_operator(self):
+        graph = aflow_tools.INITIAL_GRAPH.replace(
+            '        self.plan = operator.Custom(self.llm)\n', ''
+        ).replace(
+            '        plan = await self.plan(input=problem, instruction=prompt_custom.PLAN_INSTRUCTION)\n', ''
+        ).replace(
+            'plan["response"] + "\\n" + prompt_custom.INSTRUCTION', 'prompt_custom.INSTRUCTION'
+        )
+        with self.assertRaisesRegex(ValueError, 'official QA operator'):
+            aflow_tools.validate_artifact(
+                aflow_tools.make_artifact(graph), allow_initialization=True
+            )
 
     async def test_proposals_do_not_mutate_and_only_one_current_proposal_can_commit(self):
         ctx = context([WRITE, WRITE])
@@ -47,10 +61,10 @@ class AFlowToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(ctx.environment.calls), 1)
 
     async def test_final_model_slot_allows_answer_but_no_write(self):
-        ctx = context([WRITE, FINAL], model_response_limit=2, finalize_on_loop_limit=True)
+        ctx = context([PLAN, WRITE, FINAL], model_response_limit=3, finalize_on_loop_limit=True)
         self.assertEqual(await run_profile(ctx), 'finished')
         self.assertEqual(len(ctx.environment.calls), 1)
-        ctx = context([WRITE], model_response_limit=1, finalize_on_loop_limit=True)
+        ctx = context([PLAN, WRITE], model_response_limit=2, finalize_on_loop_limit=True)
         with self.assertRaises(ValueError):
             await run_profile(ctx)
         self.assertEqual(ctx.environment.calls, [])
@@ -96,7 +110,9 @@ class AFlowToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_aflow_search_freezes_best_and_never_exposes_evaluation_ids(self):
         split = {'benchmark': 'synthetic', 'optimization_case_ids': ['opt'], 'evaluation_case_ids': ['secret-eval-id']}
-        graph = aflow_tools.INITIAL_GRAPH.replace('instruction=prompt_custom.INSTRUCTION', 'instruction=prompt_custom.INSTRUCTION + " Be careful."')
+        graph = aflow_tools.INITIAL_GRAPH.replace(
+            'prompt_custom.INSTRUCTION', 'prompt_custom.INSTRUCTION + " Be careful."'
+        )
         client = Client([f'<graph>{graph}</graph><prompt>{aflow_tools.INITIAL_PROMPT}</prompt><modification>review instruction</modification>'])
         seen = []
         async def evaluate(artifact):

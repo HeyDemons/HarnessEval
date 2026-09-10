@@ -998,13 +998,13 @@ class HarnessTests(unittest.TestCase):
         from benchmark_platform.harnesses.aflow_tools import make_artifact
         answer, environment = self.run_profile(
             "aflow",
-            ['{"tool":"lookup","arguments":{"key":"alpha"}}', '{"final":"6"}'],
+            ["plan", '{"tool":"lookup","arguments":{"key":"alpha"}}', '{"final":"6"}'],
             policy={"aflow_artifact": make_artifact(), "aflow_allow_initialization": True},
         )
         self.assertEqual(answer, "6")
         self.assertEqual(len(environment.calls), 1)
-        self.assertEqual(self.last_context.llm_calls, 2)
-        self.assertEqual(self.last_client.json_modes, [True, True])
+        self.assertEqual(self.last_context.llm_calls, 3)
+        self.assertEqual(self.last_client.json_modes, [False, True, True])
 
     def test_dylan_consensus_can_finish_without_tools(self) -> None:
         answer, environment = self.run_profile("dylan", ['{"final":"42"}'] * 4)

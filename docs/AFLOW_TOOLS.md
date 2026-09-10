@@ -1,7 +1,7 @@
 # AFlow tool workflow adaptation
 
 This is a secondary adapter beneath the official AFlow core. The public
-`aflow` method uses it only on interactive tool benchmarks. It transfers the
+`aflow` method uses it only on external-tool benchmarks. It transfers the
 pinned MCTS selection, expansion, experience, validation and freezing process
 to the benchmark's real tool lifecycle, without claiming ToolSession or
 ToolDecision are official operators. Historical results named `aflow-tools`
@@ -17,6 +17,14 @@ criticism and selection. Two extra operators connect them to the environment:
   its real observation. Unselected proposals never execute tools. A stale or
   already consumed proposal is rejected. Return the completed `session.answer`.
 
+The adapter initialization follows the official AFlow root's use of `Custom`:
+it first awaits one task-specific `Custom` planning node, then passes that plan
+into the real ToolSession/ToolDecision loop. It is therefore not the actor-only
+control. Every generated benchmark-tool graph must instantiate and await at
+least one official QA operator (`Custom`, `AnswerGenerate`, or `ScEnsemble`);
+an adapter-only ToolSession/ToolDecision loop is rejected as a degenerate
+actor-only graph rather than scored as AFlow.
+
 Every generation, including auxiliary QA operators, uses RunContext's shared
 model-response budget and token accounting. The final response slot prohibits
 new actions; proposal/commit cannot bypass it by inserting another generation.
@@ -31,7 +39,9 @@ manifest and complete search provenance. Batch evaluation reads
 replaced by underscores.
 The entire evaluation suite must exclude optimization cases, even when running
 a single evaluation case. The artifact and algorithm identity enter resume
-checks. BFCL's single-response suite remains incompatible.
+checks. On BFCL, internal workflow responses are aggregated into the single
+external declaration batch, declared functions are never executed, and the
+official scorer runs only after the workflow exits.
 
 Search example from a configured workspace:
 

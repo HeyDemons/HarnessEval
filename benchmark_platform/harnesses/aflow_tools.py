@@ -18,30 +18,38 @@ from .methods import ACTION_SYSTEM, parse_action_reply
 from .reply_contracts import action_schema
 
 FORMAT = "aflow-benchmark-tools-python-v2"
-IMPLEMENTATION = "aflow-official-core-benchmark-adapter-v4"
+IMPLEMENTATION = "aflow-official-core-benchmark-adapter-v5"
 SAFE_BUILTINS = {name: getattr(builtins, name) for name in
                  ("__build_class__", "str", "int", "float", "bool", "list", "dict", "tuple",
                   "range", "len", "enumerate", "zip", "min", "max", "sum", "sorted")}
 INITIAL_GRAPH = '''class Workflow:
     def __init__(self, name, llm_config, dataset):
         self.llm = create_llm_instance(llm_config)
+        self.plan = operator.Custom(self.llm)
         self.decide = operator.ToolDecision(self.llm)
 
     async def __call__(self, problem):
+        plan = await self.plan(input=problem, instruction=prompt_custom.PLAN_INSTRUCTION)
         session = operator.ToolSession(self.llm, problem)
         while session.active:
-            proposal = await self.decide(session, instruction=prompt_custom.INSTRUCTION)
+            proposal = await self.decide(
+                session, instruction=plan["response"] + "\\n" + prompt_custom.INSTRUCTION
+            )
             await session.commit(proposal)
         return session.answer, self.llm.get_usage_summary()["total_cost"]
 '''
-INITIAL_PROMPT = 'INSTRUCTION = "Use actual tool observations to complete the task. Verify the requested outcome before finishing."\n'
+INITIAL_PROMPT = '''PLAN_INSTRUCTION = """Create a concise task-specific execution plan. Identify required outcomes, dependencies, verification, and likely tool use. This is planning only: do not invent observations or claim that an action has run.\n\nTask:\n"""
+INSTRUCTION = """Follow the task-specific plan as advisory guidance, but make every action from the current real session state. Use actual tool observations, revise the plan when evidence requires it, verify every requested outcome, and finish only when the task is complete."""
+'''
 OPERATOR_DESCRIPTION = (
     "ToolSession(llm, problem) owns the real conversation and tools; active, answer and observation are readable. "
     "ToolDecision(llm)(session, instruction='') proposes one action without executing it. "
     "await session.commit(proposal) executes it exactly once, appends the real observation, or accepts a final answer. "
     "Keep a single session per invocation; never construct observations, mutate its state, or call tools outside commit. "
-    "You may use Custom/AnswerGenerate/ScEnsemble for planning or criticism and pass their outputs to the next "
-    "ToolDecision instruction. Only select a proposal from the current session state. All model calls share the "
+    "Every workflow must instantiate and actually await at least one official QA operator: "
+    "Custom, AnswerGenerate, or ScEnsemble. Use those operators for planning, criticism, or selection and pass "
+    "their outputs to the next ToolDecision instruction. Only select a proposal from the current session state. "
+    "All model calls share the "
     "benchmark budget. Do not catch budget/cancellation errors, extend limits, import host data, or embed task answers. "
     "Preserve the session loop and return session.answer. No WebShop-specific tools are available. "
     "Use only the supplied operators and ordinary assignments, if/while/for, lists/dicts, indexing, "
@@ -91,6 +99,7 @@ def validate_graph(graph: str, prompt: str):
                 raise ValueError('Tool graph may assign only its own operator fields')
             fields.add(node.attr)
     operators = {'ToolSession', 'ToolDecision', 'Custom', 'AnswerGenerate', 'ScEnsemble'}
+    official_operators = {'Custom', 'AnswerGenerate', 'ScEnsemble'}
     attributes = {'active', 'answer', 'observation', 'commit', 'get_usage_summary',
                   'get', 'append', 'join', 'replace', 'strip'}
     prompt_names = set()
@@ -136,6 +145,30 @@ def validate_graph(graph: str, prompt: str):
                     raise ValueError('Tool workflow cannot call arbitrary functions')
             elif not isinstance(node.func, ast.Attribute):
                 raise ValueError('Tool workflow cannot call computed values')
+    official_fields = set()
+    awaited_fields = set()
+    parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+    for node in ast.walk(tree):
+        targets = (
+            node.targets if isinstance(node, ast.Assign)
+            else [node.target] if isinstance(node, ast.AnnAssign)
+            else []
+        )
+        value = node.value if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+        if (isinstance(value, ast.Call) and isinstance(value.func, ast.Attribute)
+                and isinstance(value.func.value, ast.Name) and value.func.value.id == 'operator'
+                and value.func.attr in official_operators):
+            official_fields.update(
+                target.attr for target in targets
+                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name)
+                and target.value.id == 'self'
+            )
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name) and node.func.value.id == 'self'
+                and isinstance(parents.get(node), ast.Await)):
+            awaited_fields.add(node.func.attr)
+    if not official_fields & awaited_fields:
+        raise ValueError('AFlow benchmark-tool workflow must execute at least one official QA operator')
 
 
 @dataclass(frozen=True)

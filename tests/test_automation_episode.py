@@ -94,7 +94,7 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
                             '{"action":"finish","answer":"done"}'],
             "rewoo": ['Plan: work\n#E1 = work[{}]', "done"],
             "sa": [action, '{"final":"done"}'],
-            "aflow": [action, '{"final":"done"}'],
+            "aflow": ["plan", action, '{"final":"done"}'],
             "multi-persona": ["Final answer: done"],
             "magentic-one": [
                 "facts", "plan", PROFILE_RESPONSES["magentic-one"][2].replace("FileSurfer", "WebSurfer"),
