@@ -77,6 +77,13 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         effective_policy["max_turns"] = positive_int(
             os.environ.get("HARNESS_BFCL_AGENT_TURNS", 6), "HARNESS_BFCL_AGENT_TURNS"
         )
+        # Magentic-One owns an orchestrator loop above its participant turns. A
+        # proposal acknowledgement cannot satisfy its environment-state ledger,
+        # so bound that outer loop independently from each participant's guard.
+        effective_policy["magentic_max_rounds"] = positive_int(
+            os.environ.get("HARNESS_BFCL_MAGENTIC_ROUNDS", 3),
+            "HARNESS_BFCL_MAGENTIC_ROUNDS",
+        )
     if benchmark == "trajectory-bench":
         safe = list(bridge.metadata.get("safe_for_prelaunch") or [])
         effective_policy["speculation_safe_tools"] = safe

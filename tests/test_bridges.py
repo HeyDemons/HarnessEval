@@ -922,6 +922,8 @@ class BridgeMatrixTests(unittest.TestCase):
                             if profile.id == "sa":
                                 self.assertEqual(result["speculator_llm_calls"], 1)
                                 self.assertEqual(result["internal_llm_calls"], 2)
+                            if profile.id == "magentic-one":
+                                self.assertEqual(result["policy"]["magentic_max_rounds"], 3)
                         else:
                             self.assertTrue(result["final_answer"])
                         tool_name = load_case(benchmark, "case", root).tools[0].name
