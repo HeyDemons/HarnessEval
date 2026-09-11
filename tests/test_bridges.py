@@ -367,9 +367,15 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertNotIn("Use only the declared functions.", bridge.prompt)
         self.assertIn("Look up item 7.", bridge.prompt)
         self.assertEqual(bridge.metadata["messages"], messages)
-        self.assertTrue(result["result"]["declaration_only"])
-        self.assertEqual(result["result"]["execution"], "not_run")
-        self.assertFalse(result["result"]["terminate"])
+        self.assertEqual(
+            result["result"],
+            {
+                "declaration_only": True,
+                "proposal_only": True,
+                "execution": "not_run",
+                "observation": None,
+            },
+        )
 
     def test_bfcl_product_may_speculate_but_never_executes_external_functions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -394,8 +400,17 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(
             manifest["metadata"]["lifecycle"], "runtime_harness_declaration_v1"
         )
+        self.assertIn("observation=null", manifest["metadata"]["runtime_instruction"])
         self.assertEqual(manifest["safe_tools"], ["lookup_item"])
-        self.assertTrue(observation["result"]["proposal_only"])
+        self.assertEqual(
+            observation["result"],
+            {
+                "declaration_only": True,
+                "proposal_only": True,
+                "execution": "not_run",
+                "observation": None,
+            },
+        )
         self.assertEqual(finalized["environment_tool_calls"], 0)
         self.assertEqual(finalized["proposal_tool_calls"], 1)
         self.assertEqual(

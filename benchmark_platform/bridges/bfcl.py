@@ -42,6 +42,15 @@ OPENAPI_TYPES = frozenset(
     {"array", "boolean", "integer", "null", "number", "object", "string"}
 )
 
+BFCL_RUNTIME_INSTRUCTION = (
+    "Runtime evaluation contract: the supplied native functions are declaration-only candidates. "
+    "Invoking one records its name and arguments but does not execute the function or reveal any "
+    "environment state; its tool result contains observation=null. Complete your method's normal "
+    "workflow under that contract. After the workflow ends, the runtime deterministically publishes "
+    "the calls selected by the method as one tool-call batch for evaluation. Treat the null observation "
+    "as neither success nor failure evidence."
+)
+
 
 def _normalize_property_schema(value: Mapping[str, Any]) -> dict[str, Any]:
     """Apply BFCL's official source-type conversion recursively.
@@ -189,38 +198,24 @@ def render_bfcl_method_prompt(messages: list[dict[str, Any]]) -> str:
     )
 
 
-def declaration_only_result(function_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Acknowledge a BFCL answer call without pretending the declared function ran."""
+def declaration_only_result(_function_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return a neutral sentinel without exposing adapter policy to the model."""
 
     return {
-        "recorded_function_call": function_name,
-        "arguments": arguments,
         "declaration_only": True,
         "execution": "not_run",
-        "terminate": True,
-        "instruction": (
-            "BFCL records this assistant response's function-call batch as the answer, "
-            "does not execute the functions, and does not permit a later assistant turn."
-        ),
+        "observation": None,
     }
 
 
-def proposal_only_result(function_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Acknowledge an internal BFCL candidate without publishing or executing it."""
+def proposal_only_result(_function_name: str, _arguments: dict[str, Any]) -> dict[str, Any]:
+    """Return the same neutral synthetic observation to every runtime harness."""
 
     return {
-        "recorded_function_proposal": function_name,
-        "arguments": arguments,
         # MemGPT uses this marker to schedule its normal follow-up heartbeat without
         # adding request_heartbeat to the benchmark-owned function schema.
         "declaration_only": True,
         "proposal_only": True,
         "execution": "not_run",
-        "terminate": False,
-        "instruction": (
-            "This is an internal candidate for the final BFCL answer. It was not executed "
-            "or published and contains no environment observation. Continue the method's normal "
-            "algorithm, do not repeat this action unless multiplicity is required, and finish naturally. "
-            "The runtime will publish only the method-selected action chain."
-        ),
+        "observation": None,
     }

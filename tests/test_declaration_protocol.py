@@ -113,7 +113,17 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             [message["role"] for message in client.requests[0]["messages"]],
             ["system", "user"],
         )
-        self.assertEqual(client.requests[0]["messages"][-1], {"role": "user", "content": "Call the function"})
+        self.assertEqual(client.requests[0]["messages"][-1]["role"], "user")
+        self.assertIn("Call the function", client.requests[0]["messages"][-1]["content"])
+        self.assertIn("Runtime evaluation contract", client.requests[0]["messages"][-1]["content"])
+        for request in client.requests:
+            self.assertEqual(
+                sum(
+                    str(message.get("content") or "").count("Runtime evaluation contract")
+                    for message in request["messages"]
+                ),
+                1,
+            )
         native_tools = client.requests[0]["tools"]
         self.assertEqual(native_tools[0]["function"]["name"], "lookup_item")
         self.assertNotIn("parallel", native_tools[0]["function"])
@@ -121,6 +131,23 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [(call["name"], call["arguments"]) for call in result["committed_calls"]],
             [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "b"})],
+        )
+        tool_message = next(
+            message for message in client.requests[1]["messages"]
+            if message["role"] == "tool"
+        )
+        observation = json.loads(tool_message["content"].removeprefix("Observation: "))
+        self.assertEqual(
+            observation,
+            {
+                "ok": True,
+                "result": {
+                    "declaration_only": True,
+                    "proposal_only": True,
+                    "execution": "not_run",
+                    "observation": None,
+                },
+            },
         )
 
     async def test_source_system_message_is_not_flattened_or_duplicated(self):
@@ -152,9 +179,13 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed")
         messages = client.requests[0]["messages"]
-        self.assertEqual([message["role"] for message in messages], ["system", "system", "user"])
+        self.assertEqual(
+            [message["role"] for message in messages],
+            ["system", "system", "user"],
+        )
         self.assertEqual(sum(message["content"] == "official system" for message in messages), 1)
-        self.assertEqual(messages[-1], {"role": "user", "content": "official user"})
+        self.assertIn("official user", messages[-1]["content"])
+        self.assertIn("Runtime evaluation contract", messages[-1]["content"])
 
     async def test_no_native_calls_publishes_an_atomic_empty_batch(self):
         with tempfile.TemporaryDirectory() as directory:

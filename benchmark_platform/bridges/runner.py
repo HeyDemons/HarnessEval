@@ -86,6 +86,19 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         effective_policy["branch_safe_tools"] = safe
     tool_capable = profile.tool_contract != "no-external-tools"
     task_messages = list(bridge.metadata.get("messages") or []) if benchmark == "bfcl" else []
+    if benchmark == "bfcl":
+        runtime_instruction = str(bridge.metadata["runtime_instruction"])
+        for index in range(len(task_messages) - 1, -1, -1):
+            if task_messages[index].get("role") == "user":
+                task_messages[index] = {
+                    **task_messages[index],
+                    "content": str(task_messages[index].get("content") or "")
+                    + "\n\n"
+                    + runtime_instruction,
+                }
+                break
+        else:
+            task_messages.append({"role": "user", "content": runtime_instruction})
     client = completion_client_from_env()
     context = RunContext(
         profile_id,
