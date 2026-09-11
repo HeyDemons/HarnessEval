@@ -241,6 +241,67 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(prediction["execution"], "not_run")
         self.assertFalse(prediction["adopted_by_actor"])
 
+    async def test_dmas_split_selects_only_the_terminal_executor_candidate(self):
+        responses = [
+            '{"requirements":{"reasoning":1.0}}',
+            json.dumps({
+                "decision": "split",
+                "reason": "two parts",
+                "next_agent_id": None,
+                "executable": "prepare the first call",
+                "remaining": "prepare the second call",
+                "description": None,
+            }),
+            "reason about the first subtask",
+            native_batch("first"),
+            json.dumps({
+                "status": "incompleted",
+                "reason": "second call remains",
+                "next_agent_id": "1",
+                "remaining": "prepare the second call",
+            }),
+            json.dumps({
+                "decision": "execute",
+                "reason": "finish",
+                "next_agent_id": None,
+                "executable": None,
+                "remaining": None,
+                "description": "combine the peer candidate with the remaining call",
+            }),
+            "reason about the terminal batch",
+            native_batch("first", "second"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = Client(responses)
+            with patch.object(runner, "completion_client_from_env", return_value=client):
+                result = await runner.execute("bfcl", "dmas", "case", source, job, {})
+            events = [
+                json.loads(line)
+                for line in (job / "harness_trace.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["internal_llm_calls"], 8)
+        self.assertEqual(result["source_response_ids"], [8])
+        self.assertEqual(
+            [call["arguments"]["id"] for call in result["committed_calls"]],
+            ["first", "second"],
+        )
+        self.assertEqual(result["proposal_calls"], [])
+        self.assertEqual(
+            sum(event["event"] == "declaration_candidate_response" for event in events),
+            2,
+        )
+        self.assertEqual(
+            sum(event["event"] == "method_declaration_response" for event in events),
+            1,
+        )
+
     def test_native_parser_preserves_duplicates(self):
         completion = Client._completion(native_batch("a", "a"))
         parsed = parse_native_declarations(completion)

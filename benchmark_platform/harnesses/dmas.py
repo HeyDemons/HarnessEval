@@ -6,9 +6,12 @@ import json
 import math
 import random
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .core import RunContext
+
+if TYPE_CHECKING:
+    from .declaration import DeclarationOutput
 
 
 ABILITY_NAMES = (
@@ -226,7 +229,7 @@ async def _execute(
     current_task: str,
     progress: list[dict[str, str]],
     guidance: str = "",
-) -> str:
+) -> tuple[str, DeclarationOutput | None]:
     from .methods import _json_tool_loop
 
     thought = await _reason(
@@ -246,24 +249,38 @@ async def _execute(
     if ctx.policy.get("bfcl_declaration_mode") is True:
         from .declaration import (
             MULTI_MODEL_PROTOCOL,
-            complete_native_declaration,
             declaration_messages,
+            native_declaration_candidate,
         )
-        return await complete_native_declaration(
+        output = await native_declaration_candidate(
             ctx,
             role=f"dmas_executor_{agent.id}",
             messages=declaration_messages(
                 ctx,
                 method_instruction=(
-                    "You are DMAS's selected executor. The decentralized routers have already chosen "
-                    "you as the authoritative output node. Publish the complete BFCL native call batch "
-                    "in this response; functions are declarations only and return no observations."
+                    "You are a selected DMAS executor. Produce a complete BFCL native call-batch "
+                    "candidate for the major task, using completed peer candidates and your current "
+                    "subtask. The decentralized router may pass this candidate onward or select this "
+                    "same response as the final output. Functions are declarations only and return no "
+                    "observations."
                 ),
                 internal_context=executor_context,
             ),
             protocol=MULTI_MODEL_PROTOCOL,
         )
-    return await _json_tool_loop(ctx, f"dmas_executor_{agent.id}", prompt=executor_context)
+        report = json.dumps(
+            {
+                "native_call_candidate": [
+                    {"name": name, "arguments": arguments}
+                    for name, arguments, _call_id in output.calls
+                ],
+                "response_id": output.response_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return report, output
+    return await _json_tool_loop(ctx, f"dmas_executor_{agent.id}", prompt=executor_context), None
 
 
 async def _route_after_split(
@@ -326,6 +343,7 @@ async def run_dmas(ctx: RunContext) -> str:
     visited: set[str] = set()
     forward_count = 0
     execution_count = 0
+    last_declaration_candidate: DeclarationOutput | None = None
     await ctx.trace.emit(
         "dmas_start",
         entry_agent=current.id,
@@ -372,13 +390,19 @@ async def run_dmas(ctx: RunContext) -> str:
         if decision == "execute":
             execution_count += 1
             guidance = str(route.get("description") or "")
-            return await _execute(
+            result, candidate = await _execute(
                 ctx,
                 current,
                 current_task=current_task,
                 progress=progress,
                 guidance=guidance,
             )
+            if ctx.policy.get("bfcl_declaration_mode") is True:
+                if candidate is None:
+                    raise RuntimeError("DMAS terminal executor produced no BFCL declaration candidate")
+                from .declaration import stage_declaration_output
+                await stage_declaration_output(ctx, candidate)
+            return result
 
         if decision != "split":
             raise ValueError(f"DMAS router returned unsupported decision: {decision or '<empty>'}")
@@ -390,7 +414,14 @@ async def run_dmas(ctx: RunContext) -> str:
             raise ValueError("DMAS split decision omitted remaining subtask")
 
         execution_count += 1
-        result = await _execute(ctx, current, current_task=executable.strip(), progress=progress)
+        result, candidate = await _execute(
+            ctx,
+            current,
+            current_task=executable.strip(),
+            progress=progress,
+        )
+        if candidate is not None:
+            last_declaration_candidate = candidate
         progress.append({"agent_id": current.id, "subtask": executable.strip(), "result": result})
         await ctx.trace.emit("dmas_progress", agent_id=current.id, subtask=executable.strip(), result=result)
 
@@ -403,6 +434,11 @@ async def run_dmas(ctx: RunContext) -> str:
         )
         status = str(handoff.get("status", "")).lower().strip()
         if status == "completed":
+            if ctx.policy.get("bfcl_declaration_mode") is True:
+                if candidate is None:
+                    raise RuntimeError("DMAS completed split produced no BFCL declaration candidate")
+                from .declaration import stage_declaration_output
+                await stage_declaration_output(ctx, candidate)
             return result
         if status != "incompleted":
             raise ValueError("DMAS post-split router must return completed or incompleted")
@@ -425,4 +461,9 @@ async def run_dmas(ctx: RunContext) -> str:
     # Official model/wall budgets still raise at their own boundaries.
     await ctx.trace.emit("dmas_execution_limit", implementation="retained-executor-result-v2",
                          execution_count=execution_count, limit=max_executions)
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        if last_declaration_candidate is None:
+            raise RuntimeError("DMAS execution limit reached without a BFCL declaration candidate")
+        from .declaration import stage_declaration_output
+        await stage_declaration_output(ctx, last_declaration_candidate)
     return progress[-1]["result"]
