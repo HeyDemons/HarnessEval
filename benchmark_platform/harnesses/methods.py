@@ -182,26 +182,6 @@ def _parse_react(text: str) -> dict[str, Any]:
 
 
 async def run_react(ctx: RunContext) -> str:
-    if ctx.policy.get("bfcl_declaration_mode") is True:
-        from .declaration import (
-            NATIVE_SINGLE_RESPONSE_PROTOCOL,
-            complete_native_declaration,
-            declaration_messages,
-        )
-        return await complete_native_declaration(
-            ctx,
-            role="react",
-            messages=declaration_messages(
-                ctx,
-                method_instruction=(
-                    "Apply ReAct's Thought/Action discipline internally to select the answer, but this "
-                    "BFCL task has no executable action or Observation turn. In this one assistant "
-                    "response, declare every required function call with the native tools. Return no "
-                    "call when none is relevant."
-                ),
-            ),
-            protocol=NATIVE_SINGLE_RESPONSE_PROTOCOL,
-        )
     protocol = ctx.policy.get("react_protocol", "text")
     if protocol == "native":
         from .react_native import run_react_native
@@ -269,7 +249,15 @@ async def run_react(ctx: RunContext) -> str:
             )
             continue
         if "final" in action:
-            return str(action["final"])
+            answer = str(action["final"])
+            if ctx.policy.get("bfcl_declaration_mode") is True:
+                from .declaration import stage_selected_tool_records
+                await stage_selected_tool_records(
+                    ctx,
+                    list(ctx.environment.proposal_calls),
+                    content=answer,
+                )
+            return answer
         if finalizing:
             raise RuntimeError("ReAct turn budget exhausted: final response requested another action")
         result = await ctx.environment.call(action["tool"], action["arguments"])

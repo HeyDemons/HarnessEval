@@ -23,10 +23,11 @@ acknowledgement, but only the method's existing final output node can produce
 `committed_calls`. Multi-model final nodes use
 `multi-model-declaration-aggregation-v1`: their synthesis/solver/orchestrator
 itself emits the native batch. DyLAN applies its T-FFN/reformation vote once to
-complete batch candidates and selects one existing candidate response. SA's
-Speculator prediction is recorded but neither executed nor injected into the
-Actor; its native Actor response remains authoritative. Multi-Persona receives
-no tool schema and publishes an empty batch under its no-external-tools contract.
+complete batch candidates and selects one existing candidate response. ReAct,
+SA and MemGPT run their complete native harness loops against the non-executing
+declaration channel. SA speculates on every eligible turn, but only Actor-adopted
+actions enter the selected chain. Multi-Persona receives no tool schema and
+publishes an empty batch under its no-external-tools contract.
 
 The boundary is committed even for an empty batch. Native arguments are parsed
 atomically before publication. Results include `committed_response_id`,
@@ -63,8 +64,10 @@ This portable local stop supports reasoning/Responses providers without a
 compatible server-side stop parameter. Raw output and all provider usage remain
 in the trace. It corrects consumed-output semantics, not generation latency or
 tokens spent after the marker. The react_observation_stop event records both
-lengths. On BFCL there is no Observation phase: ReAct's output node emits the
-complete native batch in one outward response.
+lengths. On BFCL, ReAct still runs its complete serial loop; selected actions
+receive an explicit declaration-only acknowledgement rather than an environment
+Observation. When ReAct naturally emits Final Answer, the runtime publishes the
+ordered selected-action chain as the one outward native batch.
 
 Reference: [ReAct notebook](https://github.com/ysymyth/ReAct/blob/6bdb3a1fd38b8188fc7ba4102969fe483df8fdc9/hotpotqa.ipynb).
 

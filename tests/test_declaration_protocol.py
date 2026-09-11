@@ -12,6 +12,7 @@ from benchmark_platform.harnesses.declaration import (
     MULTI_MODEL_PROTOCOL,
     NATIVE_SINGLE_RESPONSE_PROTOCOL,
     PUBLISHER_PROTOCOL,
+    SELECTED_ACTION_CHAIN_PROTOCOL,
     complete_native_declaration,
     declaration_messages,
     parse_native_declarations,
@@ -206,17 +207,47 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["source_response_ids"], [2])
         self.assertEqual(result["declaration_output_protocol"], MULTI_MODEL_PROTOCOL)
 
-    async def test_sa_prediction_is_not_executed_or_adopted(self):
+    async def test_react_runs_full_loop_and_publishes_selected_action_chain(self):
+        responses = [
+            'Thought: select first\nAction: lookup_item\nAction Input: {"id":"a"}',
+            'Thought: select second\nAction: lookup_item\nAction Input: {"id":"b"}',
+            "Thought: complete\nFinal Answer: done",
+        ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, job = root / "input", root / "job"
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            actor = Client(native_batch("a", "b"))
-            speculator = Client(
-                '{"actions":[{"tool":"lookup_item","arguments":{"id":"wrong"}}]}'
-            )
+            with patch.object(runner, "completion_client_from_env", return_value=Client(responses)):
+                result = await runner.execute("bfcl", "react", "case", source, job, {})
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["agent_turns"], 3)
+        self.assertEqual(result["source_response_ids"], [1, 2])
+        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
+        self.assertEqual(
+            [call["arguments"]["id"] for call in result["committed_calls"]],
+            ["a", "b"],
+        )
+
+    async def test_sa_runs_full_speculative_loop_and_publishes_only_actor_actions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            actor = Client([
+                '{"tool":"lookup_item","arguments":{"id":"a"}}',
+                '{"tool":"lookup_item","arguments":{"id":"b"}}',
+                '{"final":"done"}',
+            ])
+            speculator = Client([
+                '{"actions":[{"tool":"lookup_item","arguments":{"id":"a"}}]}',
+                '{"actions":[{"tool":"lookup_item","arguments":{"id":"b"}}]}',
+                '{"actions":[{"tool":"lookup_item","arguments":{"id":"wrong"}}]}',
+            ])
             with (
                 patch.object(runner, "completion_client_from_env", return_value=actor),
                 patch.object(runner, "sa_speculator_client_from_env", return_value=speculator),
@@ -230,16 +261,46 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["actor_llm_calls"], 1)
-        self.assertEqual(result["speculator_llm_calls"], 1)
-        self.assertEqual(result["proposal_calls"], [])
+        self.assertEqual(result["actor_llm_calls"], 3)
+        self.assertEqual(result["speculator_llm_calls"], 3)
+        self.assertEqual(result["internal_llm_calls"], 6)
+        self.assertEqual(len(result["proposal_calls"]), 2)
+        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
         self.assertEqual(
             [call["arguments"]["id"] for call in result["committed_calls"]],
             ["a", "b"],
         )
-        prediction = next(event for event in events if event["event"] == "sa_bfcl_prediction")
-        self.assertEqual(prediction["execution"], "not_run")
-        self.assertFalse(prediction["adopted_by_actor"])
+        self.assertEqual(sum(event["event"] == "sa_cache_hit" for event in events), 2)
+        self.assertTrue(any(event["event"] == "sa_predictions_discarded" for event in events))
+
+    async def test_memgpt_runs_processor_heartbeat_loop_before_publication(self):
+        responses = [
+            '{"thought":"first","function":"lookup_item","arguments":{"id":"a"}}',
+            '{"thought":"second","function":"lookup_item","arguments":{"id":"b"}}',
+            '{"thought":"done","function":"send_message","arguments":{"message":"complete"}}',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            with patch.object(runner, "completion_client_from_env", return_value=Client(responses)):
+                result = await runner.execute("bfcl", "memgpt", "case", source, job, {})
+            events = [
+                json.loads(line)
+                for line in (job / "harness_trace.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["agent_turns"], 3)
+        self.assertEqual(result["source_response_ids"], [1, 2])
+        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
+        self.assertEqual(
+            [call["arguments"]["id"] for call in result["committed_calls"]],
+            ["a", "b"],
+        )
+        self.assertEqual(sum(event["event"] == "memgpt_function" for event in events), 2)
 
     async def test_dmas_split_selects_only_the_terminal_executor_candidate(self):
         responses = [

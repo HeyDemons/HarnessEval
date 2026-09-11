@@ -106,9 +106,12 @@ def _benchmark_function_schemas(ctx: RunContext) -> list[dict[str, Any]]:
     # A native episode exposes its user channel as a bridge tool. MemGPT already owns the
     # equivalent published function (`send_message`), so advertising both would let the
     # model bypass MemGPT's function history and memory lifecycle.
-    declaration_only = bool(ctx.policy.get("declaration_only_tools"))
+    declaration_only = bool(
+        ctx.policy.get("declaration_only_tools")
+        or ctx.policy.get("bfcl_declaration_mode") is True
+    )
     return [
-        copy.deepcopy(tool.prompt_schema())
+        copy.deepcopy(tool.native_schema())
         if declaration_only
         else _with_required_heartbeat(tool.prompt_schema())
         for tool in ctx.environment.tools.values()
@@ -151,7 +154,10 @@ def _system_message(
     archival: list[dict[str, Any]],
 ) -> str:
     benchmark_functions = _benchmark_function_schemas(ctx)
-    if ctx.policy.get("declaration_only_tools"):
+    if (
+        ctx.policy.get("declaration_only_tools")
+        or ctx.policy.get("bfcl_declaration_mode") is True
+    ):
         benchmark_contract = (
             "Benchmark functions are declaration-only answer calls: use each published argument schema exactly "
             "and do not add request_heartbeat. A successful declaration-only call schedules an immediate "
@@ -178,29 +184,6 @@ async def run_memgpt(ctx: RunContext) -> str:
     collisions = sorted(set(_MEMORY_FUNCTIONS) & set(ctx.environment.names))
     if collisions:
         raise ValueError(f"MemGPT memory functions collide with benchmark tools: {collisions}")
-
-    if ctx.policy.get("bfcl_declaration_mode") is True:
-        from .declaration import (
-            METHOD_FINAL_PROTOCOL,
-            complete_native_declaration,
-            declaration_messages,
-        )
-        return await complete_native_declaration(
-            ctx,
-            role="memgpt_processor",
-            messages=declaration_messages(
-                ctx,
-                method_instruction=(
-                    "You are MemGPT's processor at a cold-start, single-turn declaration boundary. "
-                    "Core memory says the human expects the task to be completed accurately; recall "
-                    "contains only the current request and archival memory is empty. BFCL functions "
-                    "never execute, so there is no heartbeat or function-result turn. In this processor "
-                    "response, publish every required call through the native tools, or no call when "
-                    "none is relevant."
-                ),
-            ),
-            protocol=METHOD_FINAL_PROTOCOL,
-        )
 
     core = {
         "persona": "I am a persistent tool-using assistant that preserves important state through memory functions.",
@@ -332,6 +315,13 @@ async def run_memgpt(ctx: RunContext) -> str:
                 raise ValueError("send_message omitted message")
             message = str(arguments["message"])
             if _NATIVE_USER_TOOL not in ctx.environment.names:
+                if ctx.policy.get("bfcl_declaration_mode") is True:
+                    from .declaration import stage_selected_tool_records
+                    await stage_selected_tool_records(
+                        ctx,
+                        list(ctx.environment.proposal_calls),
+                        content=message,
+                    )
                 return message
 
             # The original MemGPT CLI keeps one Agent object alive: send_message returns

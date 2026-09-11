@@ -17,7 +17,7 @@ from .core import RunContext
 PUBLISHER_PROTOCOL = "bfcl-native-declaration-boundary-v2"
 NATIVE_SINGLE_RESPONSE_PROTOCOL = "bfcl-native-single-response-v1"
 MULTI_MODEL_PROTOCOL = "multi-model-declaration-aggregation-v1"
-METHOD_FINAL_PROTOCOL = "bfcl-method-final-native-v1"
+SELECTED_ACTION_CHAIN_PROTOCOL = "bfcl-selected-action-chain-v1"
 TEXT_ONLY_PROTOCOL = "bfcl-text-only-empty-v1"
 
 
@@ -205,6 +205,54 @@ async def aggregate_declaration_outputs(
         protocol=protocol,
     )
     return aggregate
+
+
+async def stage_selected_tool_records(
+    ctx: RunContext,
+    records: list[dict[str, Any]],
+    *,
+    content: str,
+    protocol: str = SELECTED_ACTION_CHAIN_PROTOCOL,
+) -> None:
+    """Publish the complete action chain selected by a finished runtime harness.
+
+    The records are authoritative method actions already present in ToolEnvironment,
+    not raw model suggestions or speculative drafts. BFCL's proposal environment has
+    executed none of them. The harness's natural terminal response owns the outward
+    response id while source ids retain where each selected action originated.
+    """
+
+    response_id = ctx.last_actor_response_id
+    if response_id is None:
+        raise ValueError("BFCL runtime harness produced no terminal Actor response")
+    calls: list[tuple[str, dict[str, Any], str | None]] = []
+    source_response_ids: list[int] = []
+    for record in records:
+        name = record.get("name")
+        arguments = record.get("arguments")
+        if not isinstance(name, str) or not name or not isinstance(arguments, dict):
+            raise ValueError("BFCL selected action record is malformed")
+        calls.append((name, dict(arguments), None))
+        source = record.get("assistant_response_id")
+        if isinstance(source, int) and source not in source_response_ids:
+            source_response_ids.append(source)
+    if not source_response_ids:
+        source_response_ids.append(response_id)
+    output = DeclarationOutput(
+        response_id=response_id,
+        source_response_ids=tuple(source_response_ids),
+        calls=tuple(calls),
+        content=content,
+        protocol=protocol,
+    )
+    await ctx.trace.emit(
+        "selected_action_chain_complete",
+        response_id=response_id,
+        source_response_ids=source_response_ids,
+        call_count=len(calls),
+        protocol=protocol,
+    )
+    await stage_declaration_output(ctx, output)
 
 
 async def publish_method_declaration(

@@ -60,6 +60,13 @@ async def run_react_native(ctx: RunContext) -> str:
                         if not isinstance(arguments.get("answer"), str):
                             raise ValueError("react_finish requires a string answer")
                         await ctx.trace.emit("react_finished", response_id=ctx.last_actor_response_id)
+                        if ctx.policy.get("bfcl_declaration_mode") is True:
+                            from .declaration import stage_selected_tool_records
+                            await stage_selected_tool_records(
+                                ctx,
+                                list(ctx.environment.proposal_calls),
+                                content=arguments["answer"],
+                            )
                         return arguments["answer"]
                     result = await ctx.environment.call(name, arguments)
                 except (ValueError, json.JSONDecodeError) as error:

@@ -31,7 +31,7 @@ from .adapters import load_case
 from .bfcl import render_bfcl_method_prompt
 
 
-_BFCL_ONE_ACTOR_RESPONSE = {"actor-only", "react", "sa", "multi-persona"}
+_BFCL_ONE_ACTOR_RESPONSE = {"actor-only", "multi-persona"}
 
 
 def _write(path: Path, value: Any) -> None:

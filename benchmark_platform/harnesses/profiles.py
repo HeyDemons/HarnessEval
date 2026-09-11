@@ -36,7 +36,8 @@ PROFILES = (
         tool_contract="dynamic",
         notes=("Supports explicit native serial tools with a finish control action, or text ReAct with a local "
                "Observation stop. The workspace batch runner selects native by default and records the protocol. "
-               "BFCL uses a separate one-response native declaration adapter."),
+               "BFCL runs the complete text ReAct loop against a non-executing declaration channel and publishes "
+               "only the Actor-selected action chain when the harness naturally finishes."),
     ),
     HarnessProfile(
         id="plan-execute",

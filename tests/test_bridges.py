@@ -165,8 +165,23 @@ def bfcl_native_batch(*ids: str) -> dict:
 def bfcl_responses(profile_id: str) -> list:
     batch = bfcl_native_batch("ok")
     responses = list(RESPONSES[profile_id])
-    if profile_id in {"actor-only", "react", "sa", "memgpt"}:
+    if profile_id == "actor-only":
         return [batch]
+    if profile_id == "react":
+        return [
+            'Thought: act\nAction: lookup_item\nAction Input: {"id":"ok"}',
+            "Thought: complete\nFinal Answer: done",
+        ]
+    if profile_id == "sa":
+        return [
+            '{"tool":"lookup_item","arguments":{"id":"ok"}}',
+            '{"final":"done"}',
+        ]
+    if profile_id == "memgpt":
+        return [
+            '{"thought":"act","function":"lookup_item","arguments":{"id":"ok"}}',
+            '{"thought":"done","function":"send_message","arguments":{"message":"done"}}',
+        ]
     if profile_id == "plan-execute":
         responses[-1] = batch
     elif profile_id == "cmas":
@@ -929,7 +944,7 @@ class BridgeMatrixTests(unittest.TestCase):
             job.mkdir()
             with patch.object(bridge_runner, "completion_client_from_env", return_value=client), \
                  patch.object(bridge_runner, "sa_speculator_client_from_env",
-                              return_value=RecordingClient(['{"actions":[]}'])):
+                              return_value=RecordingClient(['{"actions":[]}'] * 10)):
                 result = await bridge_runner.execute(benchmark, profile_id, "case", root, job, policy)
             return result, client
 
@@ -952,8 +967,8 @@ class BridgeMatrixTests(unittest.TestCase):
                             expected_calls = 0 if profile.tool_contract == "no-external-tools" else 1
                             self.assertEqual(len(result["committed_calls"]), expected_calls)
                             if profile.id == "sa":
-                                self.assertEqual(result["speculator_llm_calls"], 1)
-                                self.assertEqual(result["internal_llm_calls"], 2)
+                                self.assertEqual(result["speculator_llm_calls"], 2)
+                                self.assertEqual(result["internal_llm_calls"], 4)
                             if profile.id == "magentic-one":
                                 self.assertEqual(result["policy"]["magentic_max_rounds"], 3)
                         else:
