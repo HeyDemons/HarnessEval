@@ -26,7 +26,11 @@ OFFICIAL = {
     "gaia": {"kind": "workspace", "source": "gaia-benchmark/GAIA", "universal_time_limit": None},
     "gdpval": {"kind": "artifact-workspace", "source": "openai/gdpval", "universal_time_limit": None},
     "trajectory-bench": {"kind": "remote-tools", "source": "PengfeiHePower/TRAJECT-Bench@2723fd8", "universal_time_limit": None},
-    "bfcl": {"kind": "single-turn-declaration", "model_responses": 1, "source": "ShishirPatil/gorilla@6ea5797"},
+    "bfcl": {
+        "kind": "runtime-harness-declaration",
+        "external_assistant_responses": 1,
+        "source": "ShishirPatil/gorilla@6ea5797 + deterministic harness adapter",
+    },
     "tau2": {"kind": "native-episode", "simulation_steps": TAU2_MAX_STEPS, "max_errors": NATIVE_MAX_ERRORS,
              "source": "sierra-research/tau2-bench@79975ac:src/tau2/config.py"},
     "vitabench": {"kind": "native-episode", "simulation_steps": VITA_MAX_STEPS, "max_errors": NATIVE_MAX_ERRORS,

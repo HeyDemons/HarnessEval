@@ -13,7 +13,7 @@ alone is not a wall-time guarantee.
 
 | Benchmark | Public/native constraint | Local measurement wall envelope |
 | --- | --- | --- |
-| BFCL single-turn suite | One assistant response, including its complete declaration batch | 900 s |
+| BFCL runtime-harness suite | One scored outward declaration batch; internal inference reported separately | 900 s |
 | Tau2 | 200 simulation steps, 10 consecutive errors by the pinned native defaults | 900 s |
 | VitaBench | 300 simulation steps, 10 consecutive errors by the pinned CLI defaults | 1200 s |
 | AutomationBench public | 200 model-response steps (local setting; pinned CLI default is 50) | 900 s |
