@@ -269,7 +269,7 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
                 "description": "combine the peer candidate with the remaining call",
             }),
             "reason about the terminal batch",
-            native_batch("first", "second"),
+            native_batch("second"),
         ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -287,7 +287,7 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["internal_llm_calls"], 8)
-        self.assertEqual(result["source_response_ids"], [8])
+        self.assertEqual(result["source_response_ids"], [4, 8])
         self.assertEqual(
             [call["arguments"]["id"] for call in result["committed_calls"]],
             ["first", "second"],
@@ -299,6 +299,10 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             sum(event["event"] == "method_declaration_response" for event in events),
+            1,
+        )
+        self.assertEqual(
+            sum(event["event"] == "declaration_outputs_aggregated" for event in events),
             1,
         )
 

@@ -169,6 +169,44 @@ async def stage_declaration_output(ctx: RunContext, output: DeclarationOutput) -
     )
 
 
+async def aggregate_declaration_outputs(
+    ctx: RunContext,
+    outputs: list[DeclarationOutput],
+    *,
+    protocol: str = MULTI_MODEL_PROTOCOL,
+) -> DeclarationOutput:
+    """Aggregate only algorithm-selected output nodes into one runtime response.
+
+    This is not a proposal union: callers supply the committed planner/route path.
+    Order and duplicate calls are preserved, and the terminal selected response owns
+    the one outward response id while every contributing source id remains explicit.
+    """
+
+    if not outputs:
+        raise ValueError("BFCL declaration aggregation requires at least one selected output")
+    terminal = outputs[-1]
+    source_response_ids = tuple(
+        response_id
+        for output in outputs
+        for response_id in output.source_response_ids
+    )
+    aggregate = DeclarationOutput(
+        response_id=terminal.response_id,
+        source_response_ids=source_response_ids,
+        calls=tuple(call for output in outputs for call in output.calls),
+        content=terminal.content,
+        protocol=protocol,
+    )
+    await ctx.trace.emit(
+        "declaration_outputs_aggregated",
+        response_id=aggregate.response_id,
+        source_response_ids=list(source_response_ids),
+        call_count=len(aggregate.calls),
+        protocol=protocol,
+    )
+    return aggregate
+
+
 async def publish_method_declaration(
     ctx: RunContext,
     *,
