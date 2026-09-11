@@ -225,6 +225,35 @@ class ToolDecision:
         self.llm.calls += 1
         if self.llm.calls > int(ctx.policy.get("aflow_max_operator_calls", 100)):
             raise RuntimeError("AFlow operator call budget exhausted")
+        if ctx.policy.get("bfcl_declaration_mode") is True:
+            from .declaration import (
+                MULTI_MODEL_PROTOCOL,
+                complete_native_declaration,
+                declaration_messages,
+            )
+            content = await complete_native_declaration(
+                ctx,
+                role=f"aflow_tools_{self.name}_{self.llm.calls}",
+                messages=declaration_messages(
+                    ctx,
+                    method_instruction=(
+                        "You are the frozen AFlow graph's terminal ToolDecision operator. Use the "
+                        "upstream QA-operator output as advisory reasoning and publish the complete "
+                        "BFCL native call batch in this response. Functions never execute and there "
+                        "is no Observation turn."
+                    ),
+                    internal_context=instruction,
+                ),
+                protocol=MULTI_MODEL_PROTOCOL,
+            )
+            action = {"final": content}
+            await ctx.trace.emit(
+                "aflow_tool_proposal",
+                step=session.version + 1,
+                action=action,
+                declaration_response=True,
+            )
+            return Proposal(session, session.version, content, action, True)
         finalizing = ctx.should_finalize(session.version) or ctx.model_budget.final_response
         version = session.version
         messages = [*session.messages, {"role": "user", "content": instruction}]

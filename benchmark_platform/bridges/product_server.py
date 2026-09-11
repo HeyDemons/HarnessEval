@@ -61,15 +61,21 @@ class ProductBridge:
         (workspace / "workspace").mkdir(exist_ok=True)
         bridge = load_case(benchmark, case_id, workspace)
         self.prompt = bridge.prompt
-        self.metadata = bridge.metadata
+        self.metadata = dict(bridge.metadata)
         self.trace = JsonlTrace(job / "tool_trace.jsonl")
-        self.environment = ToolEnvironment(bridge.tools, self.trace, bridge.handlers)
-        self.tools = [tool.prompt_schema() for tool in bridge.tools]
-        # BFCL tools are answer declarations, not executable reads. Advertising them as
-        # safe for speculative prelaunch made PERSEUS call /execute before the actor had
-        # even committed a function call, which both violates BFCL's single-turn protocol
-        # and turns a bridge/network problem into model feedback. The agent-side extension
-        # acknowledges the actor's declared calls locally and terminates that first batch.
+        self.environment = ToolEnvironment(
+            bridge.tools,
+            self.trace,
+            bridge.handlers,
+            declaration_only=benchmark == "bfcl",
+            expose_execution_metadata=benchmark != "bfcl",
+        )
+        self.tools = [
+            tool.native_schema() if benchmark == "bfcl" else tool.prompt_schema()
+            for tool in bridge.tools
+        ]
+        # A BFCL tool call is the outward answer itself. The product extension terminates
+        # locally on that first assistant batch; /execute is never part of this lifecycle.
         declaration_only = self.metadata.get("lifecycle") == "single_turn_declaration_only"
         explicit_safe = self.metadata.get("safe_for_prelaunch")
         if declaration_only:
@@ -89,6 +95,8 @@ class ProductBridge:
             ]
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        if self.benchmark == "bfcl":
+            raise RuntimeError("BFCL declarations are scored locally and never use /execute")
         if self.benchmark in {"gaia", "gdpval"}:
             arguments = translate_product_workspace_arguments(name, arguments)
         future = asyncio.run_coroutine_threadsafe(
@@ -121,8 +129,12 @@ class ProductBridge:
                     "execution_seconds": time.perf_counter() - self.started,
                     "tool_calls": len(payload.get("committed_calls") or []),
                     "calls": list(payload.get("committed_calls") or []),
-                    "environment_tool_calls": len(self.environment.calls),
-                    "environment_calls": list(self.environment.calls),
+                    "environment_tool_calls": (
+                        0 if self.benchmark == "bfcl" else len(self.environment.calls)
+                    ),
+                    "environment_calls": (
+                        [] if self.benchmark == "bfcl" else list(self.environment.calls)
+                    ),
                     "bridge": self.metadata,
                 }
                 atomic_json(self.job / "harness_result.json", self._finalized)

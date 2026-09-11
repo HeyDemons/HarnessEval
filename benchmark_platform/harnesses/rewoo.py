@@ -397,20 +397,36 @@ async def run_rewoo(ctx: RunContext) -> str:
         values[step.evidence_id] = record.output
 
     worker_log = _worker_log(records)
+    solver_context = (
+        "Solve the task using the plans and corresponding evidence below. Some evidence may contain "
+        "noise or an explicit worker failure, so assess it cautiously. Respond with the answer directly "
+        "with no extra words.\n\n"
+        f"Task: {ctx.prompt}\n\n"
+        f"Worker log:\n{worker_log}\n\n"
+        f"Task: {ctx.prompt}"
+    )
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import (
+            MULTI_MODEL_PROTOCOL,
+            complete_native_declaration,
+            declaration_messages,
+        )
+        return await complete_native_declaration(
+            ctx,
+            role="rewoo_solver",
+            messages=declaration_messages(
+                ctx,
+                method_instruction=(
+                    "You are ReWOO's existing Solver. Use the complete plan and worker records to "
+                    "publish the full BFCL native call batch in this response. Worker function "
+                    "proposals were not executed and supply no observations."
+                ),
+                internal_context=solver_context,
+            ),
+            protocol=MULTI_MODEL_PROTOCOL,
+        )
     return await ctx.complete(
         "rewoo_solver",
-        [
-            {
-                "role": "user",
-                "content": (
-                    "Solve the task using the plans and corresponding evidence below. Some evidence may contain "
-                    "noise or an explicit worker failure, so assess it cautiously. Respond with the answer directly "
-                    "with no extra words.\n\n"
-                    f"Task: {ctx.prompt}\n\n"
-                    f"Worker log:\n{worker_log}\n\n"
-                    f"Task: {ctx.prompt}"
-                ),
-            }
-        ],
+        [{"role": "user", "content": solver_context}],
         temperature=0.0,
     )

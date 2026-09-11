@@ -362,6 +362,7 @@ class ToolEnvironment:
         *,
         declaration_only: bool = False,
         proposal_only: bool = False,
+        expose_execution_metadata: bool = True,
         validate_schema: bool = True,
         isolated_calls_supported: bool = True,
         isolated_handlers: Mapping[str, ToolHandler] | None = None,
@@ -383,6 +384,10 @@ class ToolEnvironment:
         self.calls: list[dict[str, Any]] = []
         self.declaration_only = declaration_only
         self.proposal_only = proposal_only
+        # Scheduling/mutability flags belong to the controller.  A benchmark such as
+        # BFCL defines only native function name/description/parameters for the model;
+        # exposing our local ``parallel``/``read_only`` annotations changes that prompt.
+        self.expose_execution_metadata = expose_execution_metadata
         self.validate_schema = validate_schema
         # Read-only business data does not imply transcript/budget isolation.
         self.isolated_calls_supported = isolated_calls_supported
@@ -403,7 +408,10 @@ class ToolEnvironment:
     @property
     def schema(self) -> str:
         return json.dumps(
-            [tool.prompt_schema() for tool in self.tools.values()],
+            [
+                tool.prompt_schema() if self.expose_execution_metadata else tool.native_schema()
+                for tool in self.tools.values()
+            ],
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -844,6 +852,9 @@ class RunContext:
         self.speculator_completion_tokens = 0
         self.last_actor_response_id: int | None = None
         self.last_actor_response_tokens = 0
+        # Set exactly once by the method's own BFCL output-producing response.  The
+        # deterministic bridge publisher consumes this record and never calls a model.
+        self.declaration_output: dict[str, Any] | None = None
         from ..budgets import ModelResponseBudget
         self.model_budget = ModelResponseBudget(policy.get("model_response_limit"))
         self.channel_requests = {"actor": 0, "speculator": 0}

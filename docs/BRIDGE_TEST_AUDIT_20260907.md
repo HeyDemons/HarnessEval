@@ -1,9 +1,9 @@
 # Bridge contract test review — 2026-09-07
 
-> Historical audit note: the later 65-case method-comparison contract replaced
-> both paths below with `bfcl-method-final-declarations-v1`. Internal calls are
-> proposal-only and only declarations explicitly present in the method's own
-> final response are scored; publication makes no model call.
+> Historical audit note: this review predates the current
+> `bfcl-native-declaration-boundary-v2` runtime-harness contract. Marker-based
+> method-final publication was subsequently retired; current output nodes emit
+> native declaration batches and publication makes no model call.
 
 Scope: BFCL, Tau2, AutomationBench, GAIA and Terminal-Bench-2; plus a
 defensive rejection check for LATS/Trajectory-Bench. No Perseus execution,

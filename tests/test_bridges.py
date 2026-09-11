@@ -39,9 +39,10 @@ from benchmark_platform.harnesses.content import WIRE_IMAGE_MARKER, json_safe, w
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import PROFILES
 from benchmark_platform.harnesses.declaration import (
-    DECLARATIONS_CLOSE,
-    DECLARATIONS_OPEN,
+    MULTI_MODEL_PROTOCOL,
     PUBLISHER_PROTOCOL,
+    complete_native_declaration,
+    declaration_messages,
 )
 from benchmark_platform.budgets import baseline_limits
 
@@ -67,13 +68,18 @@ class RecordingClient:
         self.requests.append(messages)
         self.native_tools.append(tools or [])
         content = next(self.responses)
+        message = (
+            content
+            if isinstance(content, dict)
+            else {"role": "assistant", "content": content}
+        )
         return Completion(
-            content,
+            str(message.get("content") or ""),
             1,
             1,
             0.0,
             0,
-            {"choices": [{"message": {"role": "assistant", "content": content}}]},
+            {"choices": [{"message": message}]},
         )
 
 
@@ -138,42 +144,45 @@ RESPONSES = {
 }
 
 
-def bfcl_declaration_text(*ids: str) -> str:
-    return DECLARATIONS_OPEN + json.dumps([
-        {"name": "lookup_item", "arguments": {"id": value}}
-        for value in ids
-    ]) + DECLARATIONS_CLOSE
+def bfcl_native_batch(*ids: str) -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": f"call-{index}",
+                "type": "function",
+                "function": {
+                    "name": "lookup_item",
+                    "arguments": json.dumps({"id": value}),
+                },
+            }
+            for index, value in enumerate(ids, 1)
+        ],
+    }
 
 
 def bfcl_responses(profile_id: str) -> list:
-    block = bfcl_declaration_text("ok")
+    batch = bfcl_native_batch("ok")
     responses = list(RESPONSES[profile_id])
-    if profile_id in {"actor-only", "sa"}:
-        return [json.dumps({"final": block})]
-    if profile_id == "react":
-        return [f"Thought: complete\nFinal Answer: {block}"]
+    if profile_id in {"actor-only", "react", "sa", "memgpt"}:
+        return [batch]
     if profile_id == "plan-execute":
-        responses[-1] = json.dumps({"final": block})
+        responses[-1] = batch
     elif profile_id == "cmas":
-        responses[-1] = json.dumps({"final": block})
+        responses[-1] = batch
     elif profile_id == "dmas":
-        responses[-1] = json.dumps({"final": block})
-    elif profile_id == "memgpt":
-        responses[-1] = json.dumps({
-            "thought": "complete",
-            "function": "send_message",
-            "arguments": {"message": block},
-        })
+        responses[-1] = batch
     elif profile_id == "aflow":
-        responses[-1] = json.dumps({"final": block})
+        responses[-1] = batch
     elif profile_id == "dylan":
-        responses = [json.dumps({"final": block})] * 4
+        responses = [batch] * 4
     elif profile_id == "magentic-one":
-        responses[-1] = block
+        responses[-1] = batch
     elif profile_id == "llmcompiler":
-        responses[-1] = json.dumps({"action": "finish", "answer": block})
+        responses[-1] = batch
     elif profile_id == "rewoo":
-        responses[-1] = block
+        responses[-1] = batch
     return responses
 
 
@@ -327,7 +336,7 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(result["result"]["execution"], "not_run")
         self.assertTrue(result["result"]["terminate"])
 
-    def test_bfcl_product_does_not_prelaunch_declaration_only_tools(self) -> None:
+    def test_bfcl_product_never_prelaunches_or_executes_declarations(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "input"
@@ -345,6 +354,10 @@ class BridgeMatrixTests(unittest.TestCase):
             manifest["metadata"]["lifecycle"], "single_turn_declaration_only"
         )
         self.assertEqual(manifest["safe_tools"], [])
+        self.assertEqual(
+            set(manifest["tools"][0]),
+            {"name", "description", "parameters"},
+        )
 
     def test_trajectory_product_does_not_prelaunch_unverified_remote_tools(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -372,7 +385,12 @@ class BridgeMatrixTests(unittest.TestCase):
                 context.environment.call("lookup_item", {"id": "a"}),
                 context.environment.call("lookup_item", {"id": "b"}),
             )
-            return await context.complete("method-final", [{"role": "user", "content": "finish"}])
+            return await complete_native_declaration(
+                context,
+                role="method-final",
+                messages=declaration_messages(context, internal_context="finish"),
+                protocol=MULTI_MODEL_PROTOCOL,
+            )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -381,7 +399,7 @@ class BridgeMatrixTests(unittest.TestCase):
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            client = RecordingClient(["planned", bfcl_declaration_text("a", "b")])
+            client = RecordingClient(["planned", bfcl_native_batch("a", "b")])
             with (
                 patch.object(bridge_runner, "completion_client_from_env", return_value=client),
                 patch.object(bridge_runner, "run_profile", new=internal_work),
@@ -405,7 +423,12 @@ class BridgeMatrixTests(unittest.TestCase):
             for value in ("a", "b"):
                 await context.complete("worker", [{"role": "user", "content": value}])
                 await context.environment.call("lookup_item", {"id": value})
-            return await context.complete("method-final", [{"role": "user", "content": "finish"}])
+            return await complete_native_declaration(
+                context,
+                role="method-final",
+                messages=declaration_messages(context, internal_context="finish"),
+                protocol=MULTI_MODEL_PROTOCOL,
+            )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -413,7 +436,7 @@ class BridgeMatrixTests(unittest.TestCase):
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            client = RecordingClient(["first", "second", bfcl_declaration_text("final")])
+            client = RecordingClient(["first", "second", bfcl_native_batch("final")])
             with patch.object(bridge_runner, "completion_client_from_env", return_value=client), \
                  patch.object(bridge_runner, "run_profile", new=two_internal_responses):
                 result = asyncio.run(
@@ -440,7 +463,11 @@ class BridgeMatrixTests(unittest.TestCase):
             [(call["name"], call["arguments"]) for call in result["committed_calls"]],
             [("lookup_item", {"id": "final"})],
         )
-        self.assertIn("BFCL_DECLARATIONS", str(client.requests[-1]))
+        self.assertEqual(result["source_response_ids"], [3])
+        self.assertEqual(
+            set(client.native_tools[-1][0]["function"]),
+            {"name", "description", "parameters"},
+        )
         self.assertEqual(sum(row["event"] == "tool_proposal_request" for row in events), 2)
         self.assertEqual(sum(row["event"] == "tool_request" for row in events), 1)
 
@@ -449,7 +476,12 @@ class BridgeMatrixTests(unittest.TestCase):
             for _ in range(3):
                 await context.complete("executor", [{"role": "user", "content": "go"}])
                 await context.environment.call("lookup_item", {"id": "a"})
-            return await context.complete("method-final", [{"role": "user", "content": "finish"}])
+            return await complete_native_declaration(
+                context,
+                role="method-final",
+                messages=declaration_messages(context, internal_context="finish"),
+                protocol=MULTI_MODEL_PROTOCOL,
+            )
 
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -458,7 +490,7 @@ class BridgeMatrixTests(unittest.TestCase):
             job.mkdir()
             make_case(source, "bfcl")
             client = RecordingClient(
-                ["first", "second", "third", bfcl_declaration_text("a", "a")]
+                ["first", "second", "third", bfcl_native_batch("a", "a")]
             )
             with patch.object(bridge_runner, "completion_client_from_env", return_value=client), \
                  patch.object(bridge_runner, "run_profile", new=repeats_one_declaration):

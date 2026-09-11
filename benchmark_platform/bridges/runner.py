@@ -23,12 +23,15 @@ from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import get_profile
 from benchmark_platform.harnesses.declaration import (
     PUBLISHER_PROTOCOL,
-    method_declaration_instruction,
     publish_method_declaration,
 )
 from benchmark_platform.budgets import positive_int
 
 from .adapters import load_case
+from .bfcl import render_bfcl_method_prompt
+
+
+_BFCL_ONE_ACTOR_RESPONSE = {"actor-only", "react", "sa", "multi-persona"}
 
 
 def _write(path: Path, value: Any) -> None:
@@ -60,20 +63,18 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         trace,
         bridge.handlers,
         proposal_only=benchmark == "bfcl",
+        expose_execution_metadata=benchmark != "bfcl",
     )
     effective_policy = dict(policy)
     if benchmark == "bfcl":
-        effective_policy["declaration_only_tools"] = True
-        effective_policy["bfcl_external_response_limit"] = 1
-        # No BFCL function executes. Declared tools are therefore safe only as isolated
-        # proposal acknowledgements, which lets SA run its Speculator without exposing an
-        # observation or mutating benchmark state.
-        effective_policy["speculation_safe_tools"] = list(environment.names)
-        # The one-response BFCL limit applies to the final published interface, not to a
-        # planner/worker topology being compared on the same 65 tasks. Internal responses
-        # remain metered. A per-loop guard prevents proposal-only methods from waiting
-        # forever for an observation that this declaration benchmark cannot provide.
-        effective_policy.pop("model_response_limit", None)
+        effective_policy["bfcl_declaration_mode"] = True
+        # The direct Actor, one-response ReAct adapter, SA Actor and SPP each own exactly
+        # one Actor response. Multi-stage methods retain metered internal generations and
+        # use their existing final decision node for the sole native declaration response.
+        if profile_id in _BFCL_ONE_ACTOR_RESPONSE:
+            effective_policy["model_response_limit"] = 1
+        else:
+            effective_policy.pop("model_response_limit", None)
         effective_policy["max_turns"] = positive_int(
             os.environ.get("HARNESS_BFCL_AGENT_TURNS", 6), "HARNESS_BFCL_AGENT_TURNS"
         )
@@ -90,15 +91,10 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         effective_policy["branch_safe_tools"] = safe
     tool_capable = profile.tool_contract != "no-external-tools"
     task_messages = list(bridge.metadata.get("messages") or []) if benchmark == "bfcl" else []
-    if benchmark == "bfcl" and tool_capable:
-        task_messages.append({
-            "role": "system",
-            "content": method_declaration_instruction(environment.schema),
-        })
     client = completion_client_from_env()
     context = RunContext(
         profile_id,
-        bridge.prompt,
+        render_bfcl_method_prompt(task_messages) if benchmark == "bfcl" else bridge.prompt,
         client,
         environment,
         trace,
@@ -108,7 +104,16 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         ),
         task_messages=task_messages or None,
     )
-    _write(job / "bridge_manifest.json", {"benchmark": benchmark, "case_id": case_id, "profile": profile_id, "tool_schemas": [tool.prompt_schema() for tool in bridge.tools], "metadata": bridge.metadata})
+    _write(job / "bridge_manifest.json", {
+        "benchmark": benchmark,
+        "case_id": case_id,
+        "profile": profile_id,
+        "tool_schemas": [
+            tool.native_schema() if benchmark == "bfcl" else tool.prompt_schema()
+            for tool in bridge.tools
+        ],
+        "metadata": bridge.metadata,
+    })
     started = time.perf_counter()
     method_output: str | None = None
     try:
@@ -177,7 +182,16 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         result["external_assistant_responses"] = int(environment.declaration_committed)
         result["publisher_llm_calls"] = 0
         result["internal_llm_calls"] = int(result.get("llm_calls") or 0)
-        result["publication_source_response_id"] = environment.declaration_response_id
+        result["source_response_ids"] = (
+            list(context.declaration_output.get("source_response_ids") or [])
+            if context.declaration_output is not None
+            else ([environment.declaration_response_id] if environment.declaration_response_id is not None else [])
+        )
+        result["declaration_output_protocol"] = (
+            context.declaration_output.get("protocol")
+            if context.declaration_output is not None
+            else "bfcl-text-only-empty-v1"
+        )
         result["publication_tool_capable"] = tool_capable
         result["proposal_calls"] = [
             {

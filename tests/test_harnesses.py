@@ -21,8 +21,9 @@ from benchmark_platform.harnesses.core import (
 )
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.declaration import (
-    DECLARATIONS_CLOSE,
-    DECLARATIONS_OPEN,
+    NATIVE_SINGLE_RESPONSE_PROTOCOL,
+    complete_native_declaration,
+    declaration_messages,
     publish_method_declaration,
 )
 from benchmark_platform.harnesses.rewoo import parse_rewoo_plan
@@ -203,16 +204,36 @@ class HarnessTests(unittest.TestCase):
         # Deterministic BFCL publication adds no generation to the method's final turn.
         with tempfile.TemporaryDirectory() as directory:
             trace = JsonlTrace(Path(directory) / "trace.jsonl")
-            environment = ToolEnvironment(tool_specs(), trace, proposal_only=True)
-            output = DECLARATIONS_OPEN + json.dumps([
-                {"name": "lookup", "arguments": {"key": "alpha"}},
-                {"name": "multiply", "arguments": {"a": 6, "b": 7}},
-            ]) + DECLARATIONS_CLOSE
+            environment = ToolEnvironment(
+                tool_specs(), trace, proposal_only=True, expose_execution_metadata=False
+            )
+            output = native_tool_call("lookup", {"key": "alpha"})
+            output["tool_calls"].append(
+                {
+                    "id": "call-2",
+                    "type": "function",
+                    "function": {
+                        "name": "multiply",
+                        "arguments": json.dumps({"a": 6, "b": 7}),
+                    },
+                }
+            )
             context = RunContext(
-                "actor-only", "p", ScriptedClient([output]), environment, trace, {"max_turns": 8}
+                "actor-only",
+                "p",
+                ScriptedClient([output]),
+                environment,
+                trace,
+                {"max_turns": 8, "bfcl_declaration_mode": True},
+                task_messages=[{"role": "user", "content": "p"}],
             )
             async def publish():
-                method_output = await context.complete("method-final", [{"role": "user", "content": "p"}])
+                method_output = await complete_native_declaration(
+                    context,
+                    role="actor",
+                    messages=declaration_messages(context),
+                    protocol=NATIVE_SINGLE_RESPONSE_PROTOCOL,
+                )
                 await publish_method_declaration(
                     context,
                     method_output=method_output,

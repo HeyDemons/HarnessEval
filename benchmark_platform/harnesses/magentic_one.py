@@ -559,13 +559,36 @@ async def _final_answer(
     reason: str,
 ) -> str:
     await ctx.trace.emit("magentic_termination", reason=reason)
+    final_context = ORCHESTRATOR_FINAL_ANSWER_PROMPT.format(task=ctx.prompt)
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import (
+            MULTI_MODEL_PROTOCOL,
+            complete_native_declaration,
+            declaration_messages,
+        )
+        return await complete_native_declaration(
+            ctx,
+            role="orchestrator_final",
+            messages=declaration_messages(
+                ctx,
+                method_instruction=(
+                    "You are Magentic-One's existing final Orchestrator output node. Consolidate the "
+                    "team transcript and publish the complete BFCL native call batch in this response. "
+                    "Participant proposals were not executed and are not observations."
+                ),
+                internal_context=(
+                    json.dumps(_thread_context(thread), ensure_ascii=False) + "\n" + final_context
+                ),
+            ),
+            protocol=MULTI_MODEL_PROTOCOL,
+        )
     return await ctx.complete(
         "orchestrator_final",
         [
             *_thread_context(thread),
             {
                 "role": "user",
-                "content": ORCHESTRATOR_FINAL_ANSWER_PROMPT.format(task=ctx.prompt),
+                "content": final_context,
             },
         ],
     )

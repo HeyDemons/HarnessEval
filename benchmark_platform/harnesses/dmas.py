@@ -226,17 +226,34 @@ async def _execute(
         progress=progress,
         guidance=guidance,
     )
-    return await _json_tool_loop(
-        ctx,
-        f"dmas_executor_{agent.id}",
-        prompt=(
-            f"Major task: {ctx.prompt}\nCurrent executor task: {current_task}\n"
-            f"Completed subtasks and results: {json.dumps(progress, ensure_ascii=False)}\n"
-            f"Local router guidance: {guidance or 'None'}\n"
-            f"Executor reasoning: {thought}\n"
-            "Complete the current executor task using available tools as needed. Return its complete result as final."
-        ),
+    executor_context = (
+        f"Major task: {ctx.prompt}\nCurrent executor task: {current_task}\n"
+        f"Completed subtasks and results: {json.dumps(progress, ensure_ascii=False)}\n"
+        f"Local router guidance: {guidance or 'None'}\n"
+        f"Executor reasoning: {thought}\n"
+        "Complete the current executor task using available tools as needed. Return its complete result as final."
     )
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import (
+            MULTI_MODEL_PROTOCOL,
+            complete_native_declaration,
+            declaration_messages,
+        )
+        return await complete_native_declaration(
+            ctx,
+            role=f"dmas_executor_{agent.id}",
+            messages=declaration_messages(
+                ctx,
+                method_instruction=(
+                    "You are DMAS's selected executor. The decentralized routers have already chosen "
+                    "you as the authoritative output node. Publish the complete BFCL native call batch "
+                    "in this response; functions are declarations only and return no observations."
+                ),
+                internal_context=executor_context,
+            ),
+            protocol=MULTI_MODEL_PROTOCOL,
+        )
+    return await _json_tool_loop(ctx, f"dmas_executor_{agent.id}", prompt=executor_context)
 
 
 async def _route_after_split(

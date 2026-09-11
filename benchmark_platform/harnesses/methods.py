@@ -182,6 +182,26 @@ def _parse_react(text: str) -> dict[str, Any]:
 
 
 async def run_react(ctx: RunContext) -> str:
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import (
+            NATIVE_SINGLE_RESPONSE_PROTOCOL,
+            complete_native_declaration,
+            declaration_messages,
+        )
+        return await complete_native_declaration(
+            ctx,
+            role="react",
+            messages=declaration_messages(
+                ctx,
+                method_instruction=(
+                    "Apply ReAct's Thought/Action discipline internally to select the answer, but this "
+                    "BFCL task has no executable action or Observation turn. In this one assistant "
+                    "response, declare every required function call with the native tools. Return no "
+                    "call when none is relevant."
+                ),
+            ),
+            protocol=NATIVE_SINGLE_RESPONSE_PROTOCOL,
+        )
     protocol = ctx.policy.get("react_protocol", "text")
     if protocol == "native":
         from .react_native import run_react_native
@@ -304,6 +324,30 @@ async def run_plan_execute(ctx: RunContext) -> str:
     completed: list[dict[str, str]] = []
     for index, step in enumerate(steps, start=1):
         step_id, instruction = _instruction(step, kind="Plan-and-Execute", index=index)
+        if ctx.policy.get("bfcl_declaration_mode") is True and index == len(steps):
+            from .declaration import (
+                MULTI_MODEL_PROTOCOL,
+                complete_native_declaration,
+                declaration_messages,
+            )
+            return await complete_native_declaration(
+                ctx,
+                role=f"executor_{step_id}",
+                messages=declaration_messages(
+                    ctx,
+                    method_instruction=(
+                        "You are the existing final executor in Plan-and-Execute. Use the plan and prior "
+                        "step reports to publish the complete BFCL native call batch in this response. "
+                        "Functions are declarations only and yield no observations."
+                    ),
+                    internal_context=(
+                        f"Plan: {json.dumps(steps, ensure_ascii=False)}\n"
+                        f"Previous steps: {json.dumps(completed, ensure_ascii=False)}\n"
+                        f"Final executor objective: {instruction}"
+                    ),
+                ),
+                protocol=MULTI_MODEL_PROTOCOL,
+            )
         result = await _json_tool_loop(
             ctx,
             f"executor_{step_id}",
@@ -385,21 +429,50 @@ async def run_cmas(ctx: RunContext) -> str:
     # the action schema instead of `final` in 24 of 60 tau2 cases, and the raise scored
     # each of those episodes 0. The manager now gets the loop its workers already use:
     # it can act while work remains, and still returns `final`.
-    return await _json_tool_loop(
-        ctx,
-        "manager_synthesis",
-        prompt=(
-            "Synthesize the independent worker reports into the answer. The workers have "
-            "already acted; take further actions yourself only if the task is unfinished.\n"
-            f"Task: {ctx.prompt}\nReports: {json.dumps(json_safe(reports), ensure_ascii=False)}"
-        ),
+    synthesis = (
+        "Synthesize the independent worker reports into the answer. The workers have "
+        "already acted; take further actions yourself only if the task is unfinished.\n"
+        f"Task: {ctx.prompt}\nReports: {json.dumps(json_safe(reports), ensure_ascii=False)}"
     )
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import (
+            MULTI_MODEL_PROTOCOL,
+            complete_native_declaration,
+            declaration_messages,
+        )
+        return await complete_native_declaration(
+            ctx,
+            role="manager_synthesis",
+            messages=declaration_messages(
+                ctx,
+                method_instruction=(
+                    "You are CMAS's existing manager-synthesis node. Consolidate the worker reports "
+                    "and publish the complete BFCL native call batch in this response. Internal "
+                    "proposals were not executed and are not observations."
+                ),
+                internal_context=synthesis,
+            ),
+            protocol=MULTI_MODEL_PROTOCOL,
+        )
+    return await _json_tool_loop(ctx, "manager_synthesis", prompt=synthesis)
 
 
 async def run_profile(ctx: RunContext) -> str:
     if ctx.profile == "lats" and ctx.environment.declaration_only:
         raise ValueError("LATS cannot run after the BFCL declaration publisher boundary")
     if ctx.profile == "actor-only":
+        if ctx.policy.get("bfcl_declaration_mode") is True:
+            from .declaration import (
+                NATIVE_SINGLE_RESPONSE_PROTOCOL,
+                complete_native_declaration,
+                declaration_messages,
+            )
+            return await complete_native_declaration(
+                ctx,
+                role="actor",
+                messages=declaration_messages(ctx),
+                protocol=NATIVE_SINGLE_RESPONSE_PROTOCOL,
+            )
         return await _json_tool_loop(ctx, "actor")
     if ctx.profile == "react":
         return await run_react(ctx)

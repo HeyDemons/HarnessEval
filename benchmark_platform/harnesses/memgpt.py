@@ -179,6 +179,29 @@ async def run_memgpt(ctx: RunContext) -> str:
     if collisions:
         raise ValueError(f"MemGPT memory functions collide with benchmark tools: {collisions}")
 
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import (
+            METHOD_FINAL_PROTOCOL,
+            complete_native_declaration,
+            declaration_messages,
+        )
+        return await complete_native_declaration(
+            ctx,
+            role="memgpt_processor",
+            messages=declaration_messages(
+                ctx,
+                method_instruction=(
+                    "You are MemGPT's processor at a cold-start, single-turn declaration boundary. "
+                    "Core memory says the human expects the task to be completed accurately; recall "
+                    "contains only the current request and archival memory is empty. BFCL functions "
+                    "never execute, so there is no heartbeat or function-result turn. In this processor "
+                    "response, publish every required call through the native tools, or no call when "
+                    "none is relevant."
+                ),
+            ),
+            protocol=METHOD_FINAL_PROTOCOL,
+        )
+
     core = {
         "persona": "I am a persistent tool-using assistant that preserves important state through memory functions.",
         "human": "The human expects the benchmark task to be completed accurately.",

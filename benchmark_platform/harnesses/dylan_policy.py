@@ -78,6 +78,7 @@ class PolicyNode:
     action: str | None
     weights: dict[str, float] = field(default_factory=dict)
     importance: float = 0.0
+    declaration: object | None = None
 
 
 def winner(layer: list[PolicyNode]) -> tuple[str | None, int]:
@@ -175,6 +176,192 @@ async def deliberate(ctx: RunContext, query: str, team: tuple[str, ...], rng: ra
     return answer
 
 
+def _declaration_key(calls) -> str:
+    """Compare native batches semantically while retaining duplicate calls."""
+
+    normalized = sorted(
+        (
+            {"name": name, "arguments": arguments}
+            for name, arguments, _call_id in calls
+        ),
+        key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True),
+    )
+    return json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+async def deliberate_bfcl(
+    ctx: RunContext,
+    team: tuple[str, ...],
+    rng: random.Random,
+) -> str:
+    """Run one DyLAN T-FFN over complete BFCL declaration-batch candidates.
+
+    BFCL supplies no executable state transition, so the runtime harness has one
+    decision problem rather than an Action/Observation loop.  Every active neuron emits
+    a complete native batch; the normal reformation/consensus network selects an existing
+    response as the outward answer without a finalizer or a call union.
+    """
+
+    from .declaration import (
+        MULTI_MODEL_PROTOCOL,
+        declaration_messages,
+        native_declaration_candidate,
+        stage_declaration_output,
+    )
+
+    layers: list[list[PolicyNode]] = []
+    active = list(team)
+    for layer_index in range(1, 5):
+        previous = layers[-1] if layers else []
+        if layer_index == 3 and len(active) > 2:
+            candidates = previous[:]
+            rng.shuffle(candidates)
+            raw = await ctx.complete(
+                "dylan_ranker",
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Rank the complete BFCL declaration-batch candidates. Return only the "
+                            "two best distinct candidate indices as [1,2]. Do not propose a new batch."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": "Candidates:\n" + "\n".join(
+                            f"{index}: {node.action}"
+                            for index, node in enumerate(candidates, 1)
+                        ),
+                    },
+                ],
+                temperature=0.0,
+            )
+            indices, fallback = parse_ranks(raw, len(candidates), rng)
+            layer = [
+                PolicyNode(
+                    candidates[index].agent,
+                    candidates[index].reply,
+                    candidates[index].action,
+                    {candidates[index].agent: 1.0},
+                    declaration=candidates[index].declaration,
+                )
+                for index in indices
+            ]
+            active = [node.agent for node in layer]
+            await ctx.trace.emit(
+                "dylan_reformation",
+                step=1,
+                layer=layer_index,
+                active_agents=active,
+                fallback=fallback,
+                message_copy=True,
+                declaration_batches=True,
+            )
+        else:
+            order = active[:]
+            rng.shuffle(order)
+            layer = []
+            for agent in order:
+                predecessors = previous[:]
+                rng.shuffle(predecessors)
+                predecessor_text = ""
+                if predecessors:
+                    predecessor_text = "Previous complete batch candidates:\n" + "\n".join(
+                        f"{index}: {node.action}"
+                        for index, node in enumerate(predecessors, 1)
+                    )
+                output = await native_declaration_candidate(
+                    ctx,
+                    role=f"dylan_bfcl_l{layer_index}_{agent}",
+                    messages=declaration_messages(
+                        ctx,
+                        method_instruction=(
+                            ROLES[agent]
+                            + "\nYou are one neuron in DyLAN's declaration-policy network. "
+                            "Propose the complete BFCL answer as native function calls in this response; "
+                            "use no calls when no function is relevant. Functions do not execute and there "
+                            "is no Observation turn. Consider predecessor batches critically. You may put "
+                            "a JSON ratings array in text for the predecessors, but the native calls are "
+                            "the candidate being voted on."
+                        ),
+                        internal_context=predecessor_text or None,
+                    ),
+                    protocol=MULTI_MODEL_PROTOCOL,
+                )
+                ratings = []
+                try:
+                    payload = extract_json(output.content, expected_type=dict)
+                    if isinstance(payload.get("ratings"), list):
+                        ratings = payload["ratings"]
+                except ValueError:
+                    pass
+                valid_ratings = (
+                    len(ratings) == len(predecessors)
+                    and all(type(value) in {int, float} and 1 <= value <= 5 for value in ratings)
+                )
+                values = ratings if valid_ratings else [1] * len(predecessors)
+                total = sum(values)
+                weights = {
+                    node.agent: value / total
+                    for node, value in zip(predecessors, values)
+                }
+                key = _declaration_key(output.calls)
+                layer.append(
+                    PolicyNode(
+                        agent,
+                        key,
+                        key,
+                        weights,
+                        declaration=output,
+                    )
+                )
+                await ctx.trace.emit(
+                    "dylan_node",
+                    step=1,
+                    layer=layer_index,
+                    agent=agent,
+                    valid_action=True,
+                    predecessor_weights=weights,
+                    ratings_fallback=bool(predecessors) and not valid_ratings,
+                    declaration_response_id=output.response_id,
+                )
+        layers.append(layer)
+        answer, count = winner(layer)
+        if answer is not None and count * 3 > len(active) * 2:
+            await ctx.trace.emit(
+                "dylan_early_stop",
+                step=1,
+                layer=layer_index,
+                supporters=count,
+                active_agents=len(active),
+                declaration_batches=True,
+            )
+            break
+
+    selected_key, _ = winner(layers[-1])
+    selected = next(
+        (node for node in layers[-1] if node.action == selected_key),
+        None,
+    )
+    if selected is None or selected.declaration is None:
+        raise RuntimeError("DyLAN produced no BFCL declaration candidate")
+    await ctx.trace.emit(
+        "dylan_importance",
+        step=1,
+        scores=importance(layers, selected_key),
+        selection_source="published-optimized-teams",
+        online_optimization=False,
+        declaration_batches=True,
+    )
+    await stage_declaration_output(ctx, selected.declaration)
+    await ctx.trace.emit(
+        "dylan_final",
+        step=1,
+        declaration_response_id=selected.declaration.response_id,
+    )
+    return selected.declaration.content
+
+
 async def run_policy(ctx: RunContext) -> str:
     obsolete = set(ctx.policy) & {"dylan_team_artifact", "dylan_agents", "dylan_roles", "dylan_rounds",
                                  "dylan_team_size", "dylan_team_optimization", "dylan_temperature"}
@@ -186,6 +373,8 @@ async def run_policy(ctx: RunContext) -> str:
                          team_source="paper-appendix-B.1", state_router="visible-tool-observation-v1",
                          benchmark_adapter=True, online_optimization=False)
     rng = random.Random(int(ctx.policy.get("dylan_seed", ctx.policy.get("seed", 0))))
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        return await deliberate_bfcl(ctx, PAPER_TEAMS["searching"], rng)
     history: list[str] = []
     for step in range(ctx.max_turns):
         state = visible_state_kind(ctx.environment.calls)

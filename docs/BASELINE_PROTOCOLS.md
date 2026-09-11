@@ -2,44 +2,40 @@
 
 ## BFCL single-turn declarations
 
-The frozen 65-case comparison runs each eligible baseline's complete internal
-protocol. Tool-capable methods receive the function schemas and a final-output
-contract at the start: the method's own final response must contain exactly one
-`<BFCL_DECLARATIONS>` JSON list with the complete batch. The deterministic
-`bfcl-method-final-declarations-v1` publisher parses and records that existing
-response without making another model call. Planner, worker, router, memory and
-consensus calls remain part of their respective methods. LATS remains outside
-the experiment because the suite provides neither its published online reward
-nor branch snapshots.
+The frozen 65-case comparison treats each baseline as the runtime harness under
+test. The benchmark-owned input remains the pinned BFCL `question[0]` messages,
+with roles preserved, plus the official native function schemas. Controller
+annotations such as `parallel` and `read_only` are never shown to the model.
+Actor-only is also a runtime harness; its implementation is simply the minimal
+one-generation forwarding path and therefore adds no method prompt.
 
-BFCL functions never execute. Calls selected during internal reasoning are
-recorded as `proposal_calls` with `tool_proposal_request/result` trace events and
-receive a local acknowledgement containing no environment information. Only
-the declaration list explicitly returned by the method becomes
-`committed_calls`; proposals are never unioned, deduplicated, corrected or
-relabeled as the answer. Repeated entries in the method-final batch therefore
-reach the official scorer unchanged. Multi-Persona receives neither tool schema
-nor declaration-output instruction and publishes an empty call batch under its
-original no-external-tools contract.
+Planner, worker, router, memory and consensus calls remain internal to their
+respective harnesses and are fully included in time, turn and token accounting.
+The harness exposes exactly one outward assistant response containing the complete
+native tool-call batch. The deterministic `bfcl-native-declaration-boundary-v2`
+forwarder publishes that already-generated response without an LLM finalizer,
+text marker, proposal union, correction or deduplication. Repeated native calls
+therefore reach the official scorer unchanged.
 
-The method-final response boundary is frozen even for an empty batch. Malformed
-batches are parsed before any call is committed. Results include
-`committed_response_id`, `publication_source_response_id`,
-`proposal_response_ids`, `internal_llm_calls`, `publisher_llm_calls=0`,
-`external_assistant_responses=1` and `environment_calls=0`. SA runs its independent Speculator and Actor protocol
-before publication. Every declared function is safe only for an isolated local
-proposal acknowledgement: no real function executes and no observation enters
-Actor memory. Thus SA exercises prediction/adoption but cannot hide real
-environment latency; this boundary is explicit in measurement identity.
-Outside BFCL, LATS retains each proposal's source ID; explicit SA adoption keeps
-both the speculative source ID and authoritative Actor ID.
+BFCL functions never execute and no environment Observation is returned. Internal
+method actions may be recorded as `proposal_calls` with an explicit non-observation
+acknowledgement, but only the method's existing final output node can produce
+`committed_calls`. Multi-model final nodes use
+`multi-model-declaration-aggregation-v1`: their synthesis/solver/orchestrator
+itself emits the native batch. DyLAN applies its T-FFN/reformation vote once to
+complete batch candidates and selects one existing candidate response. SA's
+Speculator prediction is recorded but neither executed nor injected into the
+Actor; its native Actor response remains authoritative. Multi-Persona receives
+no tool schema and publishes an empty batch under its no-external-tools contract.
 
-The workspace runner stamps the method-final protocol on every eligible baseline
-measurement identity. Old BFCL results cannot silently resume under it.
-Historical summaries remain included in merged
-reports even if a method is no longer runnable. These rules are specific to the
-current single-turn suite, not future stateful BFCL categories or native
-conversations.
+The boundary is committed even for an empty batch. Native arguments are parsed
+atomically before publication. Results include `committed_response_id`,
+`source_response_ids`, `proposal_response_ids`, `internal_llm_calls`,
+`publisher_llm_calls=0`, `external_assistant_responses=1` and
+`environment_calls=0`. The workspace runner stamps the method-specific output
+protocol into measurement identity, so marker-era BFCL results cannot resume or
+merge under this contract. These rules are specific to the current single-turn
+runtime-harness suite, not future stateful BFCL categories.
 
 Reference: [Inspect Evals single-turn solver](https://github.com/UKGovernmentBEIS/inspect_evals/blob/ac481c7a7b4fb05d6befdfea59b47fc61b839a4f/src/inspect_evals/bfcl/solve/single_turn_solver.py).
 The reference informs generation/execution boundaries, not a replacement scorer.
@@ -67,7 +63,8 @@ This portable local stop supports reasoning/Responses providers without a
 compatible server-side stop parameter. Raw output and all provider usage remain
 in the trace. It corrects consumed-output semantics, not generation latency or
 tokens spent after the marker. The react_observation_stop event records both
-lengths. On BFCL, ReAct's own Final Answer carries the declaration list described above.
+lengths. On BFCL there is no Observation phase: ReAct's output node emits the
+complete native batch in one outward response.
 
 Reference: [ReAct notebook](https://github.com/ysymyth/ReAct/blob/6bdb3a1fd38b8188fc7ba4102969fe483df8fdc9/hotpotqa.ipynb).
 

@@ -346,26 +346,42 @@ async def run_llmcompiler(ctx: RunContext) -> str:
             plan=plan,
             results=json_safe(results),
         )
+        join_context = (
+            "Judge whether the DAG results fully solve the task. Finish only when "
+            "the answer is supported by observations.\n"
+            + (
+                'This is the final planning pass, so return JSON only as '
+                '{"action":"finish","answer":"best supported answer"}. Do not request another replan.\n'
+                if final_pass
+                else 'Return JSON only, exactly {"action":"finish","answer":"..."} or '
+                '{"action":"replan","feedback":"specific correction"}.\n'
+            )
+            + f"Task: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\n"
+            f"Results: {json.dumps(json_safe(results), ensure_ascii=False)}"
+        )
+        if ctx.policy.get("bfcl_declaration_mode") is True and final_pass:
+            from .declaration import (
+                MULTI_MODEL_PROTOCOL,
+                complete_native_declaration,
+                declaration_messages,
+            )
+            return await complete_native_declaration(
+                ctx,
+                role="compiler_joiner",
+                messages=declaration_messages(
+                    ctx,
+                    method_instruction=(
+                        "You are LLMCompiler's existing final joiner. Use the planner DAG and its "
+                        "internal proposal records to publish the complete BFCL native call batch in "
+                        "this response. Proposals were not executed and are not observations."
+                    ),
+                    internal_context=join_context,
+                ),
+                protocol=MULTI_MODEL_PROTOCOL,
+            )
         decision = await ctx.complete_json(
             "compiler_joiner",
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        "Judge whether the DAG results fully solve the task. Finish only when "
-                        "the answer is supported by observations.\n"
-                        + (
-                            'This is the final planning pass, so return JSON only as '
-                            '{"action":"finish","answer":"best supported answer"}. Do not request another replan.\n'
-                            if final_pass
-                            else 'Return JSON only, exactly {"action":"finish","answer":"..."} or '
-                            '{"action":"replan","feedback":"specific correction"}.\n'
-                        )
-                        + f"Task: {ctx.prompt}\nDAG: {json.dumps(plan, ensure_ascii=False)}\n"
-                        f"Results: {json.dumps(json_safe(results), ensure_ascii=False)}"
-                    ),
-                }
-            ],
+            [{"role": "user", "content": join_context}],
             required_root_key="action",
             strict_single_object=True,
         )
@@ -408,6 +424,81 @@ def _action_key(name: str, arguments: dict[str, Any]) -> str:
 async def run_sa(ctx: RunContext) -> str:
     """Lossless top-k Speculative Actions with an independent fast model each turn."""
     from .reply_contracts import action_schema, object_schema
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import (
+            NATIVE_SINGLE_RESPONSE_PROTOCOL,
+            complete_native_declaration,
+            declaration_messages,
+        )
+        if ctx.speculator_client is None:
+            raise RuntimeError("sa requires an independent Speculator client")
+        top_k = int(ctx.policy.get("sa_top_k", 3))
+        if top_k < 1:
+            raise ValueError("sa_top_k must be positive")
+
+        async def predict_only() -> list[dict[str, Any]]:
+            try:
+                raw = await ctx.complete_speculator(
+                    "sa_speculator",
+                    declaration_messages(
+                        ctx,
+                        method_instruction=(
+                            "You are the fast Speculator, not the authoritative Actor. Predict the "
+                            "complete BFCL function-call batch without executing anything or inventing "
+                            "an observation. Return JSON only as {\"actions\":[{\"tool\":\"name\","
+                            "\"arguments\":{}}]}; use an empty list when no function is relevant.\n"
+                            "Available functions: " + json.dumps(
+                                [tool.native_schema() for tool in ctx.environment.tools.values()],
+                                ensure_ascii=False,
+                            )
+                        ),
+                    ),
+                    json_mode=True,
+                    temperature=float(ctx.policy.get("sa_temperature", 0.1)),
+                    response_schema=object_schema({
+                        "actions": {
+                            "type": "array",
+                            "items": object_schema({
+                                "tool": {"type": "string", "enum": ctx.environment.names},
+                                "arguments": {"type": "object"},
+                            }),
+                        }
+                    }),
+                )
+                value = extract_json(raw, expected_type=dict)
+                actions = value.get("actions")
+                predictions = actions[:top_k] if isinstance(actions, list) else []
+                await ctx.trace.emit(
+                    "sa_bfcl_prediction",
+                    actions=json_safe(predictions),
+                    execution="not_run",
+                    adopted_by_actor=False,
+                )
+                return predictions
+            except Exception as exc:
+                await ctx.trace.emit(
+                    "sa_prediction_failed",
+                    turn=1,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                return []
+
+        actor_task = asyncio.create_task(complete_native_declaration(
+            ctx,
+            role="sa_actor",
+            messages=declaration_messages(ctx),
+            protocol=NATIVE_SINGLE_RESPONSE_PROTOCOL,
+        ))
+        prediction_task = asyncio.create_task(predict_only())
+        try:
+            actor_output, _ = await asyncio.gather(actor_task, prediction_task)
+        except BaseException:
+            actor_task.cancel()
+            prediction_task.cancel()
+            await asyncio.gather(actor_task, prediction_task, return_exceptions=True)
+            raise
+        return actor_output
+
     safe_names = [name for name, tool in ctx.environment.tools.items() if tool.read_only and tool.parallel]
     policy_safe = ctx.policy.get("speculation_safe_tools")
     if isinstance(policy_safe, list):

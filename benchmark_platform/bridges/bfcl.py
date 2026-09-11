@@ -168,6 +168,27 @@ def render_bfcl_prompt(messages: list[dict[str, Any]]) -> str:
     )
 
 
+def render_bfcl_method_prompt(messages: list[dict[str, Any]]) -> str:
+    """Render non-instruction task content for generic method prompts.
+
+    ``RunContext`` separately injects benchmark-owned system/developer messages with
+    their original roles.  Omitting them here prevents the four system-bearing light
+    cases from receiving the same instruction again inside a synthetic user message.
+    """
+
+    visible = [
+        message for message in messages
+        if message.get("role") not in {"system", "developer"}
+    ]
+    if len(visible) == 1 and visible[0].get("role") == "user":
+        return str(visible[0]["content"])
+    labels = {"user": "User request", "assistant": "Assistant context"}
+    return "\n\n".join(
+        f"{labels.get(str(message.get('role')), str(message.get('role')).title())}:\n{message['content']}"
+        for message in visible
+    )
+
+
 def declaration_only_result(function_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     """Acknowledge a BFCL answer call without pretending the declared function ran."""
 
@@ -198,7 +219,7 @@ def proposal_only_result(function_name: str, arguments: dict[str, Any]) -> dict[
         "terminate": False,
         "instruction": (
             "This is an internal candidate for the final BFCL answer. It was not executed "
-            "or published and contains no environment observation. Continue the method, remember all required "
-            "calls, and place the complete batch in your own final BFCL_DECLARATIONS block."
+            "or published and contains no environment observation. Continue the method; its existing final "
+            "decision node must produce the complete native call batch."
         ),
     }

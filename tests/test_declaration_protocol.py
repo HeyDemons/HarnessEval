@@ -1,4 +1,3 @@
-import asyncio
 import json
 from pathlib import Path
 import tempfile
@@ -6,21 +5,18 @@ import unittest
 from unittest.mock import patch
 
 from benchmark_platform.bridges import runner
+from benchmark_platform.budgets import baseline_limits
 from benchmark_platform.harnesses.api import Completion
-from benchmark_platform.harnesses.core import (
-    DeclarationOnlyComplete,
-    RunContext,
-    ToolEnvironment,
-    ToolSpec,
-)
+from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.declaration import (
-    DECLARATIONS_CLOSE,
-    DECLARATIONS_OPEN,
+    MULTI_MODEL_PROTOCOL,
+    NATIVE_SINGLE_RESPONSE_PROTOCOL,
     PUBLISHER_PROTOCOL,
-    parse_method_declarations,
-    publish_method_declaration,
+    complete_native_declaration,
+    declaration_messages,
+    parse_native_declarations,
 )
-from test_bridges import make_case
+from test_bridges import make_case, write_json
 
 
 class Trace:
@@ -31,81 +27,74 @@ class Trace:
         self.events.append({"event": event, **data})
 
 
+def native_batch(*ids: str) -> dict:
+    return {
+        "role": "assistant",
+        "content": None,
+        "tool_calls": [
+            {
+                "id": f"call-{index}",
+                "type": "function",
+                "function": {
+                    "name": "lookup_item",
+                    "arguments": json.dumps({"id": value}),
+                },
+            }
+            for index, value in enumerate(ids, 1)
+        ],
+    }
+
+
 class Client:
-    def __init__(self, message):
-        self.messages = iter(message if isinstance(message, list) else [message])
+    def __init__(self, responses):
+        self.responses = iter(responses if isinstance(responses, list) else [responses])
         self.requests = []
 
-    async def complete_native(self, messages, **kwargs):
-        self.requests.append((messages, kwargs))
-        message = next(self.messages)
-        if isinstance(message, Exception):
-            raise message
-        if not isinstance(message, dict):
-            message = {"role": "assistant", "content": str(message)}
+    @staticmethod
+    def _completion(response):
+        message = (
+            response
+            if isinstance(response, dict)
+            else {"role": "assistant", "content": str(response)}
+        )
         return Completion(
-            message.get("content") or "",
+            str(message.get("content") or ""),
             10,
             5,
             0,
             0,
-            {"choices": [{"message": message}]},
+            {
+                "choices": [
+                    {
+                        "message": message,
+                        "finish_reason": "tool_calls" if message.get("tool_calls") else "stop",
+                    }
+                ]
+            },
         )
 
     async def complete(self, messages, **kwargs):
-        return await self.complete_native(messages, **kwargs)
+        self.requests.append({"messages": messages, "tools": [], **kwargs})
+        return self._completion(next(self.responses))
 
-
-def declaration_text(*ids: str) -> str:
-    calls = [
-        {"name": "lookup_item", "arguments": {"id": value}}
-        for value in ids
-    ]
-    return DECLARATIONS_OPEN + json.dumps(calls) + DECLARATIONS_CLOSE
-
-
-def actor_final(*ids: str) -> str:
-    return json.dumps({"final": declaration_text(*ids)})
-
-
-def context(profile, responses):
-    trace = Trace()
-
-    async def forbidden(_args):
-        raise AssertionError("declaration executed a handler")
-
-    tool = ToolSpec(
-        "lookup_item",
-        "lookup",
-        {"type": "object"},
-        (),
-        parallel=True,
-        read_only=True,
-    )
-    return RunContext(
-        profile,
-        "lookup two ids",
-        Client(responses),
-        ToolEnvironment(
-            [tool], trace, {"lookup_item": forbidden}, proposal_only=True
-        ),
-        trace,
-        {},
-    )
+    async def complete_native(self, messages, **kwargs):
+        self.requests.append({"messages": messages, **kwargs})
+        return self._completion(next(self.responses))
 
 
 class DeclarationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_method_final_response_publishes_parallel_batch_without_extra_llm(self):
+    async def test_actor_uses_original_messages_and_one_native_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "input"
+            source, job = root / "input", root / "job"
             source.mkdir()
-            job = root / "job"
             job.mkdir()
             make_case(source, "bfcl")
-            client = Client(actor_final("a", "b"))
+            client = Client(native_batch("a", "b"))
             with patch.object(runner, "completion_client_from_env", return_value=client):
-                result = await runner.execute("bfcl", "actor-only", "case", source, job, {})
+                result = await runner.execute(
+                    "bfcl", "actor-only", "case", source, job, baseline_limits("bfcl")
+                )
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["tool_calls"], 2)
@@ -113,141 +102,164 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["internal_llm_calls"], 1)
         self.assertEqual(result["publisher_llm_calls"], 0)
         self.assertEqual(result["declaration_protocol"], PUBLISHER_PROTOCOL)
+        self.assertEqual(result["declaration_output_protocol"], NATIVE_SINGLE_RESPONSE_PROTOCOL)
+        self.assertEqual(result["source_response_ids"], [1])
         self.assertEqual(len(client.requests), 1)
-        self.assertIn("BFCL_DECLARATIONS", str(client.requests[0][0]))
+        self.assertEqual(
+            client.requests[0]["messages"],
+            [{"role": "user", "content": "Call the function"}],
+        )
+        tools = client.requests[0]["tools"]
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(set(tools[0]), {"type", "function"})
+        self.assertEqual(set(tools[0]["function"]), {"name", "description", "parameters"})
+        self.assertNotIn("parallel", json.dumps(tools))
+        self.assertNotIn("read_only", json.dumps(tools))
         self.assertEqual(
             [(call["name"], call["arguments"]) for call in result["committed_calls"]],
+            [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "b"})],
+        )
+
+    async def test_source_system_message_is_not_flattened_or_duplicated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            write_json(
+                source / "case.json",
+                {
+                    "prompt": "legacy rendering must not be used",
+                    "messages": [
+                        {"role": "system", "content": "official system"},
+                        {"role": "user", "content": "official user"},
+                    ],
+                    "functions": [
+                        {
+                            "name": "lookup_item",
+                            "description": "lookup",
+                            "parameters": {"type": "object", "properties": {}},
+                        }
+                    ],
+                },
+            )
+            client = Client({"role": "assistant", "content": "not relevant"})
+            with patch.object(runner, "completion_client_from_env", return_value=client):
+                result = await runner.execute("bfcl", "actor-only", "case", source, job, {})
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(
+            client.requests[0]["messages"],
             [
-                ("lookup_item", {"id": "a"}),
-                ("lookup_item", {"id": "b"}),
+                {"role": "system", "content": "official system"},
+                {"role": "user", "content": "official user"},
             ],
         )
 
-    async def test_deterministic_publication_never_executes_handlers_or_adds_cost(self):
-        ctx = context("react", declaration_text("a", "b"))
-        output = await ctx.complete("method-final", [{"role": "user", "content": "finish"}])
-        before = ctx.llm_calls
-        await publish_method_declaration(
-            ctx,
-            method_output=output,
-            proposal_calls=[],
-            tool_capable=True,
-        )
-        self.assertEqual(ctx.llm_calls, before)
-        self.assertEqual(ctx.environment.state_version, 0)
-        self.assertEqual(
-            [call["arguments"]["id"] for call in ctx.environment.committed_calls],
-            ["a", "b"],
-        )
-        self.assertTrue(
-            all(call["result"]["result"]["execution"] == "not_run" for call in ctx.environment.calls)
-        )
-
-    async def test_plain_final_text_publishes_empty_batch_and_freezes_boundary(self):
-        ctx = context("react", "No relevant function")
-        output = await ctx.complete("method-final", [{"role": "user", "content": "finish"}])
-        self.assertEqual(
-            await publish_method_declaration(
-                ctx,
-                method_output=output,
-                proposal_calls=[],
-                tool_capable=True,
-            ),
-            "No relevant function",
-        )
-        self.assertEqual(ctx.environment.committed_calls, [])
-        with self.assertRaises(DeclarationOnlyComplete):
-            await ctx.complete_native("second", [])
-        self.assertEqual(ctx.llm_calls, 1)
-
-    async def test_text_only_method_never_publishes_calls(self):
-        ctx = context("multi-persona", declaration_text("a"))
-        output = await ctx.complete("method-final", [{"role": "user", "content": "finish"}])
-        await publish_method_declaration(
-            ctx,
-            method_output=output,
-            proposal_calls=[],
-            tool_capable=False,
-        )
-        self.assertEqual(ctx.environment.committed_calls, [])
-
-    async def test_sa_prelaunches_and_adopts_only_the_actor_selected_proposal(self):
+    async def test_no_native_calls_publishes_an_atomic_empty_batch(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "input"
+            source, job = root / "input", root / "job"
             source.mkdir()
-            job = root / "job"
             job.mkdir()
             make_case(source, "bfcl")
-            actor = Client([
-                '{"tool":"lookup_item","arguments":{"id":"a"}}',
-                actor_final("a", "b"),
-            ])
-            speculator = Client([
-                '{"actions":[{"tool":"lookup_item","arguments":{"id":"a"}}]}',
-                '{"actions":[]}',
-            ])
-            with patch.object(
-                runner, "completion_client_from_env", return_value=actor
-            ), patch.object(
-                runner, "sa_speculator_client_from_env", return_value=speculator
-            ):
-                result = await runner.execute("bfcl", "sa", "case", source, job, {})
+            client = Client({"role": "assistant", "content": "No relevant function."})
+            with patch.object(runner, "completion_client_from_env", return_value=client):
+                result = await runner.execute("bfcl", "actor-only", "case", source, job, {})
 
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["committed_calls"], [])
+        self.assertEqual(result["external_assistant_responses"], 1)
+        self.assertEqual(result["environment_calls"], 0)
+
+    async def test_internal_proposals_are_not_merged_into_final_batch(self):
+        async def method(ctx):
+            await ctx.complete("planner", [{"role": "user", "content": "plan"}])
+            await ctx.environment.call("lookup_item", {"id": "proposal"})
+            return await complete_native_declaration(
+                ctx,
+                role="existing_final_node",
+                messages=declaration_messages(ctx, internal_context="finish"),
+                protocol=MULTI_MODEL_PROTOCOL,
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = Client(["planned", native_batch("final-a", "final-a")])
+            with (
+                patch.object(runner, "completion_client_from_env", return_value=client),
+                patch.object(runner, "run_profile", new=method),
+            ):
+                result = await runner.execute("bfcl", "llmcompiler", "case", source, job, {})
+
+        self.assertEqual(result["internal_llm_calls"], 2)
+        self.assertEqual(result["proposal_tool_calls"], 1)
+        self.assertEqual(result["proposal_calls"][0]["arguments"], {"id": "proposal"})
+        self.assertEqual(
+            [call["arguments"]["id"] for call in result["committed_calls"]],
+            ["final-a", "final-a"],
+        )
+        self.assertEqual(result["source_response_ids"], [2])
+        self.assertEqual(result["declaration_output_protocol"], MULTI_MODEL_PROTOCOL)
+
+    async def test_sa_prediction_is_not_executed_or_adopted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            actor = Client(native_batch("a", "b"))
+            speculator = Client(
+                '{"actions":[{"tool":"lookup_item","arguments":{"id":"wrong"}}]}'
+            )
+            with (
+                patch.object(runner, "completion_client_from_env", return_value=actor),
+                patch.object(runner, "sa_speculator_client_from_env", return_value=speculator),
+            ):
+                result = await runner.execute(
+                    "bfcl", "sa", "case", source, job, baseline_limits("bfcl")
+                )
             events = [
                 json.loads(line)
-                for line in (job / "harness_trace.jsonl").read_text().splitlines()
+                for line in (job / "harness_trace.jsonl").read_text(encoding="utf-8").splitlines()
             ]
+
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["speculator_llm_calls"], 2)
-        self.assertEqual(len(result["proposal_calls"]), 1)
-        self.assertEqual(result["proposal_calls"][0]["arguments"], {"id": "a"})
-        self.assertEqual(len(result["committed_calls"]), 2)
-        self.assertTrue(any(row["event"] == "sa_cache_hit" for row in events))
-        self.assertEqual(result["publisher_llm_calls"], 0)
+        self.assertEqual(result["actor_llm_calls"], 1)
+        self.assertEqual(result["speculator_llm_calls"], 1)
+        self.assertEqual(result["proposal_calls"], [])
+        self.assertEqual(
+            [call["arguments"]["id"] for call in result["committed_calls"]],
+            ["a", "b"],
+        )
+        prediction = next(event for event in events if event["event"] == "sa_bfcl_prediction")
+        self.assertEqual(prediction["execution"], "not_run")
+        self.assertFalse(prediction["adopted_by_actor"])
 
-    def test_parser_preserves_duplicates_and_rejects_partial_or_ambiguous_batches(self):
-        parsed = parse_method_declarations(declaration_text("a", "a"))
-        self.assertEqual([item[1]["id"] for item in parsed], ["a", "a"])
-        malformed = DECLARATIONS_OPEN + '[{"name":"lookup_item"}]' + DECLARATIONS_CLOSE
-        with self.assertRaises(ValueError):
-            parse_method_declarations(malformed)
-        with self.assertRaises(ValueError):
-            parse_method_declarations(declaration_text("a") + declaration_text("b"))
+    def test_native_parser_preserves_duplicates(self):
+        completion = Client._completion(native_batch("a", "a"))
+        parsed = parse_native_declarations(completion)
+        self.assertEqual(
+            [arguments["id"] for _name, arguments, _id in parsed],
+            ["a", "a"],
+        )
 
-    async def test_malformed_batch_commits_nothing(self):
-        malformed = DECLARATIONS_OPEN + '[{"name":"lookup_item"}]' + DECLARATIONS_CLOSE
-        ctx = context("actor-only", malformed)
-        output = await ctx.complete("method-final", [{"role": "user", "content": "finish"}])
-        with self.assertRaises(ValueError):
-            await publish_method_declaration(
-                ctx,
-                method_output=output,
-                proposal_calls=[],
-                tool_capable=True,
-            )
-        self.assertEqual(ctx.environment.calls, [])
-
-    async def test_bridge_preserves_internal_failure_without_publication(self):
-        async def broken(ctx):
-            await ctx.complete("first", [])
-            await ctx.environment.call("lookup_item", {"id": "a"})
-            raise RuntimeError("unexpected before final output")
-
+    async def test_malformed_native_arguments_commit_nothing(self):
+        malformed = native_batch("a")
+        malformed["tool_calls"][0]["function"]["arguments"] = "{bad"
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "input"
+            source, job = root / "input", root / "job"
             source.mkdir()
-            job = root / "job"
             job.mkdir()
             make_case(source, "bfcl")
-            with patch.object(
-                runner, "completion_client_from_env", return_value=Client("internal")
-            ), patch.object(runner, "run_profile", new=broken):
-                result = await runner.execute(
-                    "bfcl", "plan-execute", "case", source, job, {}
-                )
+            with patch.object(runner, "completion_client_from_env", return_value=Client(malformed)):
+                result = await runner.execute("bfcl", "actor-only", "case", source, job, {})
         self.assertEqual(result["status"], "failed")
-        self.assertIn("unexpected before final output", result["error"])
         self.assertEqual(result["committed_calls"], [])
-        self.assertEqual(len(result["proposal_calls"]), 1)
+        self.assertEqual(result["external_assistant_responses"], 0)

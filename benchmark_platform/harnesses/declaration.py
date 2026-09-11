@@ -1,67 +1,172 @@
-"""Publish a method's own final BFCL declaration list without another LLM call."""
+"""BFCL's one-response native declaration boundary.
+
+The benchmark functions are never executed.  A method's existing output-producing
+node emits native calls, this module records that response, and the bridge publishes
+the same batch without a finalizer or a proposal union.
+"""
 from __future__ import annotations
 
+import copy
 import json
-import re
+from dataclasses import dataclass
 from typing import Any
 
+from .api import Completion
 from .core import RunContext
 
-PUBLISHER_PROTOCOL = "bfcl-method-final-declarations-v1"
-DECLARATIONS_OPEN = "<BFCL_DECLARATIONS>"
-DECLARATIONS_CLOSE = "</BFCL_DECLARATIONS>"
+PUBLISHER_PROTOCOL = "bfcl-native-declaration-boundary-v2"
+NATIVE_SINGLE_RESPONSE_PROTOCOL = "bfcl-native-single-response-v1"
+MULTI_MODEL_PROTOCOL = "multi-model-declaration-aggregation-v1"
+METHOD_FINAL_PROTOCOL = "bfcl-method-final-native-v1"
+TEXT_ONLY_PROTOCOL = "bfcl-text-only-empty-v1"
 
 
-def method_declaration_instruction(tool_schema: str) -> str:
-    """Tell a tool-capable method how its own final response becomes BFCL output."""
-
-    return f"""This is a BFCL single-turn function-selection task. The benchmark functions never execute.
-Calls made while your method is reasoning are internal proposals only; their acknowledgements contain no environment observation or proof that an action succeeded. Use them to reason about the complete answer, not as executed results.
-
-When your method would normally return its final answer, include exactly one block in that same final answer text:
-{DECLARATIONS_OPEN}[{{"name":"function_name","arguments":{{}}}}]{DECLARATIONS_CLOSE}
-The JSON value must be a list containing every required function invocation. Use [] when no function is appropriate. Parallel requests require multiple list items, including repeated calls to the same function when requested. Preserve exact names, arguments, values and multiplicity. Do not emit this block on intermediate planning, critique, routing or proposal turns.
-
-Available BFCL function schemas:
-{tool_schema}"""
+@dataclass(frozen=True)
+class DeclarationOutput:
+    response_id: int
+    source_response_ids: tuple[int, ...]
+    calls: tuple[tuple[str, dict[str, Any], str | None], ...]
+    content: str
+    protocol: str
 
 
-def parse_method_declarations(method_output: str) -> list[tuple[str, dict[str, Any], None]]:
-    """Parse the one declaration block emitted by the method's final response.
+def declaration_messages(
+    ctx: RunContext,
+    *,
+    method_instruction: str | None = None,
+    internal_context: str | None = None,
+) -> list[dict[str, Any]]:
+    """Preserve BFCL task roles and add only a method-owned final-node context."""
 
-    Ordinary text with no block is a valid no-call response, matching BFCL's
-    relevance/irrelevance boundary. A malformed or ambiguous block is an
-    algorithm output error; no partial batch is published.
-    """
+    task = copy.deepcopy(ctx.task_messages) or [
+        {"role": "user", "content": ctx.prompt}
+    ]
+    leading: list[dict[str, Any]] = []
+    while task and task[0].get("role") in {"system", "developer"}:
+        leading.append(task.pop(0))
+    messages = [*leading]
+    if method_instruction:
+        messages.append({"role": "system", "content": method_instruction})
+    messages.extend(task)
+    if internal_context:
+        messages.append({"role": "user", "content": internal_context})
+    return messages
 
-    matches = re.findall(
-        re.escape(DECLARATIONS_OPEN) + r"(.*?)" + re.escape(DECLARATIONS_CLOSE),
-        method_output,
-        flags=re.DOTALL,
-    )
-    if not matches:
-        return []
-    if len(matches) != 1:
-        raise ValueError("BFCL method output must contain at most one declaration block")
-    try:
-        value = json.loads(matches[0].strip())
-    except json.JSONDecodeError as exc:
-        raise ValueError("BFCL declaration block must contain valid JSON") from exc
-    if not isinstance(value, list):
-        raise ValueError("BFCL declaration block must contain a JSON list")
-    batch: list[tuple[str, dict[str, Any], None]] = []
-    for index, item in enumerate(value):
-        if not isinstance(item, dict) or set(item) != {"name", "arguments"}:
-            raise ValueError(
-                f"BFCL declaration item {index} must contain exactly name and arguments"
-            )
-        name, arguments = item["name"], item["arguments"]
+
+def _assistant_message(completion: Completion) -> dict[str, Any]:
+    choices = completion.raw.get("choices") or []
+    if not choices or not isinstance(choices[0], dict):
+        raise ValueError("BFCL native response omitted its assistant choice")
+    message = choices[0].get("message")
+    if not isinstance(message, dict):
+        raise ValueError("BFCL native response omitted its assistant message")
+    return message
+
+
+def parse_native_declarations(
+    completion: Completion,
+) -> list[tuple[str, dict[str, Any], str | None]]:
+    """Read one assistant response's complete native call batch, preserving order."""
+
+    batch: list[tuple[str, dict[str, Any], str | None]] = []
+    for index, call in enumerate(_assistant_message(completion).get("tool_calls") or []):
+        if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+            raise ValueError(f"BFCL native tool call {index} is malformed")
+        function = call["function"]
+        name = function.get("name")
+        arguments = function.get("arguments", {})
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"BFCL native tool call {index} has invalid JSON arguments"
+                ) from exc
         if not isinstance(name, str) or not name or not isinstance(arguments, dict):
             raise ValueError(
-                f"BFCL declaration item {index} requires a nonempty name and object arguments"
+                f"BFCL native tool call {index} requires a name and object arguments"
             )
-        batch.append((name, arguments, None))
+        call_id = call.get("id")
+        batch.append((name, arguments, str(call_id) if call_id is not None else None))
     return batch
+
+
+async def complete_native_declaration(
+    ctx: RunContext,
+    *,
+    role: str,
+    messages: list[dict[str, Any]],
+    protocol: str,
+) -> str:
+    """Use the method's own final node to produce the scored native response."""
+
+    output = await native_declaration_candidate(
+        ctx,
+        role=role,
+        messages=messages,
+        protocol=protocol,
+    )
+    await stage_declaration_output(ctx, output)
+    return output.content
+
+
+async def native_declaration_candidate(
+    ctx: RunContext,
+    *,
+    role: str,
+    messages: list[dict[str, Any]],
+    protocol: str,
+) -> DeclarationOutput:
+    """Generate one native batch candidate without making it externally visible."""
+
+    tools = [
+        {"type": "function", "function": tool.native_schema()}
+        for tool in ctx.environment.tools.values()
+    ]
+    completion = await ctx.complete_native(
+        role,
+        messages,
+        tools=tools or None,
+        tool_choice="auto" if tools else None,
+    )
+    response_id = ctx.last_actor_response_id
+    if response_id is None:
+        raise ValueError("BFCL method produced no authoritative Actor response")
+    output = DeclarationOutput(
+        response_id=response_id,
+        source_response_ids=(response_id,),
+        calls=tuple(parse_native_declarations(completion)),
+        content=completion.content,
+        protocol=protocol,
+    )
+    await ctx.trace.emit(
+        "declaration_candidate_response",
+        response_id=response_id,
+        call_count=len(output.calls),
+        protocol=protocol,
+    )
+    return output
+
+
+async def stage_declaration_output(ctx: RunContext, output: DeclarationOutput) -> None:
+    """Select an existing method response as the sole outward BFCL response."""
+
+    if ctx.declaration_output is not None:
+        raise ValueError("BFCL method produced more than one final declaration response")
+    ctx.declaration_output = {
+        "response_id": output.response_id,
+        "source_response_ids": list(output.source_response_ids),
+        "calls": list(output.calls),
+        "content": output.content,
+        "protocol": output.protocol,
+    }
+    await ctx.trace.emit(
+        "method_declaration_response",
+        response_id=output.response_id,
+        source_response_ids=list(output.source_response_ids),
+        call_count=len(output.calls),
+        protocol=output.protocol,
+    )
 
 
 async def publish_method_declaration(
@@ -71,17 +176,22 @@ async def publish_method_declaration(
     proposal_calls: list[dict[str, Any]],
     tool_capable: bool,
 ) -> str:
-    """Turn the method's existing final response into the sole outward batch.
-
-    This function is deterministic: it performs no provider request and adds no
-    model cost. Text-only methods publish an empty call batch without receiving
-    the benchmark schemas.
-    """
+    """Publish a recorded final response without another model call or call union."""
 
     if not isinstance(method_output, str):
         raise ValueError("BFCL method must return final text")
-    batch = parse_method_declarations(method_output) if tool_capable else []
-    response_id = ctx.last_actor_response_id
+    if tool_capable:
+        if ctx.declaration_output is None:
+            raise ValueError("BFCL tool-capable method omitted its native final response")
+        response_id = int(ctx.declaration_output["response_id"])
+        batch = list(ctx.declaration_output["calls"])
+        source_response_ids = list(ctx.declaration_output["source_response_ids"])
+        protocol = str(ctx.declaration_output["protocol"])
+    else:
+        response_id = ctx.last_actor_response_id
+        batch = []
+        source_response_ids = [response_id] if response_id is not None else []
+        protocol = TEXT_ONLY_PROTOCOL
     if response_id is None:
         raise ValueError("BFCL method produced no authoritative Actor response")
     await ctx.environment.publish_declaration_batch(response_id, batch)
@@ -92,7 +202,8 @@ async def publish_method_declaration(
         environment_calls=0,
         proposal_count=len(proposal_calls),
         implementation=PUBLISHER_PROTOCOL,
-        prompt_adapter=("method-final-contract-v1" if tool_capable else "text-only-none"),
+        output_protocol=protocol,
+        source_response_ids=source_response_ids,
         publisher_model_calls=0,
     )
     return method_output
