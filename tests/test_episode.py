@@ -213,7 +213,11 @@ class EpisodeBrokerTests(unittest.TestCase):
                             {"requests": client.requests, "native_tools": client.native_tools},
                             ensure_ascii=False,
                         )
-                        if profile.tool_contract == "no-external-tools" or profile.id == "magentic-one":
+                        # Magentic-One's adapter reassigns benchmark-native tools to a
+                        # participant, so the orchestrator has to be told who holds them:
+                        # left blind it dispatched 278 times on tau2 without ever calling the
+                        # one participant that could act, and made zero tool calls in 60 arms.
+                        if profile.tool_contract == "no-external-tools":
                             self.assertNotIn("native_lookup", transcript)
                         else:
                             self.assertIn("native_lookup", transcript)

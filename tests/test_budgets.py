@@ -5,7 +5,7 @@ from benchmark_platform.budgets import (Deadline, ModelBudgetExceeded, baseline_
                                       native_steps, resolve_budget)
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
-from test_declaration_protocol import Trace
+from harness_fixtures import Trace
 from test_harnesses import ScriptedClient, native_tool_call
 
 

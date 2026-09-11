@@ -16,6 +16,37 @@ from .content import ToolImage, json_safe, tool_result_content
 from ..measurement import TURN_DEFINITION, TURN_SCOPE, TOKEN_DEFINITION, METRICS_VERSION, add_tokens, normalize_usage, zero_tokens
 
 
+# The relay sometimes leaks the model's internal tool-call channel into plain text: a
+# ``to=<tool>`` header and/or a burst of rarely-trained glitch tokens (Cyrillic, Georgian,
+# Thai, Hangul, CJK spam) appears immediately before the JSON payload the caller is about
+# to parse. Measured 2026-09-07 over 1811 traces: 31 responses, all in roles that describe
+# a tool call as text (rewoo_planner 20, magentic-one 4, plan-execute 2, dmas/dylan/cmas 1
+# each). Native-tool roles -- actor-only and react -- were never affected, because their
+# calls have a real channel to go to. Only the leaked prefix is removed; ``raw`` keeps the
+# original, and every removal is traced so the rate stays countable.
+_GLITCH = (
+    "\u0400-\u052f\u0530-\u058f\u0590-\u05ff\u0600-\u06ff\u0900-\u097f"
+    "\u0e00-\u0e7f\u10a0-\u10ff\u3010\u3011\u4e00-\u9fff\uac00-\ud7af"
+)
+# Junk never contains the sentence punctuation that real prose uses before a brace, so a
+# legitimate "returns the following JSON:\n{...}" cannot match.
+_CHANNEL_LEAK = re.compile(
+    rf"(?:\bto=[A-Za-z_][\w.]*)?[^\n:.\"'{{}}\[\]]*[{_GLITCH}][^\n:.\"'{{}}\[\]]*"
+    rf"(?:json)?\s*(?=[{{\[])"
+)
+
+
+def strip_channel_leak(text: str) -> tuple[str, list[str]]:
+    """Drop leaked tool-channel prefixes, returning the text and what was removed."""
+    removed: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        removed.append(match.group(0))
+        return ""
+
+    return _CHANNEL_LEAK.sub(replace, text), removed
+
+
 _ASSISTANT_RESPONSE_ID: contextvars.ContextVar[int | None] = contextvars.ContextVar(
     "harnesseval_assistant_response_id",
     default=None,
@@ -1011,19 +1042,23 @@ class RunContext:
             self.environment.commit_declaration_response(response_id)
         self.prompt_tokens += completion.prompt_tokens
         self.completion_tokens += completion.completion_tokens
+        content, leaked = strip_channel_leak(completion.content)
+        if leaked:
+            await self.trace.emit("channel_leak_stripped", response_id=response_id, role=role,
+                                  channel=channel, removed=leaked)
         await self.trace.emit(
             "llm_response",
             response_id=response_id,
             role=role,
             channel=channel,
-            content=completion.content,
+            content=content,
             raw=completion.raw,
             elapsed_seconds=completion.elapsed_seconds,
             prompt_tokens=completion.prompt_tokens,
             completion_tokens=completion.completion_tokens,
             transport_retries=completion.transport_retries,
         )
-        return completion.content
+        return content
 
     async def complete_native(
         self,

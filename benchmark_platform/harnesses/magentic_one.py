@@ -231,6 +231,10 @@ def _magentic_worker_tools(role: str, names: set[str]) -> list[str]:
     capabilities = {
         "FileSurfer": {"read_file", "list_files", "search_files"},
         "WebSurfer": {"web_search", "web_browser", "browse_web", "fetch_url"},
+        # Coder writes, Executor runs: Coder holding no tool of its own is the published
+        # division of labour. write_file stays in `assigned` without belonging to any role
+        # on purpose -- it is withheld from WebSurfer's catch-all too, because no
+        # Magentic-One participant writes files directly.
         "Coder": set(),
         "Executor": {"run_command"},
     }
@@ -244,8 +248,24 @@ def _magentic_worker_tools(role: str, names: set[str]) -> list[str]:
     return sorted(names & capabilities[role])
 
 
-def _team_description(workers: dict[str, str]) -> str:
-    return "\n".join(f"{name}: {description}" for name, description in workers.items())
+def _team_description(workers: dict[str, str], names: set[str] | None = None) -> str:
+    """Name each participant's actual tools, not just its canonical role.
+
+    The adapter reassigns benchmark-native tools at the boundary -- Tau2 and
+    AutomationBench domain APIs all land on WebSurfer -- but the orchestrator used to see
+    only the canonical role blurbs, so it routed by role semantics and never learned who
+    could act. Measured on the 2026-09-07 tau2 sweep: 278 dispatches went to FileSurfer,
+    Executor and Coder, WebSurfer (the only participant holding any tool) got zero, and
+    58 of 60 arms burned the full 900s wall clock replanning. The topology is unchanged;
+    only the routing information is completed.
+    """
+
+    lines = []
+    for name, description in workers.items():
+        tools = _magentic_worker_tools(name, names) if names else []
+        suffix = f" Available tools: {', '.join(tools)}." if tools else ""
+        lines.append(f"{name}: {description}{suffix}")
+    return "\n".join(lines)
 
 
 def _message(source: str, content: str) -> dict[str, str]:
@@ -602,7 +622,7 @@ async def run_magentic_one(ctx: RunContext) -> str:
     """
 
     workers = _magentic_team(set(ctx.environment.names))
-    team = _team_description(workers)
+    team = _team_description(workers, set(ctx.environment.names))
     planning_context: list[dict[str, Any]] = [
         {
             "role": "user",

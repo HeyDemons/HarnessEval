@@ -4,7 +4,7 @@ import unittest
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import _parse_react, run_profile
 from test_aflow_upstream import Client
-from test_declaration_protocol import Trace
+from harness_fixtures import Trace
 
 
 class ReactStopTests(unittest.IsolatedAsyncioTestCase):

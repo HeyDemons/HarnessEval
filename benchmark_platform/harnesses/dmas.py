@@ -179,7 +179,17 @@ async def _route(
             },
         ],
         required_root_key="decision",
-        response_schema=object_schema({"decision": {"type": "string", "enum": decisions.split("/")}}),
+        response_schema=object_schema(
+            {
+                "decision": {"type": "string", "enum": decisions.split("/")},
+                "reason": {"type": ["string", "null"]},
+                "next_agent_id": {"type": ["string", "null"]},
+                "executable": {"type": ["string", "null"]},
+                "remaining": {"type": ["string", "null"]},
+                "description": {"type": ["string", "null"]},
+            },
+            ["decision"],
+        ),
     )
 
 
@@ -281,7 +291,16 @@ async def _route_after_split(
             }
         ],
         required_root_key="status",
-        response_schema=object_schema({"status": {"type": "string", "enum": ["completed", "incompleted"]}}, extra=True),
+        response_schema=object_schema(
+            {
+                "status": {"type": "string", "enum": ["completed", "incompleted"]},
+                "reason": {"type": ["string", "null"]},
+                "next_agent_id": {"type": ["string", "null"]},
+                "remaining": {"type": ["string", "null"]},
+            },
+            ["status"],
+            extra=True,
+        ),
     )
 
 

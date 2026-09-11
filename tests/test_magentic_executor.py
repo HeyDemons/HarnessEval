@@ -8,7 +8,7 @@ from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolS
 from benchmark_platform.harnesses.code_executor import execute_code
 from benchmark_platform.harnesses.magentic_one import _participant_turn
 from benchmark_platform.harnesses.methods import run_profile
-from test_declaration_protocol import Trace
+from harness_fixtures import Trace
 from test_harnesses import ScriptedClient, magentic_ledger, native_tool_call
 
 

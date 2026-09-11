@@ -4,7 +4,7 @@ import unittest
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.methods import run_profile
 from test_harnesses import ScriptedClient, native_tool_call
-from test_declaration_protocol import Trace
+from harness_fixtures import Trace
 
 
 class NativeReactTests(unittest.IsolatedAsyncioTestCase):
