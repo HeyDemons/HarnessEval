@@ -443,6 +443,14 @@ async def run_sa(ctx: RunContext) -> str:
     ) -> dict[str, tuple[int, dict[str, Any]]]:
         if not safe_names:
             return {}
+        visible_safe_tools = [
+            (
+                ctx.environment.tools[name].native_schema()
+                if ctx.policy.get("bfcl_declaration_mode") is True
+                else ctx.environment.tools[name].prompt_schema()
+            )
+            for name in safe_names
+        ]
         predictor_messages = [
             *actor_messages,
             {
@@ -452,11 +460,7 @@ async def run_sa(ctx: RunContext) -> str:
                     "next immediate tool action from the conversation above. Predictions are best-effort "
                     "and must never claim an observation occurred.\n"
                     f"Only these lossless prelaunch tools are allowed: "
-                    f"{json.dumps([(
-                        ctx.environment.tools[name].native_schema()
-                        if ctx.policy.get('bfcl_declaration_mode') is True
-                        else ctx.environment.tools[name].prompt_schema()
-                    ) for name in safe_names], ensure_ascii=False)}\n"
+                    f"{json.dumps(visible_safe_tools, ensure_ascii=False)}\n"
                     f'Return one JSON object {{"actions":[{{"tool":"name","arguments":{{}}}}]}} '
                     f"with at most {top_k} distinct actions. Return an empty actions list when the Actor "
                     "is likely to answer or select a mutating tool."

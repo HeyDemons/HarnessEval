@@ -31,9 +31,6 @@ from .adapters import load_case
 from .bfcl import render_bfcl_method_prompt
 
 
-_BFCL_ONE_ACTOR_RESPONSE = {"actor-only", "multi-persona"}
-
-
 def _write(path: Path, value: Any) -> None:
     pending = path.with_name(f".{path.name}.tmp")
     pending.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -68,13 +65,9 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
     effective_policy = dict(policy)
     if benchmark == "bfcl":
         effective_policy["bfcl_declaration_mode"] = True
-        # The direct Actor, one-response ReAct adapter, SA Actor and SPP each own exactly
-        # one Actor response. Multi-stage methods retain metered internal generations and
-        # use their existing final decision node for the sole native declaration response.
-        if profile_id in _BFCL_ONE_ACTOR_RESPONSE:
-            effective_policy["model_response_limit"] = 1
-        else:
-            effective_policy.pop("model_response_limit", None)
+        # The runtime harness is the measured system. BFCL constrains its one outward
+        # response, never the number of internal model calls its own algorithm performs.
+        effective_policy.pop("model_response_limit", None)
         effective_policy["max_turns"] = positive_int(
             os.environ.get("HARNESS_BFCL_AGENT_TURNS", 6), "HARNESS_BFCL_AGENT_TURNS"
         )

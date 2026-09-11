@@ -21,7 +21,7 @@ from benchmark_platform.harnesses.core import (
 )
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.declaration import (
-    NATIVE_SINGLE_RESPONSE_PROTOCOL,
+    MULTI_MODEL_PROTOCOL,
     complete_native_declaration,
     declaration_messages,
     publish_method_declaration,
@@ -232,7 +232,7 @@ class HarnessTests(unittest.TestCase):
                     context,
                     role="actor",
                     messages=declaration_messages(context),
-                    protocol=NATIVE_SINGLE_RESPONSE_PROTOCOL,
+                    protocol=MULTI_MODEL_PROTOCOL,
                 )
                 await publish_method_declaration(
                     context,

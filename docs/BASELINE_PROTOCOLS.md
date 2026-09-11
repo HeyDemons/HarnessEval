@@ -6,8 +6,9 @@ The frozen 65-case comparison treats each baseline as the runtime harness under
 test. The benchmark-owned input remains the pinned BFCL `question[0]` messages,
 with roles preserved, plus the official native function schemas. Controller
 annotations such as `parallel` and `read_only` are never shown to the model.
-Actor-only is also a runtime harness; its implementation is simply the minimal
-one-generation forwarding path and therefore adds no method prompt.
+Actor-only is also a runtime harness and runs its complete JSON action loop;
+Multi-Persona runs its original single-call SPP protocol without a runner-imposed
+model-response limit.
 
 Planner, worker, router, memory and consensus calls remain internal to their
 respective harnesses and are fully included in time, turn and token accounting.

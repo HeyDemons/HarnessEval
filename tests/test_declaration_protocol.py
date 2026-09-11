@@ -10,7 +10,6 @@ from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.declaration import (
     MULTI_MODEL_PROTOCOL,
-    NATIVE_SINGLE_RESPONSE_PROTOCOL,
     PUBLISHER_PROTOCOL,
     SELECTED_ACTION_CHAIN_PROTOCOL,
     complete_native_declaration,
@@ -84,14 +83,18 @@ class Client:
 
 
 class DeclarationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_actor_uses_original_messages_and_one_native_batch(self):
+    async def test_actor_runs_complete_json_action_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, job = root / "input", root / "job"
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            client = Client(native_batch("a", "b"))
+            client = Client([
+                '{"tool":"lookup_item","arguments":{"id":"a"}}',
+                '{"tool":"lookup_item","arguments":{"id":"b"}}',
+                '{"final":"done"}',
+            ])
             with patch.object(runner, "completion_client_from_env", return_value=client):
                 result = await runner.execute(
                     "bfcl", "actor-only", "case", source, job, baseline_limits("bfcl")
@@ -99,23 +102,23 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["tool_calls"], 2)
-        self.assertEqual(result["agent_turns"], 1)
-        self.assertEqual(result["internal_llm_calls"], 1)
+        self.assertEqual(result["agent_turns"], 3)
+        self.assertEqual(result["internal_llm_calls"], 3)
         self.assertEqual(result["publisher_llm_calls"], 0)
         self.assertEqual(result["declaration_protocol"], PUBLISHER_PROTOCOL)
-        self.assertEqual(result["declaration_output_protocol"], NATIVE_SINGLE_RESPONSE_PROTOCOL)
-        self.assertEqual(result["source_response_ids"], [1])
-        self.assertEqual(len(client.requests), 1)
+        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
+        self.assertEqual(result["source_response_ids"], [1, 2])
+        self.assertEqual(len(client.requests), 3)
         self.assertEqual(
-            client.requests[0]["messages"],
-            [{"role": "user", "content": "Call the function"}],
+            [message["role"] for message in client.requests[0]["messages"]],
+            ["system", "user"],
         )
-        tools = client.requests[0]["tools"]
-        self.assertEqual(len(tools), 1)
-        self.assertEqual(set(tools[0]), {"type", "function"})
-        self.assertEqual(set(tools[0]["function"]), {"name", "description", "parameters"})
-        self.assertNotIn("parallel", json.dumps(tools))
-        self.assertNotIn("read_only", json.dumps(tools))
+        self.assertEqual(client.requests[0]["messages"][-1], {"role": "user", "content": "Call the function"})
+        schema_prompt = client.requests[0]["messages"][0]["content"]
+        self.assertIn("lookup_item", schema_prompt)
+        self.assertNotIn('"parallel"', schema_prompt)
+        self.assertNotIn('"read_only"', schema_prompt)
+        self.assertEqual(client.requests[0]["tools"], [])
         self.assertEqual(
             [(call["name"], call["arguments"]) for call in result["committed_calls"]],
             [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "b"})],
@@ -144,18 +147,15 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
                     ],
                 },
             )
-            client = Client({"role": "assistant", "content": "not relevant"})
+            client = Client('{"final":"not relevant"}')
             with patch.object(runner, "completion_client_from_env", return_value=client):
                 result = await runner.execute("bfcl", "actor-only", "case", source, job, {})
 
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(
-            client.requests[0]["messages"],
-            [
-                {"role": "system", "content": "official system"},
-                {"role": "user", "content": "official user"},
-            ],
-        )
+        messages = client.requests[0]["messages"]
+        self.assertEqual([message["role"] for message in messages], ["system", "system", "user"])
+        self.assertEqual(sum(message["content"] == "official system" for message in messages), 1)
+        self.assertEqual(messages[-1], {"role": "user", "content": "official user"})
 
     async def test_no_native_calls_publishes_an_atomic_empty_batch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -164,7 +164,7 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            client = Client({"role": "assistant", "content": "No relevant function."})
+            client = Client('{"final":"No relevant function."}')
             with patch.object(runner, "completion_client_from_env", return_value=client):
                 result = await runner.execute("bfcl", "actor-only", "case", source, job, {})
 

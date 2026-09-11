@@ -449,19 +449,15 @@ async def run_profile(ctx: RunContext) -> str:
     if ctx.profile == "lats" and ctx.environment.declaration_only:
         raise ValueError("LATS cannot run after the BFCL declaration publisher boundary")
     if ctx.profile == "actor-only":
+        answer = await _json_tool_loop(ctx, "actor")
         if ctx.policy.get("bfcl_declaration_mode") is True:
-            from .declaration import (
-                NATIVE_SINGLE_RESPONSE_PROTOCOL,
-                complete_native_declaration,
-                declaration_messages,
-            )
-            return await complete_native_declaration(
+            from .declaration import stage_selected_tool_records
+            await stage_selected_tool_records(
                 ctx,
-                role="actor",
-                messages=declaration_messages(ctx),
-                protocol=NATIVE_SINGLE_RESPONSE_PROTOCOL,
+                list(ctx.environment.proposal_calls),
+                content=answer,
             )
-        return await _json_tool_loop(ctx, "actor")
+        return answer
     if ctx.profile == "react":
         return await run_react(ctx)
     if ctx.profile == "plan-execute":

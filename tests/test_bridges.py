@@ -166,7 +166,10 @@ def bfcl_responses(profile_id: str) -> list:
     batch = bfcl_native_batch("ok")
     responses = list(RESPONSES[profile_id])
     if profile_id == "actor-only":
-        return [batch]
+        return [
+            '{"tool":"lookup_item","arguments":{"id":"ok"}}',
+            '{"final":"done"}',
+        ]
     if profile_id == "react":
         return [
             'Thought: act\nAction: lookup_item\nAction Input: {"id":"ok"}',

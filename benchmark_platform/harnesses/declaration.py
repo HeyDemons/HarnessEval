@@ -15,7 +15,6 @@ from .api import Completion
 from .core import RunContext
 
 PUBLISHER_PROTOCOL = "bfcl-native-declaration-boundary-v2"
-NATIVE_SINGLE_RESPONSE_PROTOCOL = "bfcl-native-single-response-v1"
 MULTI_MODEL_PROTOCOL = "multi-model-declaration-aggregation-v1"
 SELECTED_ACTION_CHAIN_PROTOCOL = "bfcl-selected-action-chain-v1"
 TEXT_ONLY_PROTOCOL = "bfcl-text-only-empty-v1"

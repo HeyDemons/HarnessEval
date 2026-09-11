@@ -219,7 +219,8 @@ def proposal_only_result(function_name: str, arguments: dict[str, Any]) -> dict[
         "terminate": False,
         "instruction": (
             "This is an internal candidate for the final BFCL answer. It was not executed "
-            "or published and contains no environment observation. Continue the method; its existing final "
-            "decision node must produce the complete native call batch."
+            "or published and contains no environment observation. Continue the method's normal "
+            "algorithm, do not repeat this action unless multiplicity is required, and finish naturally. "
+            "The runtime will publish only the method-selected action chain."
         ),
     }
