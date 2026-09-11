@@ -14,7 +14,7 @@ from .bfcl import (
     proposal_only_result,
     normalize_bfcl_parameters,
     prepared_bfcl_messages,
-    render_bfcl_prompt,
+    render_bfcl_method_prompt,
 )
 
 
@@ -196,7 +196,7 @@ def load_bfcl(case_id: str, root: Path) -> BridgeCase:
     return BridgeCase(
         "bfcl",
         case_id,
-        render_bfcl_prompt(messages),
+        render_bfcl_method_prompt(messages),
         specs,
         handlers,
         {

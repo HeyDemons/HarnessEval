@@ -364,7 +364,7 @@ class BridgeMatrixTests(unittest.TestCase):
             result = asyncio.run(environment.call("lookup_item", {"id": 7}))
 
         self.assertNotIn('[[{"role"', bridge.prompt)
-        self.assertIn("Use only the declared functions.", bridge.prompt)
+        self.assertNotIn("Use only the declared functions.", bridge.prompt)
         self.assertIn("Look up item 7.", bridge.prompt)
         self.assertEqual(bridge.metadata["messages"], messages)
         self.assertTrue(result["result"]["declaration_only"])
