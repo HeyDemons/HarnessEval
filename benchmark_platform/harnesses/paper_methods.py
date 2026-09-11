@@ -69,17 +69,49 @@ from .aflow import run_aflow
 from .dylan import most_frequent as _dylan_most_frequent, run_dylan
 
 
+def spp_recommendation(collaboration: str) -> str:
+    """Apply the pinned SPP final-answer marker precedence to a collaboration."""
+
+    for marker in ("Final answer:", "final answer:"):
+        if marker in collaboration:
+            return collaboration.split(marker)[1].strip()
+    return collaboration
+
+
 async def run_multi_persona(ctx: RunContext) -> str:
-    response = await ctx.complete(
-        "solo_performance_prompting",
+    collaboration = await ctx.complete(
+        "multi_persona_collaboration",
         [{"role": "user", "content": SPP_PROFILE_PROMPT.format(task=ctx.prompt)}],
     )
-    # Pinned SPP prompt_unwrap (619c8a0), including marker precedence and
-    # repeated-marker behavior. complete() has already traced the full draft.
-    for marker in ("Final answer:", "final answer:"):
-        if marker in response:
-            return response.split(marker)[1].strip()
-    return response
+    # Preserve the pinned SPP prompt_unwrap (619c8a0) for the collaboration's
+    # recommended plan, including marker precedence and repeated-marker behavior.
+    recommendation = spp_recommendation(collaboration)
+
+    # Declared benchmark adapter: SPP remains the complete first planning stage;
+    # a standard dynamic Actor then carries that collaboration through real tools and
+    # observations. This mirrors AFlow's reasoning-operator/ToolDecision split instead
+    # of pretending the original text-only prompt can mutate an environment by itself.
+    from .methods import _json_tool_loop
+    answer = await _json_tool_loop(
+        ctx,
+        "multi_persona_actor",
+        prompt=(
+            "Execute the original task using the completed multi-persona collaboration as "
+            "advisory planning. Select and use benchmark tools yourself as needed; only real "
+            "controller observations are evidence. Finish only when the original task is complete.\n\n"
+            f"Original task: {ctx.prompt}\n\n"
+            f"Collaboration transcript: {collaboration}\n\n"
+            f"Recommended plan or answer: {recommendation}"
+        ),
+    )
+    if ctx.policy.get("bfcl_declaration_mode") is True:
+        from .declaration import stage_selected_tool_records
+        await stage_selected_tool_records(
+            ctx,
+            list(ctx.environment.proposal_calls),
+            content=answer,
+        )
+    return answer
 
 
 _PLAN_REFERENCE = re.compile(r"\$([A-Za-z0-9_-]+)((?:\.[A-Za-z0-9_-]+|\[\d+\])*)")

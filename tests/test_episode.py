@@ -81,7 +81,7 @@ PROFILE_RESPONSES = {
         ),
         "ok",
     ],
-    "multi-persona": ["Final answer: ok"],
+    "multi-persona": ["Finish collaboration!\nFinal answer: ok", '{"final":"ok"}'],
     "llmcompiler": ['{"tasks":[]}', '{"action":"finish","answer":"ok"}'],
     "rewoo": [
         "Plan: obtain direct evidence\n#E1 = LLM[Return ok]",

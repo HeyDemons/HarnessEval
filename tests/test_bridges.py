@@ -133,7 +133,7 @@ RESPONSES = {
         ),
         "ok",
     ],
-    "multi-persona": ["Final answer: ok"],
+    "multi-persona": ["Finish collaboration!\nFinal answer: inspect then complete", '{"final":"ok"}'],
     "llmcompiler": ['{"tasks":[]}', '{"action":"finish","answer":"ok"}'],
     "rewoo": [
         "Plan: obtain direct evidence\n#E1 = LLM[Return ok]",
@@ -184,6 +184,12 @@ def bfcl_responses(profile_id: str) -> list:
         return [
             '{"thought":"act","function":"lookup_item","arguments":{"id":"ok"}}',
             '{"thought":"done","function":"send_message","arguments":{"message":"done"}}',
+        ]
+    if profile_id == "multi-persona":
+        return [
+            "Finish collaboration!\nFinal answer: call the available lookup",
+            '{"tool":"lookup_item","arguments":{"id":"ok"}}',
+            '{"final":"done"}',
         ]
     if profile_id == "plan-execute":
         responses[-1] = batch
@@ -985,10 +991,7 @@ class BridgeMatrixTests(unittest.TestCase):
                         # participant, so the orchestrator has to be told who holds them:
                         # left blind it dispatched 278 times on tau2 without ever calling the
                         # one participant that could act, and made zero tool calls in 60 arms.
-                        if profile.tool_contract == "no-external-tools":
-                            self.assertNotIn(tool_name, transcript)
-                        else:
-                            self.assertIn(tool_name, transcript)
+                        self.assertIn(tool_name, transcript)
 
     def test_workspace_case_tools_are_benchmark_scoped(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

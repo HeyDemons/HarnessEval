@@ -95,7 +95,7 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
             "rewoo": ['Plan: work\n#E1 = work[{}]', "done"],
             "sa": [action, '{"final":"done"}'],
             "aflow": ["plan", action, '{"final":"done"}'],
-            "multi-persona": ["Final answer: done"],
+            "multi-persona": ["Finish collaboration!\nFinal answer: use work", action, '{"final":"done"}'],
             "magentic-one": [
                 "facts", "plan", PROFILE_RESPONSES["magentic-one"][2].replace("FileSurfer", "WebSurfer"),
                 native_call("work", {}), PROFILE_RESPONSES["magentic-one"][4], "done",
@@ -116,7 +116,7 @@ class AutomationEpisodeTests(unittest.IsolatedAsyncioTestCase):
                     result = await run_episode(method, "sales:1", policy, Path(tmp),
                         episode=FakeEpisode(order), client=actor, speculator_client=ScriptedClient([]))
                 self.assertEqual(result["status"], "completed", result.get("error"))
-                expected_tools = 0 if method == "multi-persona" else 1
+                expected_tools = 1
                 self.assertEqual(order, ["tool"] * expected_tools + ["scorer"])
                 self.assertEqual(result["tool_calls"], expected_tools)
                 self.assertEqual(result["native_score"], 0)

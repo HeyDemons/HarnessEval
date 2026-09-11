@@ -151,16 +151,17 @@ PROFILES = (
     ),
     HarnessProfile(
         id="multi-persona",
-        name="Multi-Persona self-collaboration",
-        topology="single-model dynamically selected personas",
-        provenance="protocol-reproduction",
+        name="Multi-Persona self-collaboration with tools",
+        topology="SPP dynamic persona collaboration -> JSON tool Actor loop",
+        provenance="official-prompt-with-declared-tool-adapter",
         source="https://github.com/MikeWangWZHL/Solo-Performance-Prompting",
         revision="619c8a0ff4205bfd39e33f0867647b40e1703b94",
-        tool_contract="no-external-tools",
+        tool_contract="dynamic",
         notes=(
-            "Uses the source SPP profile protocol with two complete benchmark-neutral demonstrations, "
-            "dynamic participant profiles, multi-round criticism, revision, and a delimited final answer. "
-            "The published topology has no external tool loop."
+            "Runs the source SPP profile protocol with two complete benchmark-neutral demonstrations, "
+            "dynamic participant profiles, multi-round criticism, revision, and a delimited final answer "
+            "as its planning stage. A declared JSON Actor adapter then executes benchmark tools against "
+            "real observations. Earlier text-only measurements are incompatible and must be rerun."
         ),
     ),
     HarnessProfile(

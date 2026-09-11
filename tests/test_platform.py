@@ -425,38 +425,10 @@ class PlatformTests(unittest.TestCase):
         )
         self.assertFalse(lats_gaia["runnable"])
         self.assertEqual(lats_gaia["baseline_requirement"], "no_published_online_reward_and_branch_snapshot_pair")
-        # Derived from the registry so a profile that gains tools cannot leave a stale
-        # literal behind: GDPval grades files, so only a text-only method is blocked.
+        # Multi-Persona now has the same declared dynamic-tool adapter shape as AFlow;
+        # the active registry therefore contains no text-only profile.
         text_only = {profile.id for profile in PROFILES if profile.tool_contract == "no-external-tools"}
-        gdpval_text_only = [
-            row for row in rows if row["benchmark"] == "gdpval" and row["baseline"] in text_only
-        ]
-        self.assertTrue(text_only)
-        self.assertEqual(len(gdpval_text_only), len(text_only))
-        self.assertTrue(all(not row["runnable"] for row in gdpval_text_only))
-        self.assertEqual(
-            {row["baseline_requirement"] for row in gdpval_text_only},
-            {"gdpval_requires_workspace_artifact_tools"},
-        )
-        # The all-baseline campaign includes published text-only methods on
-        # state-graded tasks as measured structural controls. They remain
-        # explicitly labeled as having no external tool loop.
-        for benchmark in ("automationbench", "terminal-bench-2"):
-            state_graded = [
-                row for row in rows if row["benchmark"] == benchmark and row["baseline"] in text_only
-            ]
-            self.assertEqual(len(state_graded), len(text_only), benchmark)
-            self.assertTrue(all(row["runnable"] for row in state_graded), benchmark)
-            self.assertEqual(
-                {row["baseline_requirement"] for row in state_graded},
-                {"published_method_has_no_external_tool_loop"},
-            )
-        # tau2 is the deliberate exception: 7 of its 60 light cases require zero actions and
-        # a text-only reply still becomes a graded assistant turn, so it stays eligible.
-        tau2_text_only = [
-            row for row in rows if row["benchmark"] == "tau2" and row["baseline"] in text_only
-        ]
-        self.assertTrue(all(row["runnable"] for row in tau2_text_only))
+        self.assertEqual(text_only, set())
 
     def test_adapter_fingerprint_is_content_based(self) -> None:
         platform = Platform(ROOT, ROOT.parent, ROOT / "catalog" / "benchmarks.json")

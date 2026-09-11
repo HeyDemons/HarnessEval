@@ -1053,10 +1053,17 @@ class HarnessTests(unittest.TestCase):
         answer, _ = self.run_profile("dylan", ['{"final":"7, 9"}'] * 4)
         self.assertEqual(answer, "7, 9")
 
-    def test_multi_persona_published_single_model_protocol(self) -> None:
-        answer, environment = self.run_profile("multi-persona", ["Final answer: 42"])
+    def test_multi_persona_runs_source_collaboration_then_tool_actor(self) -> None:
+        answer, environment = self.run_profile(
+            "multi-persona",
+            [
+                "Finish collaboration!\nFinal answer: look up alpha before answering",
+                '{"tool":"lookup","arguments":{"key":"alpha"}}',
+                '{"final":"42"}',
+            ],
+        )
         self.assertEqual(answer, "42")
-        self.assertEqual(environment.calls, [])
+        self.assertEqual(len(environment.calls), 1)
         prompt = self.last_client.messages[0][0]["content"]
         self.assertNotIn("Structural example", prompt)
         self.assertIn("Here are two complete demonstrations", prompt)
@@ -1065,6 +1072,9 @@ class HarnessTests(unittest.TestCase):
         self.assertIn("Profiles:", prompt)
         self.assertGreaterEqual(prompt.count("Start collaboration!"), 2)
         self.assertIn("Finish collaboration!", prompt)
+        actor_prompt = json.dumps(self.last_client.messages[1], ensure_ascii=False)
+        self.assertIn("look up alpha before answering", actor_prompt)
+        self.assertIn("lookup", actor_prompt)
 
     def test_magentic_one_ledger_worker_and_delivery(self) -> None:
         answer, environment = self.run_profile(

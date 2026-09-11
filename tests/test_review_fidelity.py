@@ -3,6 +3,7 @@ import json
 import unittest
 
 from benchmark_platform.harnesses.methods import parse_action_reply, run_profile
+from benchmark_platform.harnesses.paper_methods import spp_recommendation
 from benchmark_platform.harnesses.dylan_policy import parse_action
 from benchmark_platform.harnesses.magentic_one import _ledger_error
 from benchmark_platform.harnesses.rewoo import parse_rewoo_plan
@@ -21,9 +22,10 @@ class ReviewFidelityTests(unittest.IsolatedAsyncioTestCase):
         ]
         for raw, expected in cases:
             with self.subTest(raw=raw):
-                ctx, trace = context("multi-persona", [raw])
-                self.assertEqual(await run_profile(ctx), expected)
-                self.assertEqual(ctx.llm_calls, 1)
+                self.assertEqual(spp_recommendation(raw), expected)
+                ctx, trace = context("multi-persona", [raw, '{"final":"done"}'])
+                self.assertEqual(await run_profile(ctx), "done")
+                self.assertEqual(ctx.llm_calls, 2)
                 self.assertEqual(ctx.environment.calls, [])
                 self.assertIn(raw, [e.get("content") for e in trace.events if e["event"] == "llm_response"])
 
