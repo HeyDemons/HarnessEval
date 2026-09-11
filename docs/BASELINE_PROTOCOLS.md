@@ -12,6 +12,10 @@ their respective harnesses and are fully included in time, turn and token
 accounting. An internal tool selection receives a synthetic observation: the
 BFCL function is not executed and no hidden state is read, but the method is
 allowed to finish its normal action, planning, heartbeat or speculation loop.
+The declaration contract is appended once to the initial benchmark task message.
+Later tool results contain only the policy-neutral
+`{declaration_only, proposal_only, execution, observation}` sentinel; they never
+repeat instructions, function arguments, or decision guidance.
 
 After the method finishes, the harness exposes exactly one outward assistant
 response containing its complete selected native tool-call batch. The
