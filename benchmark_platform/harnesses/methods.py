@@ -51,7 +51,7 @@ def _native_assistant_message(completion: Any) -> dict[str, Any]:
 
 
 async def _native_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = None) -> str:
-    """Run an action-capable node with provider-native tools and real harness observations."""
+    """Run an action-capable node with provider-native, harness-owned observations."""
     instructions = (
         "Work through the task using the native tools supplied by the runtime. Tool calls are "
         "executed by the harness and their observations are returned in the next message. "
