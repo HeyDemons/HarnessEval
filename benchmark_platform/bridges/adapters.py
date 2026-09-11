@@ -11,7 +11,7 @@ from typing import Any
 
 from .base import BridgeCase, native_spec, read_case, workspace_tools
 from .bfcl import (
-    declaration_only_result,
+    proposal_only_result,
     normalize_bfcl_parameters,
     prepared_bfcl_messages,
     render_bfcl_prompt,
@@ -190,7 +190,7 @@ def load_bfcl(case_id: str, root: Path) -> BridgeCase:
         specs.append(native_spec(name, str(function.get("description", "")), parameters, parallel=True, read_only=True))
 
         async def record(arguments: dict[str, Any], *, function_name: str = name) -> Any:
-            return declaration_only_result(function_name, arguments)
+            return proposal_only_result(function_name, arguments)
 
         handlers[name] = record
     return BridgeCase(
@@ -202,7 +202,7 @@ def load_bfcl(case_id: str, root: Path) -> BridgeCase:
         {
             "source": value.get("source"),
             "messages": messages,
-            "lifecycle": "single_turn_declaration_only",
+            "lifecycle": "runtime_harness_declaration_v1",
         },
     )
 

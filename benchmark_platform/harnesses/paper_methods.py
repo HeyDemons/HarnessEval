@@ -562,16 +562,104 @@ async def run_sa(ctx: RunContext) -> str:
         )
         return cache
 
-    from .methods import ACTION_SYSTEM, FINAL_ACTION_INSTRUCTION, parse_action_reply, action_protocol_error  # methods imports this module
+    from .methods import (
+        ACTION_SYSTEM,
+        FINAL_ACTION_INSTRUCTION,
+        _native_assistant_message,
+        _native_tool_schemas,
+        action_protocol_error,
+        parse_action_reply,
+    )  # methods imports this module
 
-    messages = [
-        {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
-        {"role": "user", "content": ctx.prompt},
-    ]
+    native_actor = ctx.policy.get("bfcl_native_tools") is True
+    if native_actor and ctx.task_messages:
+        task_instructions = [
+            message for message in ctx.task_messages
+            if message.get("role") in {"system", "developer"}
+        ]
+        task_conversation = [
+            message for message in ctx.task_messages
+            if message.get("role") not in {"system", "developer"}
+        ]
+        messages = [
+            *task_instructions,
+            {
+                "role": "system",
+                "content": (
+                    "You are the authoritative Speculative Actions Actor. Use the native tools to complete "
+                    "the task; each returned result is a harness observation. You may issue a complete "
+                    "parallel batch. Finish with a plain-text answer and never invent observations."
+                ),
+            },
+            *task_conversation,
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
+            {"role": "user", "content": ctx.prompt},
+        ]
+    native_tools = _native_tool_schemas(ctx) if native_actor else []
+
+    async def adopt_or_execute(
+        name: str,
+        arguments: dict[str, Any],
+        cache: dict[str, tuple[int, dict[str, Any]]],
+    ) -> dict[str, Any]:
+        key = _action_key(name, arguments)
+        cached = cache.pop(key, None)
+        if cached is not None and cached[0] == ctx.environment.state_version:
+            record = cached[1]
+            result = record["result"]
+            await ctx.environment.commit_isolated_calls(
+                [record],
+                assistant_response_id=ctx.last_actor_response_id,
+            )
+            await ctx.trace.emit(
+                "sa_cache_hit",
+                name=name,
+                arguments=arguments,
+                state_version=ctx.environment.state_version,
+            )
+            return result
+        if cached is not None:
+            await ctx.trace.emit(
+                "sa_cache_stale",
+                name=name,
+                arguments=arguments,
+                cached_state_version=cached[0],
+                current_state_version=ctx.environment.state_version,
+            )
+        state_before = ctx.environment.state_version
+        result = await ctx.environment.call(name, arguments)
+        await ctx.trace.emit(
+            "sa_cache_miss",
+            name=name,
+            arguments=arguments,
+            state_version=ctx.environment.state_version,
+        )
+        if ctx.environment.state_version != state_before and cache:
+            invalidated = len(cache)
+            cache.clear()
+            await ctx.trace.emit(
+                "sa_cache_invalidated",
+                reason="state_transition",
+                name=name,
+                previous_state_version=state_before,
+                current_state_version=ctx.environment.state_version,
+                entries=invalidated,
+            )
+        return result
+
     for turn in range(1, ctx.max_turns + 1):
         finalizing = ctx.should_finalize(turn - 1)
         if finalizing:
-            messages.append({"role": "user", "content": FINAL_ACTION_INSTRUCTION})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "The action budget is exhausted. Return the final answer without another tool call."
+                    if native_actor else FINAL_ACTION_INSTRUCTION
+                ),
+            })
             await ctx.trace.emit("budget_finalization", scope="sa", model_requests=ctx.model_budget.used)
         # Repeat the speculative window after every observation.  Starting only once at the
         # beginning is an initial prefetch control, not Speculative Actions.
@@ -580,6 +668,74 @@ async def run_sa(ctx: RunContext) -> str:
             if safe_names and not finalizing
             else None
         )
+        if native_actor:
+            try:
+                completion = await ctx.complete_native(
+                    "sa_actor",
+                    messages,
+                    tools=[] if finalizing else native_tools,
+                    tool_choice="auto",
+                )
+            except asyncio.CancelledError:
+                if draft_task is not None:
+                    draft_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await draft_task
+                raise
+            except Exception:
+                if draft_task is not None:
+                    await draft_task
+                raise
+            message = _native_assistant_message(completion)
+            calls = message.get("tool_calls") or []
+            if not calls:
+                discarded = await draft_task if draft_task is not None else {}
+                if discarded:
+                    await ctx.trace.emit(
+                        "sa_predictions_discarded",
+                        turn=turn,
+                        reason="actor_finished",
+                        entries=len(discarded),
+                    )
+                answer = str(completion.content or "").strip()
+                if not answer:
+                    if finalizing:
+                        raise RuntimeError("Speculative Actions final response was empty")
+                    messages.extend([
+                        message,
+                        {"role": "user", "content": "Continue the harness or provide the final answer."},
+                    ])
+                    continue
+                from .declaration import stage_selected_tool_records
+                await stage_selected_tool_records(
+                    ctx,
+                    list(ctx.environment.proposal_calls),
+                    content=answer,
+                )
+                return answer
+            if finalizing:
+                if draft_task is not None:
+                    await draft_task
+                raise RuntimeError("Speculative Actions requested a tool in its final response")
+            cache = await draft_task if draft_task is not None else {}
+            messages.append(message)
+            for call in calls:
+                function = call.get("function") if isinstance(call, dict) else None
+                if not isinstance(function, dict):
+                    raise ValueError("SA native tool call omitted its function payload")
+                name = str(function.get("name") or "")
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    arguments = json.loads(arguments)
+                if not isinstance(arguments, dict):
+                    raise ValueError(f"SA native tool call {name!r} arguments must be an object")
+                result = await adopt_or_execute(name, arguments, cache)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": str(call.get("id") or ""),
+                    "content": tool_result_content(result),
+                })
+            continue
         try:
             raw = await ctx.complete("sa_actor", messages, json_mode=True,
                                      response_schema=action_schema(ctx.environment.names, finalizing=finalizing))
@@ -643,52 +799,7 @@ async def run_sa(ctx: RunContext) -> str:
             )
             continue
         cache = await draft_task if draft_task is not None else {}
-        key = _action_key(name, arguments)
-        cached = cache.pop(key, None)
-        if cached is not None and cached[0] == ctx.environment.state_version:
-            record = cached[1]
-            result = record["result"]
-            # Speculative reads stay out of authoritative traces and counters until the
-            # Actor selects the exact action. Publish the cached result now in the same
-            # position actor-only would have produced, without executing it twice.
-            await ctx.environment.commit_isolated_calls(
-                [record],
-                assistant_response_id=ctx.last_actor_response_id,
-            )
-            await ctx.trace.emit(
-                "sa_cache_hit",
-                name=name,
-                arguments=arguments,
-                state_version=ctx.environment.state_version,
-            )
-        else:
-            if cached is not None:
-                await ctx.trace.emit(
-                    "sa_cache_stale",
-                    name=name,
-                    arguments=arguments,
-                    cached_state_version=cached[0],
-                    current_state_version=ctx.environment.state_version,
-                )
-            state_before = ctx.environment.state_version
-            result = await ctx.environment.call(name, arguments)
-            await ctx.trace.emit(
-                "sa_cache_miss",
-                name=name,
-                arguments=arguments,
-                state_version=ctx.environment.state_version,
-            )
-            if ctx.environment.state_version != state_before and cache:
-                invalidated = len(cache)
-                cache.clear()
-                await ctx.trace.emit(
-                    "sa_cache_invalidated",
-                    reason="state_transition",
-                    name=name,
-                    previous_state_version=state_before,
-                    current_state_version=ctx.environment.state_version,
-                    entries=invalidated,
-                )
+        result = await adopt_or_execute(name, arguments, cache)
         canonical_action = json.dumps(action, ensure_ascii=False, separators=(",", ":"))
         messages.extend(
             [

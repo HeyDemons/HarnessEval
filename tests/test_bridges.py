@@ -167,18 +167,29 @@ def bfcl_responses(profile_id: str) -> list:
     responses = list(RESPONSES[profile_id])
     if profile_id == "actor-only":
         return [
-            '{"tool":"lookup_item","arguments":{"id":"ok"}}',
-            '{"final":"done"}',
+            batch,
+            "done",
         ]
     if profile_id == "react":
         return [
-            'Thought: act\nAction: lookup_item\nAction Input: {"id":"ok"}',
-            "Thought: complete\nFinal Answer: done",
+            batch,
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "finish",
+                    "type": "function",
+                    "function": {
+                        "name": "react_finish",
+                        "arguments": json.dumps({"answer": "done"}),
+                    },
+                }],
+            },
         ]
     if profile_id == "sa":
         return [
-            '{"tool":"lookup_item","arguments":{"id":"ok"}}',
-            '{"final":"done"}',
+            batch,
+            "done",
         ]
     if profile_id == "memgpt":
         return [
@@ -188,8 +199,8 @@ def bfcl_responses(profile_id: str) -> list:
     if profile_id == "multi-persona":
         return [
             "Finish collaboration!\nFinal answer: call the available lookup",
-            '{"tool":"lookup_item","arguments":{"id":"ok"}}',
-            '{"final":"done"}',
+            batch,
+            "done",
         ]
     if profile_id == "plan-execute":
         responses[-1] = batch
@@ -358,9 +369,9 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(bridge.metadata["messages"], messages)
         self.assertTrue(result["result"]["declaration_only"])
         self.assertEqual(result["result"]["execution"], "not_run")
-        self.assertTrue(result["result"]["terminate"])
+        self.assertFalse(result["result"]["terminate"])
 
-    def test_bfcl_product_never_prelaunches_or_executes_declarations(self) -> None:
+    def test_bfcl_product_may_speculate_but_never_executes_external_functions(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "input"
@@ -371,13 +382,22 @@ class BridgeMatrixTests(unittest.TestCase):
             bridge = ProductBridge("bfcl", "case", source, job)
             try:
                 manifest = bridge.manifest()
+                observation = bridge.call("lookup_item", {"id": "ok"})
+                finalized = bridge.finalize({
+                    "profile": "perseus",
+                    "answer": "done",
+                    "committed_calls": [{"name": "lookup_item", "arguments": {"id": "ok"}}],
+                })
             finally:
                 bridge.close()
 
         self.assertEqual(
-            manifest["metadata"]["lifecycle"], "single_turn_declaration_only"
+            manifest["metadata"]["lifecycle"], "runtime_harness_declaration_v1"
         )
-        self.assertEqual(manifest["safe_tools"], [])
+        self.assertEqual(manifest["safe_tools"], ["lookup_item"])
+        self.assertTrue(observation["result"]["proposal_only"])
+        self.assertEqual(finalized["environment_tool_calls"], 0)
+        self.assertEqual(finalized["proposal_tool_calls"], 1)
         self.assertEqual(
             set(manifest["tools"][0]),
             {"name", "description", "parameters"},

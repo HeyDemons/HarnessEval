@@ -252,12 +252,13 @@ the lifecycle bridge exists; it does not mean the case succeeded or that a
 publishable native score is available. See
 [the baseline matrix](docs/BASELINE_MATRIX.md).
 
-The current 65-case BFCL comparison runs every eligible baseline's internal
-protocol and requires that method's own final response to contain one complete
-declaration list. A deterministic publisher parses that list without another
-model call; internal function choices remain non-executed proposals and never
-become the answer implicitly. Multi-Persona retains its text-only, no-schema
-contract, and LATS remains incompatible. Magentic-One now separates specialist tools and executes
+The current 65-case BFCL comparison runs every eligible baseline's complete
+runtime harness with the original messages and native tool schemas, then
+requires its final selected output to contain one complete declaration batch.
+A deterministic publisher emits that batch without another model call; internal
+function choices remain synthetic-observation proposals until the method selects
+its final chain. Multi-Persona uses the same native tool adapter after its SPP
+planning stage, and LATS remains incompatible. Magentic-One now separates specialist tools and executes
 code without an Executor model call. The workspace batch runner defaults to
 native-tool ReAct outside BFCL; `HARNESS_REACT_PROTOCOL=text` selects the
 corrected legacy text protocol.

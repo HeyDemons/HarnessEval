@@ -83,7 +83,7 @@ class Client:
 
 
 class DeclarationTests(unittest.IsolatedAsyncioTestCase):
-    async def test_actor_runs_complete_json_action_harness(self):
+    async def test_actor_runs_complete_native_tool_harness(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, job = root / "input", root / "job"
@@ -91,9 +91,9 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             job.mkdir()
             make_case(source, "bfcl")
             client = Client([
-                '{"tool":"lookup_item","arguments":{"id":"a"}}',
-                '{"tool":"lookup_item","arguments":{"id":"b"}}',
-                '{"final":"done"}',
+                native_batch("a"),
+                native_batch("b"),
+                "done",
             ])
             with patch.object(runner, "completion_client_from_env", return_value=client):
                 result = await runner.execute(
@@ -114,11 +114,10 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             ["system", "user"],
         )
         self.assertEqual(client.requests[0]["messages"][-1], {"role": "user", "content": "Call the function"})
-        schema_prompt = client.requests[0]["messages"][0]["content"]
-        self.assertIn("lookup_item", schema_prompt)
-        self.assertNotIn('"parallel"', schema_prompt)
-        self.assertNotIn('"read_only"', schema_prompt)
-        self.assertEqual(client.requests[0]["tools"], [])
+        native_tools = client.requests[0]["tools"]
+        self.assertEqual(native_tools[0]["function"]["name"], "lookup_item")
+        self.assertNotIn("parallel", native_tools[0]["function"])
+        self.assertNotIn("read_only", native_tools[0]["function"])
         self.assertEqual(
             [(call["name"], call["arguments"]) for call in result["committed_calls"]],
             [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "b"})],
@@ -209,9 +208,20 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_react_runs_full_loop_and_publishes_selected_action_chain(self):
         responses = [
-            'Thought: select first\nAction: lookup_item\nAction Input: {"id":"a"}',
-            'Thought: select second\nAction: lookup_item\nAction Input: {"id":"b"}',
-            "Thought: complete\nFinal Answer: done",
+            native_batch("a"),
+            native_batch("b"),
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "finish",
+                    "type": "function",
+                    "function": {
+                        "name": "react_finish",
+                        "arguments": json.dumps({"answer": "done"}),
+                    },
+                }],
+            },
         ]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -239,9 +249,9 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             job.mkdir()
             make_case(source, "bfcl")
             actor = Client([
-                '{"tool":"lookup_item","arguments":{"id":"a"}}',
-                '{"tool":"lookup_item","arguments":{"id":"b"}}',
-                '{"final":"done"}',
+                native_batch("a"),
+                native_batch("b"),
+                "done",
             ])
             speculator = Client([
                 '{"actions":[{"tool":"lookup_item","arguments":{"id":"a"}}]}',

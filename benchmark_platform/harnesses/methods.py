@@ -34,6 +34,101 @@ def action_protocol_error(detail: str) -> str:
     return f"Protocol error: {detail}. {ACTION_CONTRACT_REMINDER}"
 
 
+def _native_tool_schemas(ctx: RunContext) -> list[dict[str, Any]]:
+    return [
+        {"type": "function", "function": tool.native_schema()}
+        for tool in ctx.environment.tools.values()
+    ]
+
+
+def _native_assistant_message(completion: Any) -> dict[str, Any]:
+    choices = completion.raw.get("choices") if isinstance(completion.raw, dict) else None
+    if not choices or not isinstance(choices[0], dict) or not isinstance(choices[0].get("message"), dict):
+        raise ValueError("Provider did not return a native assistant message")
+    message = dict(choices[0]["message"])
+    message["role"] = "assistant"
+    return message
+
+
+async def _native_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = None) -> str:
+    """Run an action-capable node with provider-native tools and real harness observations."""
+    instructions = (
+        "Work through the task using the native tools supplied by the runtime. Tool calls are "
+        "executed by the harness and their observations are returned in the next message. "
+        "You may issue a complete parallel batch when the task requires it. When the task is "
+        "complete, answer in plain text without another tool call. Do not invent observations."
+    )
+    if ctx.task_messages:
+        task_instructions = [
+            message for message in ctx.task_messages
+            if message.get("role") in {"system", "developer"}
+        ]
+        task_conversation = [
+            message for message in ctx.task_messages
+            if message.get("role") not in {"system", "developer"}
+        ]
+        messages = [
+            *task_instructions,
+            {"role": "system", "content": instructions},
+            *task_conversation,
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": instructions},
+            {"role": "user", "content": ctx.prompt if prompt is None else prompt},
+        ]
+    if prompt is not None and ctx.task_messages:
+        messages.append({"role": "user", "content": prompt})
+    tools = _native_tool_schemas(ctx)
+    for turn in range(ctx.max_turns):
+        finalizing = ctx.should_finalize(turn)
+        if finalizing:
+            messages.append({
+                "role": "user",
+                "content": (
+                    "The harness budget is exhausted. Return the final answer now using only calls "
+                    "already selected; do not request another tool."
+                ),
+            })
+        completion = await ctx.complete_native(
+            role,
+            messages,
+            tools=[] if finalizing else tools,
+            tool_choice="auto",
+        )
+        message = _native_assistant_message(completion)
+        messages.append(message)
+        calls = message.get("tool_calls") or []
+        if not calls:
+            answer = str(completion.content or "").strip()
+            if answer:
+                return answer
+            messages.append({
+                "role": "user",
+                "content": "Continue the harness or provide the final answer; do not return an empty response.",
+            })
+            continue
+        if finalizing:
+            raise RuntimeError("Native tool harness requested another action in its final response")
+        for call in calls:
+            function = call.get("function") if isinstance(call, dict) else None
+            if not isinstance(function, dict):
+                raise ValueError("Native tool call omitted its function payload")
+            name = str(function.get("name") or "")
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                arguments = json.loads(arguments)
+            if not isinstance(arguments, dict):
+                raise ValueError(f"Native tool call {name!r} arguments must be an object")
+            result = await ctx.environment.call(name, arguments)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": str(call.get("id") or ""),
+                "content": tool_result_content(result),
+            })
+    raise RuntimeError("Native tool harness exhausted without a final answer")
+
+
 def _normalize_action(action: dict[str, Any], names: list[str]) -> dict[str, Any]:
     # The function transport puts the action inside {"response": ...}, so a model that has
     # seen that wire shape sometimes reproduces it even on the text transport, where the
@@ -75,6 +170,8 @@ def _validate_instructions(value: dict, key: str) -> None:
 
 
 async def _json_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = None) -> str:
+    if ctx.policy.get("bfcl_native_tools") is True:
+        return await _native_tool_loop(ctx, role, prompt=prompt)
     messages = [
         {"role": "system", "content": ACTION_SYSTEM.format(tools=ctx.environment.schema)},
         {"role": "user", "content": ctx.prompt if prompt is None else prompt},
@@ -182,6 +279,9 @@ def _parse_react(text: str) -> dict[str, Any]:
 
 
 async def run_react(ctx: RunContext) -> str:
+    if ctx.policy.get("bfcl_native_tools") is True:
+        from .react_native import run_react_native
+        return await run_react_native(ctx)
     protocol = ctx.policy.get("react_protocol", "text")
     if protocol == "native":
         from .react_native import run_react_native

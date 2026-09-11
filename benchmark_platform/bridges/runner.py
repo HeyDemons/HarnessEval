@@ -65,6 +65,8 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
     effective_policy = dict(policy)
     if benchmark == "bfcl":
         effective_policy["bfcl_declaration_mode"] = True
+        effective_policy["bfcl_native_tools"] = True
+        effective_policy["react_protocol"] = "native"
         # The runtime harness is the measured system. BFCL constrains its one outward
         # response, never the number of internal model calls its own algorithm performs.
         effective_policy.pop("model_response_limit", None)

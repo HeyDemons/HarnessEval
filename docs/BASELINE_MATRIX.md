@@ -31,8 +31,8 @@ nowhere. See [baseline protocol corrections](BASELINE_PROTOCOLS.md).
 
 | Profile | Tool contract | Fidelity boundary |
 | --- | --- | --- |
-| Actor-only | Dynamic | Native API-tool loop on AutomationBench; JSON proposal loop whose own final response declares the BFCL batch; JSON control on other bridges |
-| ReAct | Dynamic | Batch default: native serial tool loop with explicit finish; optional text protocol with local Observation stop; BFCL parses declarations from ReAct's own final answer |
+| Actor-only | Dynamic | Native API-tool loop; BFCL runs the complete harness and publishes its selected declaration batch |
+| ReAct | Dynamic | Native serial tool loop with explicit finish; optional text protocol with local Observation stop |
 | Plan-and-Execute | Dynamic | Minimal planner; sequential executors receive the original objective, previous steps and current objective (the source's optional include_task_in_prompt mode); last step response is returned |
 | CMAS | Dynamic | Local centralized control with a manager, assignment-isolated parallel workers, and manager synthesis |
 | DMAS | Dynamic decentralized DAG | AgentNet-aligned capability entry, per-agent Router/Executor, forward/split/execute, result-only handoff, and acyclic unchanged-task forwarding; cold-start evaluation has no cross-case RAG memory |
@@ -41,7 +41,7 @@ nowhere. See [baseline protocol corrections](BASELINE_PROTOCOLS.md).
 | AFlow | Official core + declared dynamic adapter | Pinned official MCTS and QA/math/code operator profiles; capability-limited ToolSession/ToolDecision only in the separate benchmark adapter artifact; see [artifact workflow](AFLOW_DYLAN.md) |
 | DyLAN | Dynamic | Single published-team tool policy; exact action consensus and one controller commit per decision; generic state routing is an explicit [adapter](DYLAN_POLICY.md) |
 | Magentic-One | Workspace specialists | Ledger topology, separate file/web tools, tool-free Coder and non-LLM code Executor |
-| Multi-Persona | No external tools | SPP profile protocol with two complete demonstrations, dynamic participant profiles, iterative criticism/revision, and one model call |
+| Multi-Persona | Dynamic | SPP profile protocol followed by the shared native benchmark-tool adapter |
 | LLMCompiler | Dynamic | Dependencies inferred from predecessor `$1`/`${1}` references plus explicit ordering edges; scheduling and text substitution share the effective graph; literal suffixes; legacy dialect requires explicit policy; non-streaming planner |
 | ReWOO | Dynamic | Source Plan/#E protocol; plan all calls first, execute explicit sequential Evidence Workers (dynamic tools or LLM worker), then solve from the complete evidence log |
 | SA | Dynamic read-only speculation | Independent `HARNESS_SA_MODEL` predicts top-k safe actions concurrently on every Actor turn; only an exact Actor match commits a pre-executed read |

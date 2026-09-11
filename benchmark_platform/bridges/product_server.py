@@ -67,20 +67,18 @@ class ProductBridge:
             bridge.tools,
             self.trace,
             bridge.handlers,
-            declaration_only=benchmark == "bfcl",
+            proposal_only=benchmark == "bfcl",
             expose_execution_metadata=benchmark != "bfcl",
         )
         self.tools = [
             tool.native_schema() if benchmark == "bfcl" else tool.prompt_schema()
             for tool in bridge.tools
         ]
-        # A BFCL tool call is the outward answer itself. The product extension terminates
-        # locally on that first assistant batch; /execute is never part of this lifecycle.
-        declaration_only = self.metadata.get("lifecycle") == "single_turn_declaration_only"
+        # BFCL calls are internal proposals while the product harness runs. They are never
+        # executed against an external environment; the host publishes the selected chain
+        # as one declaration batch only after the harness finishes.
         explicit_safe = self.metadata.get("safe_for_prelaunch")
-        if declaration_only:
-            self.safe_tools = []
-        elif isinstance(explicit_safe, list):
+        if isinstance(explicit_safe, list):
             declared_names = {str(name) for name in explicit_safe}
             self.safe_tools = [
                 tool.name
@@ -95,8 +93,6 @@ class ProductBridge:
             ]
 
     def call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self.benchmark == "bfcl":
-            raise RuntimeError("BFCL declarations are scored locally and never use /execute")
         if self.benchmark in {"gaia", "gdpval"}:
             arguments = translate_product_workspace_arguments(name, arguments)
         future = asyncio.run_coroutine_threadsafe(
@@ -134,6 +130,12 @@ class ProductBridge:
                     ),
                     "environment_calls": (
                         [] if self.benchmark == "bfcl" else list(self.environment.calls)
+                    ),
+                    "proposal_tool_calls": (
+                        len(self.environment.proposal_calls) if self.benchmark == "bfcl" else 0
+                    ),
+                    "proposal_calls": (
+                        list(self.environment.proposal_calls) if self.benchmark == "bfcl" else []
                     ),
                     "bridge": self.metadata,
                 }
