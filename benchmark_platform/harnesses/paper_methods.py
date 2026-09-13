@@ -567,22 +567,24 @@ async def run_sa(ctx: RunContext) -> str:
 
     native_actor = ctx.policy.get("bfcl_native_tools") is True
     if native_actor and ctx.task_messages:
-        task_instructions = [
-            message for message in ctx.task_messages
-            if message.get("role") in {"system", "developer"}
-        ]
+        declaring = ctx.policy.get("bfcl_declaration_mode") is True
+        # complete_native adds the case's own instructions after this scaffold; assembling
+        # them here as well would insert them twice and put the scaffold second.
         task_conversation = [
             message for message in ctx.task_messages
             if message.get("role") not in {"system", "developer"}
         ]
         messages = [
-            *task_instructions,
             {
                 "role": "system",
                 "content": (
                     "You are the authoritative Speculative Actions Actor. Use the native tools to complete "
-                    "the task; each returned result is a harness observation. You may issue a complete "
-                    "parallel batch. Finish with a plain-text answer and never invent observations."
+                    "the task; "
+                    + ("calling one records it and returns no observation, so make every call the "
+                       "answer needs rather than waiting for a result. " if declaring else
+                       "each returned result is a harness observation. ")
+                    + "You may issue a complete parallel batch. Finish with a plain-text answer and "
+                    "never invent observations."
                 ),
             },
             *task_conversation,

@@ -52,23 +52,27 @@ def _native_assistant_message(completion: Any) -> dict[str, Any]:
 
 async def _native_tool_loop(ctx: RunContext, role: str, *, prompt: str | None = None) -> str:
     """Run an action-capable node with provider-native, harness-owned observations."""
+    # A declaration-only benchmark executes nothing and returns no observation, so promising
+    # one describes an environment the model is not in -- and the runtime contract on the task
+    # message says the opposite in the same request.
+    declaring = ctx.policy.get("bfcl_declaration_mode") is True
     instructions = (
-        "Work through the task using the native tools supplied by the runtime. Tool calls are "
-        "executed by the harness and their observations are returned in the next message. "
-        "You may issue a complete parallel batch when the task requires it. When the task is "
+        "Work through the task using the native tools supplied by the runtime. "
+        + ("Calling a tool records its name and arguments and returns no observation, so make "
+           "every call the answer needs rather than waiting for a result. " if declaring else
+           "Tool calls are executed by the harness and their observations are returned in the "
+           "next message. ")
+        + "You may issue a complete parallel batch when the task requires it. When the task is "
         "complete, answer in plain text without another tool call. Do not invent observations."
     )
     if ctx.task_messages:
-        task_instructions = [
-            message for message in ctx.task_messages
-            if message.get("role") in {"system", "developer"}
-        ]
+        # Only the conversation is assembled here; complete_native adds the case's own
+        # instructions after this scaffold, so the task keeps the last word on identity.
         task_conversation = [
             message for message in ctx.task_messages
             if message.get("role") not in {"system", "developer"}
         ]
         messages = [
-            *task_instructions,
             {"role": "system", "content": instructions},
             *task_conversation,
         ]

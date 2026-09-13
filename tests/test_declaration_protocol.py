@@ -180,13 +180,24 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed")
         messages = client.requests[0]["messages"]
+        # Official BFCL rewrites a case's `system` to `developer` and adds nothing beside
+        # it. A method scaffold has to be added here, so it leads and the case's own
+        # instruction follows: the other order let "You are the ... Actor" land after the
+        # case persona and replace it.
         self.assertEqual(
             [message["role"] for message in messages],
-            ["system", "system", "user"],
+            ["system", "developer", "user"],
         )
+        self.assertEqual(messages[1]["content"], "official system")
         self.assertEqual(sum(message["content"] == "official system" for message in messages), 1)
         self.assertIn("official user", messages[-1]["content"])
         self.assertIn("Runtime evaluation contract", messages[-1]["content"])
+        # The scaffold must not promise an execution the declaration bridge never performs;
+        # the task message says the opposite in this very request.
+        scaffold = messages[0]["content"]
+        for claim in ("observations are returned", "is a harness observation",
+                      "observing its actual result"):
+            self.assertNotIn(claim, scaffold)
 
     async def test_no_native_calls_publishes_an_atomic_empty_batch(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -260,10 +271,17 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             source.mkdir()
             job.mkdir()
             make_case(source, "bfcl")
-            with patch.object(runner, "completion_client_from_env", return_value=Client(responses)):
+            client = Client(responses)
+            with patch.object(runner, "completion_client_from_env", return_value=client):
                 result = await runner.execute("bfcl", "react", "case", source, job, {})
 
         self.assertEqual(result["status"], "completed")
+        # The scaffold must not promise an execution the declaration bridge never performs.
+        scaffold = next(m["content"] for m in client.requests[0]["messages"]
+                        if m["role"] == "system")
+        for claim in ("observations are returned", "is a harness observation",
+                      "observing its actual result"):
+            self.assertNotIn(claim, scaffold)
         self.assertEqual(result["agent_turns"], 3)
         self.assertEqual(result["source_response_ids"], [2])
         self.assertEqual(result["declaration_spanned_responses"], 2)
@@ -302,6 +320,12 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             ]
 
         self.assertEqual(result["status"], "completed")
+        # The scaffold must not promise an execution the declaration bridge never performs.
+        scaffold = next(m["content"] for m in actor.requests[0]["messages"]
+                        if m["role"] == "system")
+        for claim in ("observations are returned", "is a harness observation",
+                      "observing its actual result"):
+            self.assertNotIn(claim, scaffold)
         self.assertEqual(result["actor_llm_calls"], 3)
         self.assertEqual(result["speculator_llm_calls"], 3)
         self.assertEqual(result["internal_llm_calls"], 6)

@@ -920,9 +920,36 @@ class RunContext:
             raise
 
     def with_task_instructions(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Prepend the case's own system/developer instructions to a request.
+
+        BFCL is the exception, and only under its declaration mode.  Its official handler
+        rewrites a case's `system` to `developer` before querying and adds nothing beside
+        it, so that instruction is the model's whole framing.  Here a method scaffold is
+        added too, and leading with the case's instruction makes the scaffold a second,
+        later identity assignment that displaces it -- "You are a bot owned by a courier
+        service" followed by "You are the authoritative Speculative Actions Actor".  Four of
+        the 65 BFCL light cases carry such an instruction.
+
+        Every other benchmark delivers its policy as a leading `system` message on purpose
+        and is asserted to keep both the role and the position, so neither is touched there.
+        """
+
         instructions = [message for message in self.task_messages
                         if message.get("role") in {"system", "developer"} and message not in messages]
-        return [*copy.deepcopy(instructions), *messages]
+        # Always a fresh list: a caller that keeps appending to its own would otherwise
+        # mutate what the provider was already handed.
+        if not instructions:
+            return [*messages]
+        instructions = [copy.deepcopy(message) for message in instructions]
+        if self.policy.get("bfcl_declaration_mode") is not True:
+            return [*instructions, *messages]
+        for message in instructions:
+            if message.get("role") == "system":
+                message["role"] = "developer"
+        lead = 0
+        while lead < len(messages) and messages[lead].get("role") in {"system", "developer"}:
+            lead += 1
+        return [*messages[:lead], *instructions, *messages[lead:]]
 
     @property
     def max_parallel(self) -> int | None:

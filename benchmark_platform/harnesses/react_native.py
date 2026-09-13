@@ -25,10 +25,11 @@ async def run_react_native(ctx: RunContext) -> str:
     # serialise and the rule would only forbid the complete answer.
     declaring = ctx.policy.get("bfcl_declaration_mode") is True
     messages = [{"role": "system", "content": (
-        "Solve the task by reasoning, taking an action, and observing its actual result. "
-        + ("Make every call the answer needs in one turn; the functions return no "
-           "observations to reason about. " if declaring else
-           "Use exactly one native function call per turn. ")
+        ("Solve the task by reasoning and taking action. Make every call the answer needs in "
+         "one turn; the functions record what you call and return no observation to reason "
+         "about. " if declaring else
+         "Solve the task by reasoning, taking an action, and observing its actual result. "
+         "Use exactly one native function call per turn. ")
         + "Never invent a tool observation. "
         "When the task is complete, call react_finish with your final answer. "
         "Do not output simulated Action/Observation transcripts; use the native tools.")},
