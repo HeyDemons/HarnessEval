@@ -105,12 +105,8 @@ async def run_multi_persona(ctx: RunContext) -> str:
         ),
     )
     if ctx.policy.get("bfcl_declaration_mode") is True:
-        from .declaration import stage_selected_tool_records
-        await stage_selected_tool_records(
-            ctx,
-            list(ctx.environment.proposal_calls),
-            content=answer,
-        )
+        from .declaration import stage_recorded_declaration
+        return await stage_recorded_declaration(ctx, content=answer)
     return answer
 
 
@@ -393,7 +389,6 @@ async def run_llmcompiler(ctx: RunContext) -> str:
         )
         if ctx.policy.get("bfcl_declaration_mode") is True and final_pass:
             from .declaration import (
-                MULTI_MODEL_PROTOCOL,
                 complete_native_declaration,
                 declaration_messages,
             )
@@ -409,7 +404,6 @@ async def run_llmcompiler(ctx: RunContext) -> str:
                     ),
                     internal_context=join_context,
                 ),
-                protocol=MULTI_MODEL_PROTOCOL,
             )
         decision = await ctx.complete_json(
             "compiler_joiner",
@@ -706,13 +700,8 @@ async def run_sa(ctx: RunContext) -> str:
                         {"role": "user", "content": "Continue the harness or provide the final answer."},
                     ])
                     continue
-                from .declaration import stage_selected_tool_records
-                await stage_selected_tool_records(
-                    ctx,
-                    list(ctx.environment.proposal_calls),
-                    content=answer,
-                )
-                return answer
+                from .declaration import stage_recorded_declaration
+                return await stage_recorded_declaration(ctx, content=answer)
             if finalizing:
                 if draft_task is not None:
                     await draft_task
@@ -777,12 +766,8 @@ async def run_sa(ctx: RunContext) -> str:
                 )
             answer = str(action["final"])
             if ctx.policy.get("bfcl_declaration_mode") is True:
-                from .declaration import stage_selected_tool_records
-                await stage_selected_tool_records(
-                    ctx,
-                    list(ctx.environment.proposal_calls),
-                    content=answer,
-                )
+                from .declaration import stage_recorded_declaration
+                return await stage_recorded_declaration(ctx, content=answer)
             return answer
         if finalizing or ctx.last_response_used_final_slot:
             raise RuntimeError("Speculative Actions turn budget exhausted: final response requested another tool")

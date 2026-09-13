@@ -407,7 +407,6 @@ async def run_rewoo(ctx: RunContext) -> str:
     )
     if ctx.policy.get("bfcl_declaration_mode") is True:
         from .declaration import (
-            MULTI_MODEL_PROTOCOL,
             complete_native_declaration,
             declaration_messages,
         )
@@ -423,7 +422,6 @@ async def run_rewoo(ctx: RunContext) -> str:
                 ),
                 internal_context=solver_context,
             ),
-            protocol=MULTI_MODEL_PROTOCOL,
         )
     return await ctx.complete(
         "rewoo_solver",

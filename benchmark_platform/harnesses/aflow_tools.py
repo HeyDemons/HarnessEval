@@ -227,7 +227,6 @@ class ToolDecision:
             raise RuntimeError("AFlow operator call budget exhausted")
         if ctx.policy.get("bfcl_declaration_mode") is True:
             from .declaration import (
-                MULTI_MODEL_PROTOCOL,
                 complete_native_declaration,
                 declaration_messages,
             )
@@ -244,7 +243,6 @@ class ToolDecision:
                     ),
                     internal_context=instruction,
                 ),
-                protocol=MULTI_MODEL_PROTOCOL,
             )
             action = {"final": content}
             await ctx.trace.emit(

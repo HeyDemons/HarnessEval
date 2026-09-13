@@ -20,9 +20,16 @@ async def run_react_native(ctx: RunContext) -> str:
         "description": "Submit the final answer when the task has been completed.",
         "parameters": {"type": "object", "properties": {"answer": {"type": "string"}},
                        "required": ["answer"], "additionalProperties": False}}})
+    # One action per turn is what serialises ReAct's reason/act/observe cycle. A
+    # declaration-only benchmark returns no observations, so there is nothing to
+    # serialise and the rule would only forbid the complete answer.
+    declaring = ctx.policy.get("bfcl_declaration_mode") is True
     messages = [{"role": "system", "content": (
         "Solve the task by reasoning, taking an action, and observing its actual result. "
-        "Use exactly one native function call per turn. Never invent a tool observation. "
+        + ("Make every call the answer needs in one turn; the functions return no "
+           "observations to reason about. " if declaring else
+           "Use exactly one native function call per turn. ")
+        + "Never invent a tool observation. "
         "When the task is complete, call react_finish with your final answer. "
         "Do not output simulated Action/Observation transcripts; use the native tools.")},
         {"role": "user", "content": ctx.prompt}]
@@ -47,7 +54,7 @@ async def run_react_native(ctx: RunContext) -> str:
             name = function.get("name", "")
             if finalizing and name != finish:
                 result = {"ok": False, "error": "Only final submission is permitted at the budget boundary"}
-            elif len(calls) != 1:
+            elif len(calls) != 1 and not declaring:
                 result = {"ok": False, "error": "ReAct requires exactly one action per turn; no calls were executed"}
             else:
                 try:
@@ -61,12 +68,8 @@ async def run_react_native(ctx: RunContext) -> str:
                             raise ValueError("react_finish requires a string answer")
                         await ctx.trace.emit("react_finished", response_id=ctx.last_actor_response_id)
                         if ctx.policy.get("bfcl_declaration_mode") is True:
-                            from .declaration import stage_selected_tool_records
-                            await stage_selected_tool_records(
-                                ctx,
-                                list(ctx.environment.proposal_calls),
-                                content=arguments["answer"],
-                            )
+                            from .declaration import stage_recorded_declaration
+                            return await stage_recorded_declaration(ctx, content=arguments["answer"])
                         return arguments["answer"]
                     result = await ctx.environment.call(name, arguments)
                 except (ValueError, json.JSONDecodeError) as error:

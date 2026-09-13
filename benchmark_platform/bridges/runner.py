@@ -190,15 +190,19 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         result["external_assistant_responses"] = int(environment.declaration_committed)
         result["publisher_llm_calls"] = 0
         result["internal_llm_calls"] = int(result.get("llm_calls") or 0)
+        # One nominated response, so provenance is that response and nothing else.
         result["source_response_ids"] = (
-            list(context.declaration_output.get("source_response_ids") or [])
-            if context.declaration_output is not None
-            else ([environment.declaration_response_id] if environment.declaration_response_id is not None else [])
+            [environment.declaration_response_id]
+            if environment.declaration_response_id is not None
+            else []
         )
-        result["declaration_output_protocol"] = (
-            context.declaration_output.get("protocol")
+        # Above 1, the method could not fit its answer into one response. That is a
+        # property of its own turn protocol, and a zero here means something different
+        # from a wrong argument, so it has to be visible in the row.
+        result["declaration_spanned_responses"] = (
+            int(context.declaration_output.get("spanned_responses") or 1)
             if context.declaration_output is not None
-            else "bfcl-text-only-empty-v1"
+            else 0
         )
         result["publication_tool_capable"] = tool_capable
         result["proposal_calls"] = [

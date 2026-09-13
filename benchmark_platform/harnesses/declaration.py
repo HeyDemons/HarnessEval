@@ -1,8 +1,22 @@
-"""BFCL's one-response native declaration boundary.
+"""BFCL's one-nominated-response declaration boundary.
 
-The benchmark functions are never executed.  A method's existing output-producing
-node emits native calls, this module records that response, and the bridge publishes
-the same batch without a finalizer or a proposal union.
+Official BFCL scores exactly one assistant response.  ``inference_single_turn_FC``
+compiles every function schema, makes a single ``_query_FC`` call, and
+``_parse_query_response_FC`` collects every ``function_call`` that one response carried.
+There is no rule upstream for merging turns or for choosing among candidates because a
+bare model never produces more than one candidate.
+
+A multi-node method produces many, and the rule has to be supplied here.  This is the
+only one that keeps the graded object identical across topologies: the method nominates
+exactly one of its own Actor responses, and that response's batch is published verbatim
+-- no union across turns, no deduplication, no runtime picking a response on the
+method's behalf.  An empty batch is a valid nomination and is how a method answers that
+no supplied function fits.
+
+A ``DeclarationOutput`` can only be built from a single completion, so "one response"
+is a property of the type rather than a check that a later caller can route around.
+
+Benchmark functions are never executed.
 """
 from __future__ import annotations
 
@@ -14,19 +28,40 @@ from typing import Any
 from .api import Completion
 from .core import RunContext
 
-PUBLISHER_PROTOCOL = "bfcl-native-declaration-boundary-v2"
-MULTI_MODEL_PROTOCOL = "multi-model-declaration-aggregation-v1"
-SELECTED_ACTION_CHAIN_PROTOCOL = "bfcl-selected-action-chain-v1"
-TEXT_ONLY_PROTOCOL = "bfcl-text-only-empty-v1"
+PUBLISHER_PROTOCOL = "bfcl-one-nominated-response-v3"
 
 
 @dataclass(frozen=True)
 class DeclarationOutput:
+    """One Actor response and the complete native batch it carried."""
+
     response_id: int
-    source_response_ids: tuple[int, ...]
     calls: tuple[tuple[str, dict[str, Any], str | None], ...]
     content: str
-    protocol: str
+
+
+def recorded_calls(ctx: RunContext) -> list[dict[str, Any]]:
+    """Every call the method has proposed so far, deduplicated, in first-seen order.
+
+    Without this the nominating node has to re-derive the batch from its workers' prose,
+    which is how cmas, llmcompiler and dmas dropped calls their own agents had already
+    produced.  Peer agents routinely propose the identical call, so first-seen order
+    keeps the list readable without hiding a genuinely repeated call in one response --
+    those are made here, not replayed from this list.
+    """
+
+    seen: set[tuple[str, str]] = set()
+    unique: list[dict[str, Any]] = []
+    for record in ctx.environment.proposal_calls:
+        name, arguments = record.get("name"), record.get("arguments")
+        if not isinstance(name, str) or not isinstance(arguments, dict):
+            continue
+        key = (name, json.dumps(arguments, sort_keys=True, ensure_ascii=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append({"name": name, "arguments": arguments})
+    return unique
 
 
 def declaration_messages(
@@ -35,7 +70,7 @@ def declaration_messages(
     method_instruction: str | None = None,
     internal_context: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Preserve BFCL task roles and add only a method-owned final-node context."""
+    """Preserve BFCL's own task roles and add only the method's final-node context."""
 
     task = copy.deepcopy(ctx.task_messages) or [
         {"role": "user", "content": ctx.prompt}
@@ -47,6 +82,20 @@ def declaration_messages(
     if method_instruction:
         messages.append({"role": "system", "content": method_instruction})
     messages.extend(task)
+    recorded = recorded_calls(ctx)
+    if recorded:
+        messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Calls your method has already recorded, in order. None of them "
+                    "executed and none returned an observation. Adopt the ones the "
+                    "answer needs verbatim and drop the rest -- none of them is in your "
+                    "batch until you make it in this response.\n"
+                    + json.dumps(recorded, ensure_ascii=False)
+                ),
+            }
+        )
     if internal_context:
         messages.append({"role": "user", "content": internal_context})
     return messages
@@ -65,7 +114,11 @@ def _assistant_message(completion: Completion) -> dict[str, Any]:
 def parse_native_declarations(
     completion: Completion,
 ) -> list[tuple[str, dict[str, Any], str | None]]:
-    """Read one assistant response's complete native call batch, preserving order."""
+    """Read one assistant response's complete native call batch, preserving order.
+
+    Official BFCL collects every ``function_call`` in the response and never drops a
+    repeat, so neither does this.
+    """
 
     batch: list[tuple[str, dict[str, Any], str | None]] = []
     for index, call in enumerate(_assistant_message(completion).get("tool_calls") or []):
@@ -90,33 +143,17 @@ def parse_native_declarations(
     return batch
 
 
-async def complete_native_declaration(
-    ctx: RunContext,
-    *,
-    role: str,
-    messages: list[dict[str, Any]],
-    protocol: str,
-) -> str:
-    """Use the method's own final node to produce the scored native response."""
-
-    output = await native_declaration_candidate(
-        ctx,
-        role=role,
-        messages=messages,
-        protocol=protocol,
-    )
-    await stage_declaration_output(ctx, output)
-    return output.content
-
-
 async def native_declaration_candidate(
     ctx: RunContext,
     *,
     role: str,
     messages: list[dict[str, Any]],
-    protocol: str,
 ) -> DeclarationOutput:
-    """Generate one native batch candidate without making it externally visible."""
+    """Generate one candidate batch without nominating it.
+
+    Methods that choose among their agents' answers (DyLAN's network, DMAS's router)
+    build candidates with this and nominate the one their own selection returns.
+    """
 
     tools = [
         {"type": "function", "function": tool.native_schema()}
@@ -133,125 +170,106 @@ async def native_declaration_candidate(
         raise ValueError("BFCL method produced no authoritative Actor response")
     output = DeclarationOutput(
         response_id=response_id,
-        source_response_ids=(response_id,),
         calls=tuple(parse_native_declarations(completion)),
         content=completion.content,
-        protocol=protocol,
     )
     await ctx.trace.emit(
         "declaration_candidate_response",
         response_id=response_id,
         call_count=len(output.calls),
-        protocol=protocol,
     )
     return output
 
 
-async def stage_declaration_output(ctx: RunContext, output: DeclarationOutput) -> None:
-    """Select an existing method response as the sole outward BFCL response."""
+async def stage_declaration_output(
+    ctx: RunContext,
+    output: DeclarationOutput,
+    *,
+    spanned_responses: int = 1,
+) -> None:
+    """Nominate one existing Actor response as the method's sole BFCL answer.
+
+    ``spanned_responses`` is how many of the method's own responses carried calls. Above
+    one, the nominated response is not the method's whole trajectory and the score has to
+    be read as such, so it is recorded rather than quietly normalised to 1.
+    """
 
     if ctx.declaration_output is not None:
-        raise ValueError("BFCL method produced more than one final declaration response")
+        raise ValueError("BFCL method nominated more than one declaration response")
     ctx.declaration_output = {
         "response_id": output.response_id,
-        "source_response_ids": list(output.source_response_ids),
         "calls": list(output.calls),
         "content": output.content,
-        "protocol": output.protocol,
+        "spanned_responses": spanned_responses,
     }
     await ctx.trace.emit(
         "method_declaration_response",
         response_id=output.response_id,
-        source_response_ids=list(output.source_response_ids),
         call_count=len(output.calls),
-        protocol=output.protocol,
+        spanned_responses=spanned_responses,
     )
 
 
-async def aggregate_declaration_outputs(
+async def complete_native_declaration(
     ctx: RunContext,
-    outputs: list[DeclarationOutput],
     *,
-    protocol: str = MULTI_MODEL_PROTOCOL,
-) -> DeclarationOutput:
-    """Aggregate only algorithm-selected output nodes into one runtime response.
+    role: str,
+    messages: list[dict[str, Any]],
+) -> str:
+    """Produce the nominated response from the method's own final node."""
 
-    This is not a proposal union: callers supply the committed planner/route path.
-    Order and duplicate calls are preserved, and the terminal selected response owns
-    the one outward response id while every contributing source id remains explicit.
-    """
-
-    if not outputs:
-        raise ValueError("BFCL declaration aggregation requires at least one selected output")
-    terminal = outputs[-1]
-    source_response_ids = tuple(
-        response_id
-        for output in outputs
-        for response_id in output.source_response_ids
-    )
-    aggregate = DeclarationOutput(
-        response_id=terminal.response_id,
-        source_response_ids=source_response_ids,
-        calls=tuple(call for output in outputs for call in output.calls),
-        content=terminal.content,
-        protocol=protocol,
-    )
-    await ctx.trace.emit(
-        "declaration_outputs_aggregated",
-        response_id=aggregate.response_id,
-        source_response_ids=list(source_response_ids),
-        call_count=len(aggregate.calls),
-        protocol=protocol,
-    )
-    return aggregate
-
-
-async def stage_selected_tool_records(
-    ctx: RunContext,
-    records: list[dict[str, Any]],
-    *,
-    content: str,
-    protocol: str = SELECTED_ACTION_CHAIN_PROTOCOL,
-) -> None:
-    """Publish the complete action chain selected by a finished runtime harness.
-
-    The records are authoritative method actions already present in ToolEnvironment,
-    not raw model suggestions or speculative drafts. BFCL's proposal environment has
-    executed none of them. The harness's natural terminal response owns the outward
-    response id while source ids retain where each selected action originated.
-    """
-
-    response_id = ctx.last_actor_response_id
-    if response_id is None:
-        raise ValueError("BFCL runtime harness produced no terminal Actor response")
-    calls: list[tuple[str, dict[str, Any], str | None]] = []
-    source_response_ids: list[int] = []
-    for record in records:
-        name = record.get("name")
-        arguments = record.get("arguments")
-        if not isinstance(name, str) or not name or not isinstance(arguments, dict):
-            raise ValueError("BFCL selected action record is malformed")
-        calls.append((name, dict(arguments), None))
-        source = record.get("assistant_response_id")
-        if isinstance(source, int) and source not in source_response_ids:
-            source_response_ids.append(source)
-    if not source_response_ids:
-        source_response_ids.append(response_id)
-    output = DeclarationOutput(
-        response_id=response_id,
-        source_response_ids=tuple(source_response_ids),
-        calls=tuple(calls),
-        content=content,
-        protocol=protocol,
-    )
-    await ctx.trace.emit(
-        "selected_action_chain_complete",
-        response_id=response_id,
-        source_response_ids=source_response_ids,
-        call_count=len(calls),
-        protocol=protocol,
-    )
+    output = await native_declaration_candidate(ctx, role=role, messages=messages)
     await stage_declaration_output(ctx, output)
+    return output.content
+
+
+def _recorded_by_response(ctx: RunContext) -> dict[int, list[tuple[str, dict[str, Any], None]]]:
+    """The method's recorded calls, grouped by the Actor response that made them."""
+
+    grouped: dict[int, list[tuple[str, dict[str, Any], None]]] = {}
+    for record in ctx.environment.proposal_calls:
+        response_id = record.get("assistant_response_id")
+        name, arguments = record.get("name"), record.get("arguments")
+        if not isinstance(response_id, int) or not isinstance(name, str):
+            continue
+        if not isinstance(arguments, dict):
+            continue
+        grouped.setdefault(response_id, []).append((name, dict(arguments), None))
+    return grouped
+
+
+async def stage_recorded_declaration(ctx: RunContext, *, content: str) -> str:
+    """Nominate the response a loop-shaped method last acted in.
+
+    A loop has no synthesis node to restate its answer in, and giving it one would add a
+    node the algorithm does not have.  It does not need one: every method whose turn may
+    carry a batch already puts its whole answer in a single response, so the nomination
+    is a check here rather than something this function manufactures.
+
+    MemGPT is the exception, and deliberately so.  One function per step *is* MemGPT, so
+    its answer can span turns and only the last one is nominated.  Under BFCL's
+    one-response boundary that is a real limit of the method, not of this adapter, so the
+    span is reported and the score is left to stand.
+    """
+
+    grouped = _recorded_by_response(ctx)
+    response_id = max(grouped) if grouped else ctx.last_actor_response_id
+    if response_id is None:
+        raise ValueError("BFCL method produced no authoritative Actor response")
+    calls = tuple(grouped.get(response_id) or ())
+    await ctx.trace.emit(
+        "declaration_recorded_span",
+        responses=len(grouped),
+        nominated=response_id,
+        nominated_calls=len(calls),
+        recorded_calls=sum(len(batch) for batch in grouped.values()),
+    )
+    await stage_declaration_output(
+        ctx,
+        DeclarationOutput(response_id=response_id, calls=calls, content=content),
+        spanned_responses=len(grouped),
+    )
+    return content
 
 
 async def publish_method_declaration(
@@ -261,22 +279,18 @@ async def publish_method_declaration(
     proposal_calls: list[dict[str, Any]],
     tool_capable: bool,
 ) -> str:
-    """Publish a recorded final response without another model call or call union."""
+    """Publish the nominated response's batch without another model call."""
 
     if not isinstance(method_output, str):
         raise ValueError("BFCL method must return final text")
     if tool_capable:
         if ctx.declaration_output is None:
-            raise ValueError("BFCL tool-capable method omitted its native final response")
+            raise ValueError("BFCL tool-capable method nominated no declaration response")
         response_id = int(ctx.declaration_output["response_id"])
         batch = list(ctx.declaration_output["calls"])
-        source_response_ids = list(ctx.declaration_output["source_response_ids"])
-        protocol = str(ctx.declaration_output["protocol"])
     else:
         response_id = ctx.last_actor_response_id
         batch = []
-        source_response_ids = [response_id] if response_id is not None else []
-        protocol = TEXT_ONLY_PROTOCOL
     if response_id is None:
         raise ValueError("BFCL method produced no authoritative Actor response")
     await ctx.environment.publish_declaration_batch(response_id, batch)
@@ -287,8 +301,7 @@ async def publish_method_declaration(
         environment_calls=0,
         proposal_count=len(proposal_calls),
         implementation=PUBLISHER_PROTOCOL,
-        output_protocol=protocol,
-        source_response_ids=source_response_ids,
-        publisher_model_calls=0,
+        source_response_ids=[response_id],
+        publisher_llm_calls=0,
     )
     return method_output

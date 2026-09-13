@@ -582,7 +582,6 @@ async def _final_answer(
     final_context = ORCHESTRATOR_FINAL_ANSWER_PROMPT.format(task=ctx.prompt)
     if ctx.policy.get("bfcl_declaration_mode") is True:
         from .declaration import (
-            MULTI_MODEL_PROTOCOL,
             complete_native_declaration,
             declaration_messages,
         )
@@ -600,7 +599,6 @@ async def _final_answer(
                     json.dumps(_thread_context(thread), ensure_ascii=False) + "\n" + final_context
                 ),
             ),
-            protocol=MULTI_MODEL_PROTOCOL,
         )
     return await ctx.complete(
         "orchestrator_final",

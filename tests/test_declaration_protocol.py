@@ -9,9 +9,7 @@ from benchmark_platform.budgets import baseline_limits
 from benchmark_platform.harnesses.api import Completion
 from benchmark_platform.harnesses.core import RunContext, ToolEnvironment, ToolSpec
 from benchmark_platform.harnesses.declaration import (
-    MULTI_MODEL_PROTOCOL,
     PUBLISHER_PROTOCOL,
-    SELECTED_ACTION_CHAIN_PROTOCOL,
     complete_native_declaration,
     declaration_messages,
     parse_native_declarations,
@@ -101,13 +99,14 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
                 )
 
         self.assertEqual(result["status"], "completed")
-        self.assertEqual(result["tool_calls"], 2)
+        # tool_calls is the published batch, which is one response's worth.
+        self.assertEqual(result["tool_calls"], 1)
         self.assertEqual(result["agent_turns"], 3)
         self.assertEqual(result["internal_llm_calls"], 3)
         self.assertEqual(result["publisher_llm_calls"], 0)
         self.assertEqual(result["declaration_protocol"], PUBLISHER_PROTOCOL)
-        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
-        self.assertEqual(result["source_response_ids"], [1, 2])
+        self.assertEqual(result["source_response_ids"], [2])
+        self.assertEqual(result["declaration_spanned_responses"], 2)
         self.assertEqual(len(client.requests), 3)
         self.assertEqual(
             [message["role"] for message in client.requests[0]["messages"]],
@@ -128,9 +127,11 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(native_tools[0]["function"]["name"], "lookup_item")
         self.assertNotIn("parallel", native_tools[0]["function"])
         self.assertNotIn("read_only", native_tools[0]["function"])
+        # Two responses each carried a call, so the answer is the last one's batch --
+        # never the union, which is what BFCL would never have been able to score.
         self.assertEqual(
             [(call["name"], call["arguments"]) for call in result["committed_calls"]],
-            [("lookup_item", {"id": "a"}), ("lookup_item", {"id": "b"})],
+            [("lookup_item", {"id": "b"})],
         )
         tool_message = next(
             message for message in client.requests[1]["messages"]
@@ -211,7 +212,6 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
                 ctx,
                 role="existing_final_node",
                 messages=declaration_messages(ctx, internal_context="finish"),
-                protocol=MULTI_MODEL_PROTOCOL,
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -235,9 +235,9 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             ["final-a", "final-a"],
         )
         self.assertEqual(result["source_response_ids"], [2])
-        self.assertEqual(result["declaration_output_protocol"], MULTI_MODEL_PROTOCOL)
+        self.assertEqual(result["declaration_spanned_responses"], 1)
 
-    async def test_react_runs_full_loop_and_publishes_selected_action_chain(self):
+    async def test_react_nominates_the_response_it_last_acted_in(self):
         responses = [
             native_batch("a"),
             native_batch("b"),
@@ -265,11 +265,11 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["agent_turns"], 3)
-        self.assertEqual(result["source_response_ids"], [1, 2])
-        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
+        self.assertEqual(result["source_response_ids"], [2])
+        self.assertEqual(result["declaration_spanned_responses"], 2)
         self.assertEqual(
             [call["arguments"]["id"] for call in result["committed_calls"]],
-            ["a", "b"],
+            ["b"],
         )
 
     async def test_sa_runs_full_speculative_loop_and_publishes_only_actor_actions(self):
@@ -306,10 +306,9 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["speculator_llm_calls"], 3)
         self.assertEqual(result["internal_llm_calls"], 6)
         self.assertEqual(len(result["proposal_calls"]), 2)
-        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
         self.assertEqual(
             [call["arguments"]["id"] for call in result["committed_calls"]],
-            ["a", "b"],
+            ["b"],
         )
         self.assertEqual(sum(event["event"] == "sa_cache_hit" for event in events), 2)
         self.assertTrue(any(event["event"] == "sa_predictions_discarded" for event in events))
@@ -335,11 +334,13 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["agent_turns"], 3)
-        self.assertEqual(result["source_response_ids"], [1, 2])
-        self.assertEqual(result["declaration_output_protocol"], SELECTED_ACTION_CHAIN_PROTOCOL)
+        self.assertEqual(result["source_response_ids"], [2])
+        # One function per step is MemGPT. Under a one-response boundary its answer
+        # cannot span turns, so only the last step is nominated and the span is reported.
+        self.assertEqual(result["declaration_spanned_responses"], 2)
         self.assertEqual(
             [call["arguments"]["id"] for call in result["committed_calls"]],
-            ["a", "b"],
+            ["b"],
         )
         self.assertEqual(sum(event["event"] == "memgpt_function" for event in events), 2)
 
@@ -389,10 +390,10 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "completed")
         self.assertEqual(result["internal_llm_calls"], 8)
-        self.assertEqual(result["source_response_ids"], [4, 8])
+        self.assertEqual(result["source_response_ids"], [8])
         self.assertEqual(
             [call["arguments"]["id"] for call in result["committed_calls"]],
-            ["first", "second"],
+            ["second"],
         )
         self.assertEqual(result["proposal_calls"], [])
         self.assertEqual(
@@ -403,9 +404,64 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             sum(event["event"] == "method_declaration_response" for event in events),
             1,
         )
+
+    async def test_one_response_batch_is_published_whole(self):
+        """The ordinary case: a turn may carry the batch, so nothing is dropped."""
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            client = Client([native_batch("a", "b", "b"), "done"])
+            with patch.object(runner, "completion_client_from_env", return_value=client):
+                result = await runner.execute(
+                    "bfcl", "actor-only", "case", source, job, baseline_limits("bfcl")
+                )
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["declaration_spanned_responses"], 1)
+        self.assertEqual(result["source_response_ids"], [1])
+        # Official BFCL keeps a repeated call, so the parallel checker sees the arity the
+        # model actually produced. Deduplicating here would hide a wrong answer.
         self.assertEqual(
-            sum(event["event"] == "declaration_outputs_aggregated" for event in events),
-            1,
+            [call["arguments"]["id"] for call in result["committed_calls"]],
+            ["a", "b", "b"],
+        )
+
+    async def test_react_may_batch_when_there_is_nothing_to_observe(self):
+        """One action per turn serialises observation-driven reasoning ReAct cannot do here."""
+
+        responses = [
+            native_batch("a", "b"),
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "finish",
+                    "type": "function",
+                    "function": {
+                        "name": "react_finish",
+                        "arguments": json.dumps({"answer": "done"}),
+                    },
+                }],
+            },
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, job = root / "input", root / "job"
+            source.mkdir()
+            job.mkdir()
+            make_case(source, "bfcl")
+            with patch.object(runner, "completion_client_from_env", return_value=Client(responses)):
+                result = await runner.execute("bfcl", "react", "case", source, job, {})
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["declaration_spanned_responses"], 1)
+        self.assertEqual(
+            [call["arguments"]["id"] for call in result["committed_calls"]],
+            ["a", "b"],
         )
 
     def test_native_parser_preserves_duplicates(self):

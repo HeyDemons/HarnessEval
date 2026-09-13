@@ -316,12 +316,8 @@ async def run_memgpt(ctx: RunContext) -> str:
             message = str(arguments["message"])
             if _NATIVE_USER_TOOL not in ctx.environment.names:
                 if ctx.policy.get("bfcl_declaration_mode") is True:
-                    from .declaration import stage_selected_tool_records
-                    await stage_selected_tool_records(
-                        ctx,
-                        list(ctx.environment.proposal_calls),
-                        content=message,
-                    )
+                    from .declaration import stage_recorded_declaration
+                    return await stage_recorded_declaration(ctx, content=message)
                 return message
 
             # The original MemGPT CLI keeps one Agent object alive: send_message returns

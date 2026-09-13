@@ -39,7 +39,6 @@ from benchmark_platform.harnesses.content import WIRE_IMAGE_MARKER, json_safe, w
 from benchmark_platform.harnesses.methods import run_profile
 from benchmark_platform.harnesses.profiles import PROFILES
 from benchmark_platform.harnesses.declaration import (
-    MULTI_MODEL_PROTOCOL,
     PUBLISHER_PROTOCOL,
     complete_native_declaration,
     declaration_messages,
@@ -448,7 +447,6 @@ class BridgeMatrixTests(unittest.TestCase):
                 context,
                 role="method-final",
                 messages=declaration_messages(context, internal_context="finish"),
-                protocol=MULTI_MODEL_PROTOCOL,
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -486,7 +484,6 @@ class BridgeMatrixTests(unittest.TestCase):
                 context,
                 role="method-final",
                 messages=declaration_messages(context, internal_context="finish"),
-                protocol=MULTI_MODEL_PROTOCOL,
             )
 
         with tempfile.TemporaryDirectory() as directory:
@@ -539,7 +536,6 @@ class BridgeMatrixTests(unittest.TestCase):
                 context,
                 role="method-final",
                 messages=declaration_messages(context, internal_context="finish"),
-                protocol=MULTI_MODEL_PROTOCOL,
             )
 
         with tempfile.TemporaryDirectory() as directory:

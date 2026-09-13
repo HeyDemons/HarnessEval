@@ -351,12 +351,8 @@ async def run_react(ctx: RunContext) -> str:
         if "final" in action:
             answer = str(action["final"])
             if ctx.policy.get("bfcl_declaration_mode") is True:
-                from .declaration import stage_selected_tool_records
-                await stage_selected_tool_records(
-                    ctx,
-                    list(ctx.environment.proposal_calls),
-                    content=answer,
-                )
+                from .declaration import stage_recorded_declaration
+                return await stage_recorded_declaration(ctx, content=answer)
             return answer
         if finalizing:
             raise RuntimeError("ReAct turn budget exhausted: final response requested another action")
@@ -414,7 +410,6 @@ async def run_plan_execute(ctx: RunContext) -> str:
         step_id, instruction = _instruction(step, kind="Plan-and-Execute", index=index)
         if ctx.policy.get("bfcl_declaration_mode") is True and index == len(steps):
             from .declaration import (
-                MULTI_MODEL_PROTOCOL,
                 complete_native_declaration,
                 declaration_messages,
             )
@@ -434,7 +429,6 @@ async def run_plan_execute(ctx: RunContext) -> str:
                         f"Final executor objective: {instruction}"
                     ),
                 ),
-                protocol=MULTI_MODEL_PROTOCOL,
             )
         result = await _json_tool_loop(
             ctx,
@@ -524,7 +518,6 @@ async def run_cmas(ctx: RunContext) -> str:
     )
     if ctx.policy.get("bfcl_declaration_mode") is True:
         from .declaration import (
-            MULTI_MODEL_PROTOCOL,
             complete_native_declaration,
             declaration_messages,
         )
@@ -540,7 +533,6 @@ async def run_cmas(ctx: RunContext) -> str:
                 ),
                 internal_context=synthesis,
             ),
-            protocol=MULTI_MODEL_PROTOCOL,
         )
     return await _json_tool_loop(ctx, "manager_synthesis", prompt=synthesis)
 
@@ -551,12 +543,8 @@ async def run_profile(ctx: RunContext) -> str:
     if ctx.profile == "actor-only":
         answer = await _json_tool_loop(ctx, "actor")
         if ctx.policy.get("bfcl_declaration_mode") is True:
-            from .declaration import stage_selected_tool_records
-            await stage_selected_tool_records(
-                ctx,
-                list(ctx.environment.proposal_calls),
-                content=answer,
-            )
+            from .declaration import stage_recorded_declaration
+            return await stage_recorded_declaration(ctx, content=answer)
         return answer
     if ctx.profile == "react":
         return await run_react(ctx)

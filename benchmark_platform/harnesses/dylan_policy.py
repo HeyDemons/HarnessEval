@@ -203,7 +203,6 @@ async def deliberate_bfcl(
     """
 
     from .declaration import (
-        MULTI_MODEL_PROTOCOL,
         declaration_messages,
         native_declaration_candidate,
         stage_declaration_output,
@@ -286,7 +285,6 @@ async def deliberate_bfcl(
                         ),
                         internal_context=predecessor_text or None,
                     ),
-                    protocol=MULTI_MODEL_PROTOCOL,
                 )
                 ratings = []
                 try:
