@@ -113,16 +113,12 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
             ["system", "user"],
         )
         self.assertEqual(client.requests[0]["messages"][-1]["role"], "user")
-        self.assertIn("Call the function", client.requests[0]["messages"][-1]["content"])
-        self.assertIn("Runtime evaluation contract", client.requests[0]["messages"][-1]["content"])
+        # The case's own user turn reaches the method verbatim. Official BFCL says nothing
+        # about how the response will be graded, so neither does this bridge.
+        self.assertEqual(client.requests[0]["messages"][-1]["content"], "Call the function")
         for request in client.requests:
-            self.assertEqual(
-                sum(
-                    str(message.get("content") or "").count("Runtime evaluation contract")
-                    for message in request["messages"]
-                ),
-                1,
-            )
+            for message in request["messages"]:
+                self.assertNotIn("Runtime evaluation contract", str(message.get("content") or ""))
         native_tools = client.requests[0]["tools"]
         self.assertEqual(native_tools[0]["function"]["name"], "lookup_item")
         self.assertNotIn("parallel", native_tools[0]["function"])
@@ -190,8 +186,7 @@ class DeclarationTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(messages[1]["content"], "official system")
         self.assertEqual(sum(message["content"] == "official system" for message in messages), 1)
-        self.assertIn("official user", messages[-1]["content"])
-        self.assertIn("Runtime evaluation contract", messages[-1]["content"])
+        self.assertEqual(messages[-1]["content"], "official user")
         # The scaffold must not promise an execution the declaration bridge never performs;
         # the task message says the opposite in this very request.
         scaffold = messages[0]["content"]

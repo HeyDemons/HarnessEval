@@ -399,7 +399,9 @@ class BridgeMatrixTests(unittest.TestCase):
         self.assertEqual(
             manifest["metadata"]["lifecycle"], "runtime_harness_declaration_v1"
         )
-        self.assertIn("observation=null", manifest["metadata"]["runtime_instruction"])
+        # Nothing is appended to the case: the observation below is what tells the method
+        # the call was recorded rather than run.
+        self.assertNotIn("runtime_instruction", manifest["metadata"])
         self.assertEqual(manifest["safe_tools"], ["lookup_item"])
         self.assertEqual(
             observation["result"],

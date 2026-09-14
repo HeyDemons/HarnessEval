@@ -42,16 +42,6 @@ OPENAPI_TYPES = frozenset(
     {"array", "boolean", "integer", "null", "number", "object", "string"}
 )
 
-BFCL_RUNTIME_INSTRUCTION = (
-    "Runtime evaluation contract: the supplied native functions are declaration-only candidates. "
-    "Invoking one records its name and arguments but does not execute the function or reveal any "
-    "environment state; its tool result contains observation=null. Complete your method's normal "
-    "workflow under that contract. After the workflow ends, the runtime deterministically publishes "
-    "the calls selected by the method as one tool-call batch for evaluation. Treat the null observation "
-    "as neither success nor failure evidence."
-)
-
-
 def _normalize_property_schema(value: Mapping[str, Any]) -> dict[str, Any]:
     """Apply BFCL's official source-type conversion recursively.
 

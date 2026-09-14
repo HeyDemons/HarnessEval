@@ -11,7 +11,6 @@ from typing import Any
 
 from .base import BridgeCase, native_spec, read_case, workspace_tools
 from .bfcl import (
-    BFCL_RUNTIME_INSTRUCTION,
     proposal_only_result,
     normalize_bfcl_parameters,
     prepared_bfcl_messages,
@@ -197,14 +196,13 @@ def load_bfcl(case_id: str, root: Path) -> BridgeCase:
     return BridgeCase(
         "bfcl",
         case_id,
-        render_bfcl_method_prompt(messages) + "\n\n" + BFCL_RUNTIME_INSTRUCTION,
+        render_bfcl_method_prompt(messages),
         specs,
         handlers,
         {
             "source": value.get("source"),
             "messages": messages,
             "lifecycle": "runtime_harness_declaration_v1",
-            "runtime_instruction": BFCL_RUNTIME_INSTRUCTION,
         },
     )
 

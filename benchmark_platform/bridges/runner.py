@@ -85,20 +85,13 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
         effective_policy["speculation_safe_tools"] = safe
         effective_policy["branch_safe_tools"] = safe
     tool_capable = profile.tool_contract != "no-external-tools"
+    # BFCL's own turns reach the method unchanged.  A paragraph describing the recording
+    # bridge used to be appended to the last user message; official BFCL tells the model
+    # nothing about how it is evaluated, and the tool result already says what happened --
+    # `ok: true, execution: "not_run", observation: null` -- so the prose only added a
+    # framing the benchmark never has.  Methods that reach the tools learn the same thing
+    # from their own scaffold.
     task_messages = list(bridge.metadata.get("messages") or []) if benchmark == "bfcl" else []
-    if benchmark == "bfcl":
-        runtime_instruction = str(bridge.metadata["runtime_instruction"])
-        for index in range(len(task_messages) - 1, -1, -1):
-            if task_messages[index].get("role") == "user":
-                task_messages[index] = {
-                    **task_messages[index],
-                    "content": str(task_messages[index].get("content") or "")
-                    + "\n\n"
-                    + runtime_instruction,
-                }
-                break
-        else:
-            task_messages.append({"role": "user", "content": runtime_instruction})
     client = completion_client_from_env()
     context = RunContext(
         profile_id,
