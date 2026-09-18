@@ -1538,6 +1538,16 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(answer, "42")
         self.assertEqual(environment.calls, [])
 
+    def test_rewoo_llm_worker_scope_note_is_opt_in(self) -> None:
+        from types import SimpleNamespace
+        from benchmark_platform.harnesses.rewoo import _worker_descriptions
+
+        def describe(policy: dict[str, Any]) -> str:
+            return _worker_descriptions(SimpleNamespace(policy=policy, environment=SimpleNamespace(tools={})))
+
+        self.assertNotIn("parameter schema", describe({}))
+        self.assertIn("does not see this task", describe({"rewoo_llm_worker_scope_note": True}))
+
     def test_rewoo_balanced_parser_preserves_nested_worker_input(self) -> None:
         steps = parse_rewoo_plan(
             'Plan: inspect nested content\n#E1 = LLM[Compare [alpha] with {"literal": "]"}]'

@@ -305,6 +305,14 @@ def _worker_descriptions(ctx: RunContext) -> str:
     workers.append(
         "LLM[plain-text instruction]: a pretrained language-model worker for general knowledge, "
         "comparison, and reasoning over prior #E evidence."
+        # The paper's LLM worker is prompted with the instruction alone. Saying so changes
+        # nothing about the worker; it stops the planner delegating "build a request
+        # matching the api_fetch schema" to a worker that was never shown that schema.
+        + (
+            " It receives only your instruction text with #E references replaced by their evidence; "
+            "it does not see this task, the worker list or any parameter schema."
+            if ctx.policy.get("rewoo_llm_worker_scope_note") is True else ""
+        )
     )
     return "\n".join(workers)
 
