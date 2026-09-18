@@ -162,6 +162,30 @@ class NativeTransportTests(unittest.TestCase):
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called_once_with(1)
 
+    def test_tls_record_corruption_uses_transport_retry_budget(self) -> None:
+        import ssl
+
+        client = OpenAICompatibleClient(
+            ApiConfig("https://example.invalid/v1", "secret", "model", transport_retries=1)
+        )
+        response = _Response(
+            {
+                "choices": [{"message": {"role": "assistant", "content": "done"}}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }
+        )
+        with (
+            patch(
+                "urllib.request.urlopen",
+                side_effect=[ssl.SSLError("DECRYPTION_FAILED_OR_BAD_RECORD_MAC"), response],
+            ),
+            patch("benchmark_platform.harnesses.api.time.sleep"),
+        ):
+            completion = asyncio.run(client.complete_native([{"role": "user", "content": "test"}]))
+
+        self.assertEqual(completion.content, "done")
+        self.assertEqual(completion.transport_retries, 1)
+
     def test_empty_json_response_uses_transport_retry_budget(self) -> None:
         client = OpenAICompatibleClient(
             ApiConfig("https://example.invalid/v1", "secret", "model", transport_retries=1)

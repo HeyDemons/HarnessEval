@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import http.client
+import ssl
 import json
 import os
 import time
@@ -487,6 +488,8 @@ class OpenAICompatibleClient:
                 urllib.error.URLError,
                 http.client.HTTPException,
                 ConnectionError,
+                # A TLS record corrupted mid-stream is an OSError, not a ConnectionError.
+                ssl.SSLError,
                 StreamInterrupted,
                 json.JSONDecodeError,
             ) as exc:
@@ -735,6 +738,8 @@ class AnthropicMessagesClient:
                 urllib.error.URLError,
                 http.client.HTTPException,
                 ConnectionError,
+                # A TLS record corrupted mid-stream is an OSError, not a ConnectionError.
+                ssl.SSLError,
                 json.JSONDecodeError,
             ) as exc:
                 if retries >= self.config.transport_retries:
