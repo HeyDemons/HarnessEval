@@ -80,15 +80,6 @@ async def execute(benchmark: str, profile_id: str, case_id: str, root: Path, job
             os.environ.get("HARNESS_BFCL_MAGENTIC_ROUNDS", 3),
             "HARNESS_BFCL_MAGENTIC_ROUNDS",
         )
-    if benchmark == "automationbench":
-        # Endpoints are discovered at run time (api_search -> api_fetch), so a one-shot
-        # plan can never name a URL. Upstream configures max_replans per benchmark; the
-        # three published QA configs pin 1 because their tools need no discovery.
-        effective_policy.setdefault("llmcompiler_max_replans", positive_int(
-            os.environ.get("HARNESS_AUTOMATIONBENCH_LLMCOMPILER_PASSES", 3),
-            "HARNESS_AUTOMATIONBENCH_LLMCOMPILER_PASSES",
-        ))
-        effective_policy.setdefault("rewoo_llm_worker_scope_note", True)
     if benchmark == "trajectory-bench":
         safe = list(bridge.metadata.get("safe_for_prelaunch") or [])
         effective_policy["speculation_safe_tools"] = safe
