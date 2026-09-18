@@ -1548,6 +1548,23 @@ class HarnessTests(unittest.TestCase):
         self.assertNotIn("parameter schema", describe({}))
         self.assertIn("does not see this task", describe({"rewoo_llm_worker_scope_note": True}))
 
+    def test_rewoo_unobserved_planning_guidance_is_opt_in(self) -> None:
+        def planner_prompt(policy: dict[str, Any]) -> str:
+            with tempfile.TemporaryDirectory() as directory:
+                trace = JsonlTrace(Path(directory) / "trace.jsonl")
+                client = ScriptedClient(['Plan: look\n#E1 = lookup[{"key":"alpha"}]', "6"])
+                context = RunContext("rewoo", "retrieve alpha", client, ToolEnvironment(tool_specs(), trace),
+                                     trace, {"max_turns": 8, **policy})
+                asyncio.run(run_profile(context))
+                return client.messages[0][-1]["content"]
+
+        stock = planner_prompt({})
+        guided = planner_prompt({"rewoo_planner_guidance": "unobserved-planning-v1"})
+        self.assertIn("#E1.results.0.url", stock)
+        self.assertNotIn("You will not see any evidence", stock)
+        self.assertIn("Do not take a fixed position such as the first result", guided)
+        self.assertNotIn("results.0.url", guided)
+
     def test_rewoo_balanced_parser_preserves_nested_worker_input(self) -> None:
         steps = parse_rewoo_plan(
             'Plan: inspect nested content\n#E1 = LLM[Compare [alpha] with {"literal": "]"}]'

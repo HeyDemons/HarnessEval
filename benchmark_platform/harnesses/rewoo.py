@@ -332,7 +332,32 @@ def _worker_log(records: list[ReWOOEvidence]) -> str:
     return "\n\n".join(blocks)
 
 
+# Planning without observation, spelled out. Each line answers a failure measured on
+# automationbench (2026-09-18, 36 cases): the planner took search result 0 unseen and hit the
+# wrong service (401/404 on 74 of 160 fetches), asked the LLM worker for "a request matching
+# the schema" it was never shown (20% malformed), and had no second source when one failed.
+# Nothing here names a benchmark tool; upstream ships hand-written few-shots per benchmark.
+UNOBSERVED_PLANNING_GUIDANCE = (
+    "You will not see any evidence until the whole plan has run, so plan for what you cannot know:\n"
+    "- When a later input depends on choosing among alternatives in earlier evidence (which search "
+    "result, which record), add an LLM step that makes the choice from that evidence. Do not take a "
+    "fixed position such as the first result.\n"
+    "- When an LLM step must produce a benchmark worker's input, write that worker's exact parameter "
+    "names, types and required fields into the instruction, and ask for only the finished JSON object "
+    "with every value filled in and no placeholders left.\n"
+    "- A worker call can fail and you cannot react to it. Where more than one source could hold what "
+    "you need, gather evidence from each and let a later LLM step use whichever succeeded.\n\n"
+)
+
+
 async def run_rewoo(ctx: RunContext) -> str:
+    guided = ctx.policy.get("rewoo_planner_guidance") == "unobserved-planning-v1"
+    # The stock path example has the exact shape of an endpoint search result and reads as
+    # an instruction to take result 0; the guided prompt shows the syntax on neutral fields.
+    path_example = (
+        "#E1.value, #E1.items.0.id or #E1.items[0].id" if guided
+        else "#E1.value, #E1.results.0.url or #E1.results[0].url"
+    )
     planner_conversation = [
         {
             "role": "user",
@@ -345,10 +370,12 @@ async def run_rewoo(ctx: RunContext) -> str:
                 "#E1 = Worker[input]\n\n"
                 "For a benchmark worker, input must resolve to one complete JSON object matching its parameter "
                 "schema: either write the object and reference evidence inside it, or name a single #E variable "
-                "whose evidence is already that object. Append a path such as #E1.value, #E1.results.0.url or "
-                "#E1.results[0].url to select one field from structured evidence. For LLM, input is a plain-text "
+                f"whose evidence is already that object. Append a path such as {path_example} "
+                "to select one field from structured evidence. For LLM, input is a plain-text "
                 "instruction. "
                 "Do not solve the task or invent evidence in the plan.\n\n"
+                + (UNOBSERVED_PLANNING_GUIDANCE if guided else "")
+                +
                 f"Workers:\n{_worker_descriptions(ctx)}\n\n"
                 f"Task: {ctx.prompt}"
             ),
